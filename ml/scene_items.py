@@ -35,18 +35,21 @@ OWL_MIN_SCORE: dict[str, float] = {
     "cash_bundle": 0.2, "book": 0.25, "stamp": 0.15, "bag": 0.2, "clothes": 0.2, "cup": 0.2, "food": 0.15,
     "phone": 0.2,
 }
+QUERY_MIN_SCORE: dict[str, float] = {"papers": 0.3}  # generic query, also fires on the counting machine
 COCO_TO_ITEM: dict[str, str] = {
     "book": "book", "cup": "cup", "banana": "food", "handbag": "bag", "backpack": "bag", "suitcase": "bag",
     "cell phone": "phone",
 }
 COCO_MIN_SCORE = 0.4
 MAX_PERSON_COVER = 0.5
+PERSON_BODY_SHARE = 0.6  # upper part of a person box = the person; below = desk top in front
 STATIC_COVER = 0.6  # item box lies mostly inside a stronger fixed-equipment box
 DESK_ZONE_UP = 0.35  # objects on the desk top project above the desk box in a top-down oblique view
 MERGE_IOU = 0.3
 # novelty = change vs. the room at the start inside the item box; fixed equipment stays near 0
-MIN_NOVELTY: dict[str, float] = {"owlv2": 0.1, "coco": 0.2}
+MIN_NOVELTY: dict[str, float] = {"owlv2": 0.15, "coco": 0.2}
 STRONG_OWL_SCORE = 0.5
+HANDHELD_LABELS = frozenset({"cup", "food", "phone"})
 
 
 @dataclass(frozen=True)
@@ -61,10 +64,11 @@ class DeskItem:
 
 def keep_item(item: DeskItem) -> bool:
     """Drop fixed desk equipment present since the start (COCO calls counting machines 'handbag' or 'book')."""
-    if item.novelty is None:
-        return True
     if item.source == "owlv2" and item.score >= STRONG_OWL_SCORE:
         return True
+    if item.novelty is None:  # region hidden by a person
+        # cups and snacks sit right in front of the cashier; bags/clothes there are usually her own or equipment
+        return item.label in HANDHELD_LABELS
     return item.novelty >= MIN_NOVELTY.get(item.source, max(MIN_NOVELTY.values()))
 
 
@@ -81,7 +85,15 @@ def _on_desk(box: Box, zone: Box) -> bool:
 
 
 def _covered_by_person(box: Box, person_boxes: Sequence[Box]) -> bool:
-    return any(overlap_fraction(box, p) > MAX_PERSON_COVER for p in person_boxes)
+    """Item looks like part of a person (worn coat, held bag): inside the person box, above desk level.
+
+    A seated cashier's box also covers the desk top, so objects in its lower part are kept.
+    """
+    _, cy = center(box)
+    return any(
+        overlap_fraction(box, p) > MAX_PERSON_COVER and cy < p[1] + PERSON_BODY_SHARE * (p[3] - p[1])
+        for p in person_boxes
+    )
 
 
 def _explained_by_static(hit_box: Box, score: float, statics: Sequence[tuple[Box, float]]) -> bool:
@@ -93,7 +105,7 @@ def items_from_owl(hits: Sequence, zone: Box, person_boxes: Sequence[Box]) -> li
     items = []
     for h in hits:
         label = ITEM_QUERIES.get(h.query)
-        if label is None or h.score < OWL_MIN_SCORE[label]:
+        if label is None or h.score < max(OWL_MIN_SCORE[label], QUERY_MIN_SCORE.get(h.query, 0.0)):
             continue
         if not _on_desk(h.box, zone) or _covered_by_person(h.box, person_boxes):
             continue

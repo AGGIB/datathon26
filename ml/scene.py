@@ -1,6 +1,6 @@
 """Stage 1b: scene state. Where the desk, safe, entrance door and laptop are, and what state they are in over time.
 
-Usage by the rules stage (see docs/scene.md for the field reference):
+Usage by the rules stage (field meanings are documented on the dataclasses below):
 
     from ml.scene import analyze_scene
     from ml.scene_owl import OwlDetector
@@ -115,7 +115,7 @@ class SceneState:
     door_open: float | None
     laptop_screen_on: float | None  # screen emits light (any content, lock screen included)
     laptop_screen_work: float | None  # bright document-like content (spreadsheet), not a lock screen
-    key_in_lock: float | None  # experimental, see docs/scene.md
+    key_in_lock: float | None  # experimental: darkening under the lock cylinder, tuned on one angle
     desk_items: tuple[DeskItem, ...]  # COCO items at t; plus OWLv2 items when t is a keyframe
     keyframe: bool = False
     people: int = 0  # person detections at t (from perception)

@@ -36,6 +36,13 @@ def test_items_mostly_covered_by_a_person_are_dropped():
     assert items_from_owl(hits, ZONE, person_boxes=[(140, 300, 260, 520)]) == []
 
 
+def test_items_on_desk_in_front_of_seated_cashier_are_kept():
+    seated = (102, 271, 244, 407)  # the person box reaches down over the desk top
+    hits = [OwlHit("a handbag", (173, 343, 202, 406), 0.42), OwlHit("a jacket", (110, 290, 180, 330), 0.5)]
+    items = items_from_owl(hits, ZONE, person_boxes=[seated])
+    assert [i.label for i in items] == ["bag"]  # the jacket high in the box is the cashier's own
+
+
 def test_coco_detections_map_to_item_labels():
     dets = [
         Detection((200, 400, 220, 420), 0.6, "cup"),
@@ -65,10 +72,19 @@ def _item(source, score, novelty, label="book"):
 def test_keep_item_drops_fixed_equipment_seen_since_the_start():
     assert not keep_item(_item("coco", 0.6, 0.05, "bag"))  # counting machine called "handbag"
     assert keep_item(_item("coco", 0.45, 0.4, "cup"))
-    assert keep_item(_item("coco", 0.45, None, "cup"))
+    assert not keep_item(_item("coco", 0.66, None, "bag"))  # region hidden by a person
+    assert keep_item(_item("owlv2", 0.37, None, "cup"))  # mug right in front of the cashier
 
 
 def test_keep_item_trusts_strong_or_new_owl_hits():
-    assert keep_item(_item("owlv2", 0.39, 0.15))  # notebook partly in the start reference
+    assert keep_item(_item("owlv2", 0.39, 0.2))  # notebook partly in the start reference
+    assert not keep_item(_item("owlv2", 0.26, 0.125))  # "papers" on the counting machine
     assert not keep_item(_item("owlv2", 0.3, 0.02))
     assert keep_item(_item("owlv2", 0.6, 0.0))
+
+
+def test_generic_papers_query_needs_a_higher_score():
+    weak = [OwlHit("papers", (208, 397, 234, 408), 0.26)]
+    strong = [OwlHit("papers", (208, 397, 234, 408), 0.49)]
+    assert items_from_owl(weak, ZONE, person_boxes=[]) == []
+    assert [i.label for i in items_from_owl(strong, ZONE, person_boxes=[])] == ["cash_bundle"]
