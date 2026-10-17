@@ -170,6 +170,12 @@ def _judge(perception: Perception) -> Sequence[Candidate]:
     return rules.find_candidates(perception, scene=None)
 
 
+def preload() -> None:
+    """Load and validate what every job depends on (the kb catalog). The backend calls it at startup."""
+    types = catalog()
+    log.info("pipeline: kb ready, %d violation types", len(types))
+
+
 def analyze(
     video_path: str,
     on_progress: ProgressFn | None = None,
