@@ -41,6 +41,10 @@ __pycache__/
 htmlcov/
 .ruff_cache/
 
+# Local official-page mirrors; text snapshots and provenance stay tracked
+kb/legal/**/source.html
+kb/legal/**/metadata.html
+
 # node
 node_modules/
 frontend/dist/

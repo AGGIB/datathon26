@@ -2,5 +2,5 @@
 pytest==8.3.5
 pytest-cov==6.1.1
 httpx==0.28.1
-openpyxl==3.1.5
+-r tools/requirements-audit.txt
 ruff==0.11.8
