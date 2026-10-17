@@ -21,7 +21,7 @@ from .roles import Roles, assign_roles, desk_point
 from .track import STITCH_GAP_SEC, IoUTracker, Track, drop_duplicate_tracks, stitch_tracks
 from .video import VideoInfo, probe, sample_frames
 
-SAMPLE_FPS = 4.0
+SAMPLE_FPS = 3.0  # 145 s video: ~430 detector passes (~40 s on a free MPS); events hold up down to 2 fps
 BATCH = 8
 TRACKER_GAP_SEC = 1.0
 TRACKER_GAP_SAMPLES = 2.5  # a track survives this many missed samples (at low sampling rates)

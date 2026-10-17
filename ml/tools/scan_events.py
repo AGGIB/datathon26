@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ml.detect import Detector
 from ml.labels import load_labels, normalize_video_name
-from ml.perception import perceive
+from ml.perception import SAMPLE_FPS, perceive
 
 DATA = Path("data/open")
 
@@ -17,7 +17,7 @@ DATA = Path("data/open")
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="")
-    ap.add_argument("--fps", type=float, default=4.0)
+    ap.add_argument("--fps", type=float, default=SAMPLE_FPS)
     args = ap.parse_args()
 
     labels = {lb.video: lb for lb in load_labels(DATA / "open_labels.xlsx")}
