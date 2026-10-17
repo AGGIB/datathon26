@@ -63,3 +63,32 @@ def test_events_are_sorted_by_time():
     events = extract_events([track(1, 0.0, 6.0), track(2, 2.0, 9.0)], duration=10.0)
     assert [e.t for e in events] == sorted(e.t for e in events)
     assert all(isinstance(e, Event) for e in events)
+
+
+def test_room_empty_at_start_when_first_person_walks_in_later():
+    events = extract_events([track(1, 4.0, 10.0)], duration=10.0, min_empty_sec=1.0)
+    empty = [e for e in events if e.kind in ("room_empty", "room_empty_at_start")]
+    assert [(e.kind, e.t, e.t_end) for e in empty] == [("room_empty_at_start", 0.0, 4.0)]
+
+
+def test_whole_video_is_empty_when_there_are_no_reliable_tracks():
+    events = extract_events([track(1, 2.0, 2.5)], duration=10.0, min_empty_sec=1.0)
+    empty = [(e.kind, e.t, e.t_end) for e in events if e.kind.startswith("room_empty")]
+    assert empty == [("room_empty_at_start", 0.0, 10.0)]
+
+
+def test_two_disjoint_crowds_give_two_crowd_events():
+    tracks = [
+        track(1, 0.0, 10.0),
+        track(2, 0.0, 10.0),
+        track(3, 0.0, 2.0),
+        track(4, 5.0, 7.0),
+    ]
+    events = extract_events(tracks, duration=10.0, edge_sec=0.0)
+    assert [e.t for e in events if e.kind == "crowd"] == [0.0, 5.0]
+
+
+def test_crowd_event_reports_its_end():
+    tracks = [track(1, 0.0, 10.0), track(2, 0.0, 10.0), track(3, 3.0, 6.0)]
+    [crowd] = [e for e in extract_events(tracks, duration=10.0) if e.kind == "crowd"]
+    assert crowd.t_end == 6.0
