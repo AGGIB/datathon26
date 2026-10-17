@@ -533,7 +533,7 @@ def score(labels, predictions, annotations=None, split=None, subset=None, tolera
 
 def _probe(path, executable):
     """Only numerical metadata; never decode frames, export tags, or call a network API."""
-    command = [executable, '-v', 'error', '-show_entries',
+    command = [executable, '-v', 'error', '-protocol_whitelist', 'file,pipe', '-show_entries',
                'format=duration,size:stream=codec_type,width,height,avg_frame_rate,time_base,nb_frames',
                '-of', 'json', str(path)]
     try:
