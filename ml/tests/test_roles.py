@@ -98,8 +98,15 @@ def test_look_alike_living_alongside_the_cashier_is_still_a_visitor():
 
 
 def test_short_entry_at_the_end_of_the_clip_is_a_visitor():
-    roles = assign_roles([trk(1, 0, 20, SEAT), trk(2, 18, 20, DESK_FAR_SIDE, score=0.7, sig=DARK)], duration=20.0)
+    roles = assign_roles([trk(1, 0, 20, SEAT), trk(2, 18, 20, DESK_FAR_SIDE, score=0.85, sig=DARK)], duration=20.0)
     assert roles.visitor_ids == (2,)
+
+
+def test_in_room_clarity_is_relative_to_how_clearly_the_camera_sees_the_cashier():
+    dim_camera = [trk(1, 0, 20, SEAT, score=0.72), trk(2, 5, 15, DESK_FAR_SIDE, score=0.65, sig=DARK)]
+    assert assign_roles(dim_camera).visitor_ids == (2,)
+    sharp_camera = [trk(1, 0, 20, SEAT, score=0.92), trk(2, 5, 15, DESK_FAR_SIDE, score=0.65, sig=DARK)]
+    assert assign_roles(sharp_camera).visitor_ids == ()
 
 
 def test_bigger_visitor_present_longer_does_not_take_the_cashier_role():

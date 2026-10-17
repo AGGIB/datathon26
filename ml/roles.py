@@ -30,10 +30,13 @@ AT_WORK_MIN_SCORE = 0.7  # a weak box over the seat is someone behind the glass,
 # in-room test for non-cashier tracks
 NEAR_DIST = 2.5  # cashier widths from the seat
 MIN_NEAR_SEC = 1.5  # recall first: a short entry at the end of a clip must still count
+# Clarity needed to count as inside: relative to how clearly this camera sees the cashier (people behind the glass
+# are seen less clearly than people in the room), never above INROOM_SCORE_CAP nor below MIN_INROOM_SCORE.
 MIN_INROOM_SCORE = 0.6
+INROOM_SCORE_CAP = 0.8
+INROOM_SCORE_MARGIN = 0.1
 
 # a visit (visitor inside the room) starts/ends where the visitor is near and clearly seen, not through the glass
-VISIT_MIN_SCORE = 0.6
 VISIT_SCORE_WINDOW_SEC = 1.0
 VISIT_EDGE_SEC = 1.0  # a track touching the video start/end was already/still inside: keep that end untrimmed
 
@@ -183,9 +186,13 @@ def near_seconds(track: Track, wp: Workplace) -> tuple[float, float]:
     return len(near) * _sample_step(track), float(np.mean([p.score for p in near]))
 
 
-def _is_visitor(track: Track, wp: Workplace) -> bool:
+def inroom_score(anchor: Track) -> float:
+    return max(MIN_INROOM_SCORE, min(INROOM_SCORE_CAP, anchor.mean_score - INROOM_SCORE_MARGIN))
+
+
+def _is_visitor(track: Track, wp: Workplace, min_score: float = MIN_INROOM_SCORE) -> bool:
     secs, score = near_seconds(track, wp)
-    return secs >= MIN_NEAR_SEC and score >= MIN_INROOM_SCORE
+    return secs >= MIN_NEAR_SEC and score >= min_score
 
 
 def is_handoff(old: Track, new: Track, wp: Workplace) -> bool:
@@ -222,10 +229,12 @@ def _window_score(points: Sequence[TrackPoint], i: int) -> float:
     return sum(window) / len(window)
 
 
-def near_span(track: Track, wp: Workplace, duration: float | None = None) -> Track | None:
+def near_span(
+    track: Track, wp: Workplace, duration: float | None = None, min_score: float = MIN_INROOM_SCORE
+) -> Track | None:
     """The part of a visitor track between its first and last moment clearly inside, near the workplace."""
     pts = track.points
-    near = [i for i, p in enumerate(pts) if wp.distance(p.box) <= NEAR_DIST and _window_score(pts, i) >= VISIT_MIN_SCORE]
+    near = [i for i, p in enumerate(pts) if wp.distance(p.box) <= NEAR_DIST and _window_score(pts, i) >= min_score]
     if not near:
         return None
     first = 0 if track.t_start <= VISIT_EDGE_SEC else near[0]
@@ -233,10 +242,10 @@ def near_span(track: Track, wp: Workplace, duration: float | None = None) -> Tra
     return Track(track.track_id, pts[first:last + 1])
 
 
-def _classify(track: Track, cashier: list[Track], wp: Workplace) -> str:
+def _classify(track: Track, cashier: list[Track], wp: Workplace, min_score: float) -> str:
     if _is_cashier_again(track, cashier, wp):
         return "cashier"
-    return "visitor" if _is_visitor(track, wp) else "outside"
+    return "visitor" if _is_visitor(track, wp, min_score) else "outside"
 
 
 def _absorb_cashier_handoffs(cashier: list[Track], others: list[Track], wp: Workplace) -> list[Track]:
@@ -294,15 +303,16 @@ def assign_roles(tracks: Sequence[Track], duration: float | None = None) -> Role
     if anchor is None:
         return Roles(None, (), (), tuple(short))
     wp = workplace_of(anchor)
+    clarity = inroom_score(anchor)
     cashier, visitors, kinds = [anchor], [], {}
     for tr in sorted((t for t in long_enough if t is not anchor), key=lambda t: t.mean_score, reverse=True):
-        kinds[tr.track_id] = _classify(tr, cashier, wp)
+        kinds[tr.track_id] = _classify(tr, cashier, wp, clarity)
         {"cashier": cashier, "visitor": visitors}.get(kinds[tr.track_id], []).append(tr)
     undecided = [t for t in long_enough if kinds.get(t.track_id) in ("visitor", "outside")]
     remaining = {t.track_id for t in _absorb_cashier_handoffs(cashier, undecided, wp)}
     visitors = [v for v in visitors if v.track_id in remaining]
     rejected = short + [(tid, k) for tid, k in kinds.items() if k == "outside" and tid in remaining]
-    spans = [near_span(v, wp, duration) for v in merge_visitor_handoffs(visitors, wp)]
+    spans = [near_span(v, wp, duration, clarity) for v in merge_visitor_handoffs(visitors, wp)]
     roles = Roles(
         workplace=wp,
         cashier=tuple(_chain_cashier(cashier, wp)),
