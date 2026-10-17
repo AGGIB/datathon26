@@ -112,6 +112,7 @@ SETTLED_HEIGHT = (0.6, 1.35)  # box height relative to the usual one at the work
 WALK_SHIFT = 0.5  # sideways shift of the box centre (in widths) that means walking off, not bending over the desk
 MIN_OVERLAP_SEC = 2.0
 BEHIND_DIST = 1.3  # cashier widths from the seat
+BEHIND_DIST_AWAY_FROM_DESK = 2.0  # ... further is fine when the person is on the far side of the seat from the desk
 BEHIND_MIN_HEIGHT = 0.9  # standing person next to a seated cashier is at least about as tall
 BEHIND_MIN_SCORE = 0.8
 BEHIND_MAX_TOWARD_DESK = 0.8  # further than this toward the desk is the visitor side
@@ -248,10 +249,9 @@ def _overlap_events(visitors: Sequence[Track]) -> list[Event]:
 def _is_behind(p: TrackPoint, wp: Workplace) -> bool:
     if p.score < BEHIND_MIN_SCORE or (p.box[3] - p.box[1]) < BEHIND_MIN_HEIGHT * wp.height:
         return False
-    if wp.distance(p.box) > BEHIND_DIST:
-        return False
     toward = wp.toward_desk(p.box)
-    return toward is None or toward <= BEHIND_MAX_TOWARD_DESK
+    reach = BEHIND_DIST_AWAY_FROM_DESK if toward is not None and toward <= 0 else BEHIND_DIST
+    return wp.distance(p.box) <= reach and (toward is None or toward <= BEHIND_MAX_TOWARD_DESK)
 
 
 def _behind_events(visitors: Sequence[Track], wp: Workplace) -> list[Event]:

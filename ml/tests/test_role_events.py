@@ -172,3 +172,10 @@ def test_narrow_figure_at_the_seat_soon_after_walking_away_is_not_a_return():
     ev = extract_role_events(roles([cashier]), times(20), duration=20.0)
     [left] = kinds(ev, "cashier_left")
     assert left.t == 8.0 and left.t_end is None
+
+
+def test_person_further_behind_the_seat_away_from_the_desk_is_behind_cashier():
+    wp = Workplace(home=(60.0, 160.0), box=SEAT, width=40.0, height=60.0, signature=(), desk=(60.0, 100.0))
+    further_back = (50.0, 110.0, 90.0, 230.0)  # foot (70, 230): 1.77 widths from the seat, opposite to the desk
+    ev = extract_role_events(roles([trk(1, 0, 20, SEAT)], [trk(9, 5, 12, further_back)], wp=wp), times(20), 20.0)
+    assert [(e.t, e.t_end) for e in kinds(ev, "person_behind_cashier")] == [(5.0, 12.0)]
