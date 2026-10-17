@@ -600,6 +600,11 @@ def run(args):
                                                                       doc_registry, label_index, args.expected_count, audit))
         taxonomy["status"] = "checked"
     elif doc_types is not None:
+        for section, prefix, count in (("types", "Т", 17), ("additional_checks", "Д", 15)):
+            ids = [row["id"] for row in doc_types if row["id"].startswith(prefix)]
+            audit.count(len(ids), count, "docx/" + section)
+            audit.compare_keys(set(ids), {f"{prefix}{number:02}" for number in range(1, count + 1)},
+                               "docx/" + section + "/expected_ids")
         audit.count(len(doc_registry), args.expected_count, "docx_registry")
         doc_index = audit.index_names(doc_registry, "docx_registry")
         taxonomy = {"status": "checked", "types_count": sum(r["id"].startswith("Т") for r in doc_types),

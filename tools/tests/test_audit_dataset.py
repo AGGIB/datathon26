@@ -418,6 +418,27 @@ def test_taxonomy_only_and_report_only_supported(dataset, author_package):
     )
 
 
+@pytest.mark.parametrize("headings", ["missing", "wrong_ids"])
+def test_taxonomy_only_checks_generic_ids_even_with_a_valid_registry(dataset, headings):
+    document = Document()
+    if headings == "wrong_ids":
+        for prefix, count in (("Т", 17), ("Д", 15)):
+            for number in range(2, count + 2):
+                document.add_heading(f"{prefix}{number:02} Synthetic", 2)
+    table = document.add_table(rows=1, cols=4)
+    table.rows[0].cells[0].text = "Видео и метка"
+    for name in ("X-1", "X-2"):
+        table.add_row().cells[0].text = name
+    path = dataset[0] / "taxonomy-only.docx"
+    document.save(path)
+    code, report = invoke(dataset, "--taxonomy", path)
+    assert code == 1
+    assert report["taxonomy"]["registry_comparison"]["matched"] == 2
+    assert report["summary"]["issue_codes"]["id_set_mismatch"] == 2
+    if headings == "missing":
+        assert report["summary"]["issue_codes"]["unexpected_count"] == 2
+
+
 @pytest.mark.parametrize(
     "mutation,expected",
     [
