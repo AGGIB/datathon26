@@ -7,13 +7,16 @@ from ml.kb import (
     DRAFT_ENDING,
     FALLBACK_TEMPLATES,
     VERIFIED_ENDING,
+    VERIFIED_ENDING_NUMBER_DATE,
+    VERIFIED_ENDINGS,
     KBError,
     catalog,
     load_catalog,
     parse_catalog,
 )
 
-PR32_FIXTURE = Path(__file__).parent / "fixtures" / "kb_pr32_violations.yaml"
+# verbatim copy of main:kb/violations.yaml @2b5d7f9 (PR #32), the real catalog once branches meet
+MAIN_KB_FIXTURE = Path(__file__).parent / "fixtures" / "kb_main_violations.yaml"
 
 VERIFIED_RULE = {
     "document": "Правила осуществления кассовых операций",
@@ -69,16 +72,16 @@ def test_real_catalog_draft_types_carry_no_rule():
             assert vt.rule is None
 
 
-def test_pr32_catalog_loads_with_its_own_templates(caplog):
+def test_main_catalog_loads_with_its_own_templates(caplog):
     with caplog.at_level(logging.WARNING, logger="ml.kb"):
-        types = load_catalog(PR32_FIXTURE)
+        types = load_catalog(MAIN_KB_FIXTURE)
     assert len(types) == 27
     assert not errors(caplog)
     assert [vt.id for vt in types.values() if vt.rule is None] == ["computer_left_unlocked"]
     assert all("{observation}" in vt.template and vt.template not in FALLBACK_TEMPLATES.values()
                for vt in types.values())
     for vt in types.values():
-        assert vt.template.endswith(VERIFIED_ENDING if vt.rule else DRAFT_ENDING)
+        assert vt.template.endswith(VERIFIED_ENDINGS) if vt.rule else vt.template.endswith(DRAFT_ENDING)
 
 
 # --- rules ----------------------------------------------------------------------------------------
@@ -157,9 +160,9 @@ def test_missing_clause_drops_it_from_the_basis():
         # draft template citing rule fields
         (entry(status="draft", rule=EMPTY_RULE, template="На {t} с {observation} ({rule_document}). " + DRAFT_ENDING),
          "draft"),
-        # {rule_number_date} without number_date
-        (entry(template="На {t} с {observation} ({rule_number_date}). " + VERIFIED_ENDING,
-               rule={**VERIFIED_RULE, "number_date": None}), "verified"),
+        # number-and-date ending, but verification was withdrawn
+        (entry(template="На {t} с {observation}. " + VERIFIED_ENDING_NUMBER_DATE,
+               rule={**VERIFIED_RULE, "verified_by": None}), "draft"),
     ],
 )
 def test_template_that_does_not_match_the_norm_state_falls_back_with_error(raw_entry, expected, caplog):
@@ -180,6 +183,24 @@ def test_typo_in_observation_placeholder_is_reported_as_error(caplog):
 def test_number_date_placeholder_works_when_present():
     template = "На {t} с {observation} ({rule_number_date}). " + VERIFIED_ENDING
     assert one(entry(template=template)).template == template
+
+
+def test_number_and_date_ending_is_accepted_for_verified_types():
+    template = "На {t} с: {observation}. Это может указывать на нарушение. " + VERIFIED_ENDING_NUMBER_DATE
+    assert one(entry(template=template)).template == template
+
+
+def test_number_and_date_ending_drops_a_missing_clause():
+    template = "На {t} с: {observation}. " + VERIFIED_ENDING_NUMBER_DATE
+    vt = one(entry(template=template, rule={**VERIFIED_RULE, "clause": None}))
+    assert vt.template.endswith("Основание: {rule_number_date}.")
+
+
+@pytest.mark.parametrize("ending", [VERIFIED_ENDING_NUMBER_DATE, VERIFIED_ENDING])
+def test_number_date_placeholder_without_number_date_fails_fast(ending):
+    template = "На {t} с {observation}. " + ending.replace("{rule_document}", "{rule_document} ({rule_number_date})")
+    with pytest.raises(KBError, match="number_date"):
+        parse_catalog(doc(entry(template=template, rule={**VERIFIED_RULE, "number_date": None})))
 
 
 # --- structural errors fail fast -----------------------------------------------------------------------

@@ -8,7 +8,8 @@ from ml.assemble import MAX_VIOLATIONS, MIN_CONFIDENCE, assemble, clamp_time, de
 from ml.candidates import Candidate
 from ml.kb import DRAFT_ENDING, FALLBACK_TEMPLATES, RuleText, ViolationType, catalog, load_catalog
 
-PR32_FIXTURE = Path(__file__).parent / "fixtures" / "kb_pr32_violations.yaml"
+# verbatim copy of main:kb/violations.yaml @2b5d7f9 (PR #32), the real catalog once branches meet
+MAIN_KB_FIXTURE = Path(__file__).parent / "fixtures" / "kb_main_violations.yaml"
 RULE = RuleText(
     document="Правила осуществления кассовых операций",
     number_date="Постановление Правления НБРК от 29.11.2019 № 231",
@@ -225,7 +226,7 @@ def test_more_than_three_frames_are_trimmed():
 # --- every type of both catalogs ---------------------------------------------------------------------
 
 
-CATALOGS = {"main": dict(catalog()), "pr32": dict(load_catalog(PR32_FIXTURE))}
+CATALOGS = {"repo": dict(catalog()), "main_kb_fixture": dict(load_catalog(MAIN_KB_FIXTURE))}
 ALL_TYPES = [(name, type_id) for name, types in CATALOGS.items() for type_id in types]
 
 
@@ -239,10 +240,11 @@ def test_every_kb_type_assembles_into_valid_k1(catalog_name, type_id):
     rule = types[type_id].rule
     if rule:
         assert v["rule"] == rule.as_ref()
-        assert v["description"].endswith(f"Основание: {rule.document}, {rule.clause}.")
+        heads = [h for h in (rule.document, rule.number_date) if h]
+        assert any(v["description"].endswith(f"Основание: {head}, {rule.clause}.") for head in heads)
     else:
         assert "rule" not in v and v["description"].lower().endswith(DRAFT_ENDING.lower())
 
 
 def test_both_catalogs_are_covered():
-    assert len(CATALOGS["main"]) >= 17 and len(CATALOGS["pr32"]) == 27
+    assert len(CATALOGS["repo"]) >= 17 and len(CATALOGS["main_kb_fixture"]) == 27

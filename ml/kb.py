@@ -1,11 +1,12 @@
 """К3 reader: violation types from kb/violations.yaml, validated once and cached.
 
 The kb owns the wording; code only fills placeholders. A `description_template` in the contract format
-uses {observation} plus any of PLACEHOLDERS and ends with VERIFIED_ENDING (type with a verified norm) or
-DRAFT_ENDING (no verified norm, case-insensitive).
+uses {observation} plus any of PLACEHOLDERS and ends with one of VERIFIED_ENDINGS (type with a verified
+norm: the document title or, preferred by the lead, its number and date) or DRAFT_ENDING (no verified norm,
+case-insensitive).
 
-Failure policy: structural errors (bad yaml shape, unknown placeholder in a contract template) raise
-KBError at load, and the backend loads the catalog at startup, so a broken kb stops the boot. Problems that
+Failure policy: structural errors (bad yaml shape, unknown placeholder in a contract template,
+{rule_number_date} used while rule.number_date is empty) raise KBError at load, and the backend loads the catalog at startup, so a broken kb stops the boot. Problems that
 only concern one type's wording (ending does not match the current state of the norm, a typo such as
 {observaton}) are logged as ERROR and that type gets FALLBACK_TEMPLATES; jobs keep running. Templates not
 yet in the contract format (the generic «<что видно>» one) get the fallback with a warning. A type keeps its
@@ -36,6 +37,8 @@ _ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 PLACEHOLDERS = frozenset({"t", "observation", "rule_document", "rule_clause", "rule_number_date"})
 RULE_PLACEHOLDERS = frozenset({"rule_document", "rule_clause", "rule_number_date"})
 VERIFIED_ENDING = "Основание: {rule_document}, {rule_clause}."
+VERIFIED_ENDING_NUMBER_DATE = "Основание: {rule_number_date}, {rule_clause}."  # act type, number, date
+VERIFIED_ENDINGS = (VERIFIED_ENDING, VERIFIED_ENDING_NUMBER_DATE)
 DRAFT_ENDING = "Нормативное основание уточняется."
 # Generic wording keeps the caveat that kb templates carry: the requirement may not apply / may not exist.
 FALLBACK_TEMPLATES = MappingProxyType({
@@ -129,10 +132,9 @@ def _state_problem(template: str, names: set[str], rule: RuleText | None) -> str
         if names & RULE_PLACEHOLDERS:
             return "the template cites rule fields, but the type has no verified norm"
         return None
-    if not template.endswith(VERIFIED_ENDING):
-        return f"the type has a verified norm, so its template must end with «{VERIFIED_ENDING}»"
-    if "rule_number_date" in names and not rule.number_date:
-        return "the template uses {rule_number_date}, but rule.number_date is empty"
+    if not template.endswith(VERIFIED_ENDINGS):
+        return "the type has a verified norm, so its template must end with " + " or ".join(
+            f"«{ending}»" for ending in VERIFIED_ENDINGS)
     return None
 
 
@@ -162,6 +164,8 @@ def _parse_template(type_id: str, raw: Any, rule: RuleText | None) -> tuple[str,
             return _fallback(rule), False
         return _fallback(rule), True
     names = _structural_names(type_id, template)
+    if rule is not None and "rule_number_date" in names and not rule.number_date:
+        raise KBError(f"{type_id}: description_template uses {{rule_number_date}}, but rule.number_date is empty")
     problem = _state_problem(template, names, rule)
     if problem:
         log.error("kb: %s: %s — generic wording used for this type", type_id, problem)
