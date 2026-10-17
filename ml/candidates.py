@@ -36,5 +36,5 @@ class Candidate:
             raise ValueError("evidence_times must have 1..3 timestamps")
         if self.evidence_times[0] != self.t_peak:
             raise ValueError("the first evidence time must be t_peak")
-        if not self.observation.strip():
-            raise ValueError("observation must describe what is visible")
+        if not any(ch.isalpha() for ch in self.observation):  # "", "...", "—" would render as «На 1,5 с .»
+            raise ValueError("observation must describe what is visible in words")

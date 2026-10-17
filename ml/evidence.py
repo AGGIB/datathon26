@@ -131,8 +131,17 @@ def frames_for(candidate: Candidate, frames: Mapping[float, np.ndarray], duratio
 def render_candidates(
     video_path: Path | str, candidates: Sequence[Candidate], duration: float
 ) -> dict[Candidate, list[dict]]:
-    """Evidence for all candidates of a job from a single decode pass; times are clamped to `duration`."""
+    """Evidence for all candidates of a job from a single decode pass; times are clamped to `duration`.
+
+    If the pass itself fails, every candidate gets no frames (assemble then drops them with an ERROR log):
+    the job still finishes with whatever else it has instead of failing after the whole detection run.
+    """
     if not candidates:
         return {}
-    frames = frames_at(video_path, wanted_times(candidates, duration))
+    try:
+        frames = frames_at(video_path, wanted_times(candidates, duration))
+    except (ValueError, OSError, cv2.error):
+        log.exception("evidence: decode pass over %s failed, %d candidate(s) left without frames",
+                      Path(video_path).name, len(candidates))
+        return {c: [] for c in candidates}
     return {c: frames_for(c, frames, duration) for c in candidates}

@@ -159,6 +159,19 @@ def test_render_candidates_clamps_times_to_the_analysed_part(clip):
     assert rendered[0]["timestamp_sec"] == 2.0
 
 
+@pytest.mark.parametrize("error", [ValueError("cannot open video"), OSError("disk"), cv2.error("decoder")])
+def test_failed_decode_pass_drops_the_evidence_instead_of_the_job(clip, monkeypatch, caplog, error):
+    def broken(path, times):
+        raise error
+
+    monkeypatch.setattr(evidence, "frames_at", broken)
+    candidates = [cand(peak=1.0), cand(peak=3.0, type_id="door_left_open")]
+    with caplog.at_level("ERROR", logger="ml.evidence"):
+        rendered = render_candidates(clip, candidates, duration=4.0)
+    assert rendered == {c: [] for c in candidates}
+    assert "decode" in caplog.text
+
+
 def test_render_candidates_with_nothing_to_render_does_not_touch_the_video(tmp_path):
     assert render_candidates(tmp_path / "missing.mov", [], duration=1.0) == {}
 

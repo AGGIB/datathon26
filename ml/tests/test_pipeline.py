@@ -363,6 +363,19 @@ def test_evidence_for_all_violations_comes_from_one_decode_pass(clip, fake, monk
     assert len(calls) == 1 and {0.5, 2.0} <= set(calls[0])
 
 
+def test_failed_evidence_pass_drops_violations_but_finishes_the_job(clip, fake, monkeypatch, caplog):
+    capture_rules(monkeypatch, [one_candidate(t=0.5)])
+
+    def broken(path, times):
+        raise ValueError("cannot open video")
+
+    monkeypatch.setattr(evidence, "frames_at", broken)
+    with caplog.at_level("ERROR"):
+        result = pipeline.analyze(str(clip))
+    assert result == {"verdict": "no_violation", "violations": []}
+    assert {r.name for r in caplog.records if r.levelname == "ERROR"} >= {"ml.evidence", "ml.assemble"}
+
+
 # --- real model -------------------------------------------------------------------------------------
 
 
