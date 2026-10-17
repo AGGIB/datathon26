@@ -79,18 +79,18 @@ curl -s http://localhost:8000/api/v1/jobs/a1b2c3d4e5f6 \
   "verdict": "violation",
   "violations": [
     {
-      "type": "Оставление денег в лотке или на стойке без присмотра",
-      "timecode_sec": 42.5,
-      "description": "Купюры оставлены на клиентской полке без контроля.",
+      "type": "Возврат банкнот клиенту после проверки",
+      "timecode_sec": 22.0,
+      "description": "Кассир извлекает банкноты из машины и возвращает клиенту.",
       "rule": {
-        "document": "Постановление Правления НБРК № 144",
-        "clause": "п. 24",
-        "quote": "Купюры оставлены на клиентской полке без контроля.",
-        "url": "https://adilet.zan.kz/"
+        "document": "Постановление Правления НБРК от 29.11.2019 № 231 (рег. № 19680)",
+        "clause": "п. 59–61",
+        "quote": "Банкноты и монеты, имеющие признаки подделки, клиенту не возвращаются, сумма принятых банкнот и монет на банковский счет клиента не зачисляется.",
+        "url": "https://adilet.zan.kz/rus/docs/V1900019680"
       },
       "evidence_frames": [
         {
-          "timestamp_sec": 42.5,
+          "timestamp_sec": 22.0,
           "image_base64": "/9j/4AAQSkZJRgABAQ..."
         }
       ]
@@ -132,11 +132,21 @@ docker run --rm --network offline_net curlimages/curl:latest -s http://datathon-
 
 ---
 
-## Предотвращение засыпания и мониторинг (`scripts/keepalive.sh`)
+## Публичный HTTPS-туннель и мониторинг (`scripts/keepalive.sh`)
 
-Скрипт предотвращает переход macOS в режим сна (через `caffeinate`) и выполняет сквозной мониторинг публичного Cloudflare туннеля и локального сервиса `/health` каждые 5 минут:
+### Runbook запуска туннеля (Cloudflare Tunnel):
+Для предоставления внешнего HTTPS URL жюри запускается туннель к локальному uvicorn:
 ```bash
-./scripts/keepalive.sh https://usgs-transcripts-tactics-scott.trycloudflare.com/health 300
+# Запуск quick tunnel
+cloudflared tunnel --url http://127.0.0.1:8000
+# Для named tunnel (со стабильным доменом) используется:
+# cloudflared tunnel run <TUNNEL_NAME>
+```
+
+### Предотвращение засыпания и мониторинг:
+Скрипт `scripts/keepalive.sh` предотвращает переход macOS в режим сна (через `caffeinate`) и выполняет сквозной мониторинг публичного Cloudflare туннеля и локального сервиса `/health` каждые 5 минут:
+```bash
+./scripts/keepalive.sh https://usgs-transcripts-tactics-scott.trycloudflare.com/health 300 var/keepalive_health.log
 ```
 
 ---

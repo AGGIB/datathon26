@@ -351,4 +351,41 @@ def test_queue_timeout_marks_job_failed(client, tmp_path):
     assert "очереди" in res["error"]
 
 
+def test_timed_out_pipeline_holds_slot_until_thread_exits(tmp_path):
+    import threading
+    import time
+    from backend.app.runner import JobRunner
+
+    store = JobStore(tmp_path / "jobs")
+    pipeline_finish = threading.Event()
+
+    def slow_hanging_pipeline(video_path, on_progress=None, time_budget_sec=None):
+        pipeline_finish.wait(timeout=2.0)
+        return {"verdict": "no_violation", "violations": []}
+
+    # runner with workers=1, time_budget_sec=0.15s, soft_budget_sec=0.05s
+    runner = JobRunner(store=store, pipeline=slow_hanging_pipeline, workers=1, time_budget_sec=0.15, soft_budget_sec=0.05)
+
+    v1 = tmp_path / "v1.mov"
+    v1.write_bytes(b"dummy")
+    store.create("112233445566", v1, "v1.mov")
+    runner.submit("112233445566", v1)
+    runner.wait("112233445566", timeout=2.0)
+
+    # Job 1 has timed out and marked failed
+    j1 = store.get("112233445566")
+    assert j1["status"] == "failed"
+    assert "таймаут" in j1["error"]
+
+    # Concurrency guard: slot is retained until pipeline thread actually exits
+    assert runner._sem._value == 0
+
+    # Once pipeline finishes, slot is released
+    pipeline_finish.set()
+    time.sleep(0.1)
+    assert runner._sem._value == 1
+    runner.shutdown()
+
+
+
 

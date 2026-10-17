@@ -1,3 +1,4 @@
+import os
 import pytest
 
 from backend.app.config import Settings
@@ -25,7 +26,7 @@ def test_from_env_parses_inline_comments_and_exports(monkeypatch, tmp_path):
 
     env_file = tmp_path / "custom.env"
     env_file.write_text(
-        "API_KEYS=key1,key2 # inline comment\n"
+        "API_KEYS=\"key#1,key2\" # inline comment\n"
         "export WORKERS=3 # three workers\n"
         "export PIPELINE=mock # test mock\n"
         "# comment line\n"
@@ -33,9 +34,11 @@ def test_from_env_parses_inline_comments_and_exports(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     settings = Settings.from_env(env_path=env_file)
-    assert settings.api_keys == frozenset({"key1", "key2"})
+    assert settings.api_keys == frozenset({"key#1", "key2"})
     assert settings.workers == 3
     assert settings.pipeline == "mock"
+    # Ensure os.environ was NOT polluted
+    assert "WORKERS" not in os.environ
 
 
 def test_from_env_requires_keys(monkeypatch, tmp_path):

@@ -111,8 +111,10 @@ class JobRunner:
             hard_remaining = self._hard_timeout
 
         # Dual budgets: soft budget passed to pipeline, hard timeout enforced by watchdog
-        grace_sec = max(10.0, self._hard_timeout - self._soft_budget)
-        pipeline_budget = max(1.0, min(self._soft_budget, hard_remaining - grace_sec))
+        # Pipeline budget must never exceed soft_budget or available remaining time
+        grace_sec = min(10.0, self._hard_timeout * 0.1) if self._hard_timeout < 60 else max(10.0, self._hard_timeout - self._soft_budget)
+        available = max(0.001, hard_remaining - grace_sec)
+        pipeline_budget = min(self._soft_budget, available)
 
         # Concurrency guard: ensure active ML executions do not exceed workers
         if not self._sem.acquire(timeout=max(0.001, hard_remaining)):
@@ -127,19 +129,27 @@ class JobRunner:
 
         pipeline_result: list[dict[str, Any]] = []
         pipeline_exc: list[Exception] = []
+        slot_released = threading.Event()
+
+        def release_slot() -> None:
+            if not slot_released.is_set():
+                slot_released.set()
+                self._sem.release()
+
+        def target() -> None:
+            try:
+                res = self._pipeline(
+                    str(video_path),
+                    on_progress=on_progress,
+                    time_budget_sec=pipeline_budget,
+                )
+                pipeline_result.append(res)
+            except Exception as exc:  # noqa: BLE001
+                pipeline_exc.append(exc)
+            finally:
+                release_slot()
 
         try:
-            def target() -> None:
-                try:
-                    res = self._pipeline(
-                        str(video_path),
-                        on_progress=on_progress,
-                        time_budget_sec=pipeline_budget,
-                    )
-                    pipeline_result.append(res)
-                except Exception as exc:  # noqa: BLE001
-                    pipeline_exc.append(exc)
-
             thread = threading.Thread(target=target, name=f"pipe-{job_id}", daemon=True)
             thread.start()
             thread.join(timeout=hard_remaining)
@@ -157,6 +167,8 @@ class JobRunner:
                     stage="failed",
                     error="Превышено максимальное время обработки видео (таймаут)",
                 )
+                # Note: slot is intentionally NOT released here while the thread is still executing,
+                # preventing accumulation of concurrent heavy ML runs past workers limit.
                 return
 
             if pipeline_exc:
@@ -197,5 +209,6 @@ class JobRunner:
                 progress=1.0,
                 result=result.model_dump(mode="json", exclude_none=True),
             )
-        finally:
-            self._sem.release()
+        except Exception:
+            release_slot()
+            raise
