@@ -29,7 +29,7 @@ def test_private_paths_are_ignored(path):
 def test_pipeline_slow_marker_and_all_owned_tests_are_discovered():
     config = ConfigParser()
     config.read(ROOT / 'pytest.ini', encoding='utf-8')
-    assert set(config['pytest']['testpaths'].split()) == {'backend/tests', 'ml/tests', 'tests'}
+    assert {'backend/tests', 'ml/tests', 'tools/tests', 'tests'} <= set(config['pytest']['testpaths'].split())
     assert any(line.strip().startswith('slow:') for line in config['pytest'].get('markers', '').splitlines())
 
 
