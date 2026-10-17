@@ -135,3 +135,10 @@ def test_desk_is_where_objects_stay_put_near_the_seat():
     frames = [[laptop, passing_bag[i], far_tv] for i in range(10)]
     assert desk_point(frames, WP) == pytest.approx((160.0, 400.0))
     assert desk_point([[passing_bag[i]] for i in range(10)], WP) is None
+
+
+def test_near_span_starts_when_the_visitor_is_clearly_inside():
+    through_glass = trk(5, 0, 2, DESK_FAR_SIDE, score=0.62)  # behind the glass door, already close in the image
+    inside = trk(5, 2.5, 10, DESK_FAR_SIDE, score=0.9)
+    span = near_span(Track(5, through_glass.points + inside.points), WP)
+    assert 2.0 <= span.t_start <= 3.0 and span.t_end == 10.0

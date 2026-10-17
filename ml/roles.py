@@ -28,6 +28,10 @@ NEAR_DIST = 2.5  # cashier widths from the seat
 MIN_NEAR_SEC = 3.0
 MIN_INROOM_SCORE = 0.8
 
+# a visit (visitor inside the room) starts/ends where the visitor is near and clearly seen, not through the glass
+VISIT_MIN_SCORE = 0.8
+VISIT_SCORE_WINDOW_SEC = 1.0
+
 # mirrors / duplicates: weaker track with the same look that lives at the same time as a real one
 MIRROR_SHARE = 0.6
 MIRROR_APPEARANCE = 0.35
@@ -200,9 +204,16 @@ def merge_visitor_handoffs(visitors: Sequence[Track], wp: Workplace) -> list[Tra
     return merged
 
 
+def _window_score(points: Sequence[TrackPoint], i: int) -> float:
+    half = VISIT_SCORE_WINDOW_SEC / 2
+    window = [p.score for p in points if abs(p.t - points[i].t) <= half]
+    return sum(window) / len(window)
+
+
 def near_span(track: Track, wp: Workplace) -> Track | None:
-    """The part of a visitor track between its first and last moment near the workplace (inside the room)."""
-    near = [i for i, p in enumerate(track.points) if wp.distance(p.box) <= NEAR_DIST]
+    """The part of a visitor track between its first and last moment clearly inside, near the workplace."""
+    pts = track.points
+    near = [i for i, p in enumerate(pts) if wp.distance(p.box) <= NEAR_DIST and _window_score(pts, i) >= VISIT_MIN_SCORE]
     if not near:
         return None
     return Track(track.track_id, track.points[near[0]:near[-1] + 1])
