@@ -264,3 +264,25 @@ def test_left_items_wording(items, expected):
     smp = samples(0, 10) + samples(10.5, 20, people=0, items=frozenset(items))
     [c] = run([Event("cashier_left", 10.0, t_end=20.0)], smp)
     assert expected in c.observation
+
+
+# --- open states must start from a closed state (scene readings that are "on" from the first frame are artifacts) ---
+
+def test_safe_open_from_the_first_frame_is_not_reported():
+    smp = samples(0, 20, safe_open=0.9)
+    assert run([], smp) == []
+
+
+def test_door_open_from_the_first_frame_is_not_reported_when_leaving():
+    smp = samples(0, 10, door_open=0.9) + samples(10.5, 20, people=0, door_open=0.9)
+    assert run([Event("cashier_left", 10.0, t_end=20.0)], smp) == []
+
+
+def test_safe_opened_during_the_clip_is_reported_when_leaving():
+    smp = samples(0, 4) + samples(4.5, 10, safe_open=0.9) + samples(10.5, 20, people=0, safe_open=0.9)
+    assert "safe_left_open" in types(run([Event("cashier_left", 10.0, t_end=20.0)], smp))
+
+
+def test_unknown_state_before_does_not_count_as_closed():
+    smp = samples(0, 4, safe_open=None) + samples(4.5, 20, safe_open=0.9)
+    assert run([], smp) == []
