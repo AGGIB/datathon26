@@ -89,6 +89,28 @@ def test_render_evidence_clamps_times_beyond_video_end(clip):
         decode(f["image_base64"])
 
 
+def test_render_evidence_never_rounds_past_the_last_frame(tmp_path):
+    # 33 frames at 30 fps: last frame at 1.0667 s, which naive rounding turns into 1.1 s (no frame there)
+    path = tmp_path / "odd.mp4"
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30, (64, 48))
+    for _ in range(33):
+        writer.write(np.full((48, 64, 3), 128, dtype=np.uint8))
+    writer.release()
+    frames = render_evidence(path, [5.0])
+    assert len(frames) == 1
+    assert frames[0]["timestamp_sec"] <= 32 / 30
+
+
+def test_render_evidence_steps_back_when_seek_fails(clip, monkeypatch):
+    import ml.evidence as evidence
+
+    real_frame_at = evidence.frame_at
+    monkeypatch.setattr(evidence, "frame_at", lambda path, t: None if t > 2.0 else real_frame_at(path, t))
+    frames = render_evidence(clip, [2.4])
+    assert len(frames) == 1
+    assert frames[0]["timestamp_sec"] <= 2.0
+
+
 def test_render_evidence_dedupes_and_caps_at_three(clip):
     frames = render_evidence(clip, [1.0, 1.0, 2.0, 3.0, 3.5])
     assert [f["timestamp_sec"] for f in frames] == [1.0, 2.0, 3.0]

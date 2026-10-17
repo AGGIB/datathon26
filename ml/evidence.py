@@ -25,6 +25,8 @@ MAX_SIDE_PX = 1280
 JPEG_QUALITIES = (85, 70, 55, 40)
 DOWNSCALE_STEPS = (1.0, 0.75, 0.5, 0.35, 0.25)
 TIME_DECIMALS = 1
+SEEK_RETRIES = 2
+SEEK_STEP_BACK_SEC = 0.5
 
 BOX_COLOR = (0, 215, 255)  # BGR amber: readable on both dark floors and white desks
 OUTLINE_COLOR = (0, 0, 0)
@@ -82,13 +84,28 @@ def encode_jpeg_b64(frame: np.ndarray, max_bytes: int = MAX_FRAME_BYTES) -> str:
 
 
 def _clamp_times(times: Sequence[float], duration: float, fps: float) -> list[float]:
-    last = max(0.0, duration - 1.0 / fps)
+    """Round to the reported precision without ever landing after the last frame."""
+    scale = 10**TIME_DECIMALS
+    last = math.floor(max(0.0, duration - 1.0 / fps) * scale) / scale
     clamped: list[float] = []
     for t in times:
-        value = round(min(max(0.0, float(t)), last), TIME_DECIMALS)
+        value = min(max(0.0, round(float(t), TIME_DECIMALS)), last)
         if value not in clamped:
             clamped.append(value)
     return clamped[:MAX_FRAMES]
+
+
+def _read_frame(video_path: Path | str, t: float) -> tuple[float, np.ndarray] | None:
+    """Frame at t; some containers fail to seek near the end, so step back a little before giving up."""
+    for attempt in range(SEEK_RETRIES + 1):
+        at = round(max(0.0, t - attempt * SEEK_STEP_BACK_SEC), TIME_DECIMALS)
+        image = frame_at(video_path, at)
+        if image is not None:
+            return at, image
+        if at == 0.0:
+            break
+    log.warning("evidence: no frame near %.1fs in %s", t, Path(video_path).name)
+    return None
 
 
 def render_evidence(video_path: Path | str, times: Sequence[float], boxes: Sequence[Box] = ()) -> list[dict]:
@@ -96,11 +113,11 @@ def render_evidence(video_path: Path | str, times: Sequence[float], boxes: Seque
     info = probe(video_path)
     frames = []
     for t in _clamp_times(times, info.duration, info.fps):
-        image = frame_at(video_path, t)
-        if image is None:
-            log.warning("evidence: no frame at %.1fs in %s", t, Path(video_path).name)
+        found = _read_frame(video_path, t)
+        if found is None or any(f["timestamp_sec"] == found[0] for f in frames):
             continue
-        frames.append({"timestamp_sec": t, "image_base64": encode_jpeg_b64(draw_boxes(image, boxes))})
+        at, image = found
+        frames.append({"timestamp_sec": at, "image_base64": encode_jpeg_b64(draw_boxes(image, boxes))})
     return frames
 
 
