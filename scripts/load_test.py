@@ -10,6 +10,7 @@ import base64
 import concurrent.futures
 import io
 import json
+import math
 import os
 import sys
 import time
@@ -17,6 +18,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+
+def _is_valid_timestamp(val: object) -> bool:
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        return False
+    if not math.isfinite(val) or val < 0:
+        return False
+    return True
 
 
 def find_default_video() -> tuple[str, bytes]:
@@ -142,7 +151,7 @@ def validate_job_result(data: dict) -> tuple[bool, str]:
                 return False, f"violation[{idx}] must be a dict"
             if not v.get("type") or not isinstance(v["type"], str):
                 return False, f"violation[{idx}] missing valid 'type'"
-            if "timecode_sec" not in v or not isinstance(v["timecode_sec"], (int, float)) or v["timecode_sec"] < 0:
+            if "timecode_sec" not in v or not _is_valid_timestamp(v["timecode_sec"]):
                 return False, f"violation[{idx}] missing valid non-negative 'timecode_sec'"
             if not v.get("description") or not isinstance(v["description"], str):
                 return False, f"violation[{idx}] missing valid 'description'"
@@ -158,7 +167,7 @@ def validate_job_result(data: dict) -> tuple[bool, str]:
             for f_idx, frame in enumerate(frames):
                 if not isinstance(frame, dict):
                     return False, f"violation[{idx}].evidence_frames[{f_idx}] must be a dict"
-                if "timestamp_sec" not in frame or not isinstance(frame["timestamp_sec"], (int, float)) or frame["timestamp_sec"] < 0:
+                if "timestamp_sec" not in frame or not _is_valid_timestamp(frame["timestamp_sec"]):
                     return False, f"violation[{idx}].evidence_frames[{f_idx}] missing valid non-negative 'timestamp_sec'"
                 b64_str = frame.get("image_base64")
                 if not isinstance(b64_str, str) or not b64_str:
