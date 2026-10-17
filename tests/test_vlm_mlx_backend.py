@@ -4,6 +4,8 @@ import math
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from types import MappingProxyType
 
 import pytest
 
@@ -52,6 +54,8 @@ for line in sys.stdin:
         reply["extra"] = "unsafe"
     if mode == "bad_text":
         reply["text"] = {"not": "text"}
+    if mode == "wire":
+        reply["text"] = json.dumps(inference_request)
     if mode == "offline":
         reply["text"] = json.dumps({k: os.environ.get(k) for k in [
             "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_HUB_DISABLE_TELEMETRY", "DO_NOT_TRACK"]})
@@ -245,6 +249,32 @@ def test_process_start_failure_marks_backend_closed(tmp_path, monkeypatch):
     assert backend._closed and backend._process is None
 
 
+def test_optional_response_schema_roundtrips_without_changing_legacy_wire(backend_factory, inference_request):
+    backend = backend_factory('wire')
+    backend.validate(2)
+    schema = {'type': 'object', 'properties': {'answer': {'enum': ['synthetic']}}}
+    structured = replace(inference_request, response_schema=MappingProxyType(schema))
+    for item in (inference_request, structured, inference_request):
+        payload = json.loads(backend.infer(item, 2))
+        assert payload['prompt'] == inference_request.prompt
+        assert payload['frames'][0]['timestamp_s'] == 1.25
+        if item.response_schema is None:
+            assert set(payload) == {'id', 'prompt', 'frames'}
+        else:
+            assert set(payload) == {'id', 'prompt', 'frames', 'response_schema'}
+            assert payload['response_schema'] == schema
+
+
+@pytest.mark.parametrize('schema', [[], 'schema', True, {'description': 'x' * module.MAX_WIRE_BYTES}])
+def test_bad_or_oversized_schema_never_reaches_worker(backend_factory, inference_request, monkeypatch, schema):
+    backend = backend_factory()
+    backend.validate(2)
+    monkeypatch.setattr(backend, '_write', lambda *args: pytest.fail('invalid schema sent'))
+    with pytest.raises(ValueError):
+        backend.infer(replace(inference_request, response_schema=schema), 2)
+    assert backend._ready and not backend._closed
+
+
 FAKE_RUNTIME = r'''
 import json, os, sys, types
 from pathlib import Path
@@ -259,14 +289,36 @@ sys.modules["mlx"] = mlx
 sys.modules["mlx.core"] = core
 runtime = types.ModuleType("mlx_vlm")
 prompt_utils = types.ModuleType("mlx_vlm.prompt_utils")
-processor = SimpleNamespace(image_processor=SimpleNamespace(max_pixels=0, min_pixels=65536))
+processor = SimpleNamespace(image_processor=SimpleNamespace(max_pixels=0, min_pixels=65536), tokenizer=object())
+if mode == "processor_tokenizer": del processor.tokenizer
+structured = types.ModuleType("mlx_vlm.structured")
+compiled = []
+class SchemaProcessor:
+    def __init__(self, schema): self.schema = schema
+    def __call__(self, *args): return args[-1]
+def build(tokenizer, schema):
+    assert tokenizer is (processor.tokenizer if hasattr(processor, "tokenizer") else processor)
+    if mode in {"no_schema", "compile_failure"}: raise ValueError("synthetic compiler failure")
+    compiled.append(schema)
+    return SchemaProcessor(schema)
+structured.build_json_schema_logits_processor = build
+sys.modules["mlx_vlm.structured"] = structured
 def load(path, **kwargs):
     assert kwargs == {"trust_remote_code": False, "local_files_only": True, "strict": True}
     assert os.environ["HF_HUB_OFFLINE"] == "1"
     return object(), processor
 runtime.load = load
-runtime.generate = lambda model, processor, prompt, images, **kwargs: SimpleNamespace(
-    text=json.dumps({"prompt":prompt,"images":len(images),"max_pixels":processor.image_processor.max_pixels,"min_pixels":processor.image_processor.min_pixels}))
+def generate(model, processor, prompt, images, **kwargs):
+    assert kwargs.get("max_tokens") == 384 and kwargs.get("temperature") == 0.0 and kwargs.get("verbose") is False
+    schema = None
+    if "logits_processors" in kwargs:
+        assert len(kwargs["logits_processors"]) == 1 and isinstance(kwargs["logits_processors"][0], SchemaProcessor)
+        schema = kwargs["logits_processors"][0].schema
+    if mode == "no_schema": assert "logits_processors" not in kwargs
+    return SimpleNamespace(text=json.dumps({"prompt":prompt,"images":len(images),
+        "max_pixels":processor.image_processor.max_pixels,"min_pixels":processor.image_processor.min_pixels,
+        "schema":schema,"compile_count":len(compiled)}))
+runtime.generate = generate
 prompt_utils.apply_chat_template = lambda processor, config, prompt, **kwargs: prompt
 sys.modules["mlx_vlm"] = runtime
 sys.modules["mlx_vlm.prompt_utils"] = prompt_utils
@@ -309,3 +361,48 @@ def test_worker_load_flags_time_mapping_and_pixel_guard_without_mlx(
         assert result['prompt'].endswith(inference_request.prompt)
         assert result['images'] == 1 and result['max_pixels'] == side * side
         assert result['min_pixels'] <= result['max_pixels']
+
+
+@pytest.mark.parametrize('mode', ['valid', 'processor_tokenizer', 'no_schema', 'compile_failure'])
+def test_worker_builds_fresh_structured_processor_only_when_requested(
+        backend_factory, inference_request, monkeypatch, tmp_path, mode):
+    backend = backend_factory()
+    worker = tmp_path / 'fake_runtime.py'
+    worker.write_text(FAKE_RUNTIME)
+    monkeypatch.setattr(backend, '_command', lambda directory: [sys.executable, '-u', str(worker), str(directory), mode, '640'])
+    backend.validate(2)
+    schema = {'type': 'object', 'additionalProperties': False,
+              'properties': {'answer': {'enum': ['synthetic']}}, 'required': ['answer']}
+    if mode == 'compile_failure':
+        with pytest.raises(ModelUnavailable):
+            backend.infer(replace(inference_request, response_schema=schema), 2)
+        assert backend._closed
+        return
+    requests = [inference_request] if mode == 'no_schema' else [
+        replace(inference_request, response_schema=schema), replace(inference_request, response_schema=schema),
+        inference_request]
+    for index, item in enumerate(requests, 1):
+        output = json.loads(backend.infer(item, 2))
+        assert output['schema'] == (schema if item.response_schema else None)
+        assert output['compile_count'] == (0 if mode == 'no_schema' else min(index, 2))
+
+
+@pytest.mark.parametrize('schema', [None, [], 'schema', True])
+def test_worker_rejects_malformed_optional_schema_from_wire(
+        backend_factory, inference_request, monkeypatch, tmp_path, schema):
+    backend = backend_factory()
+    worker = tmp_path / 'fake_runtime.py'
+    worker.write_text(FAKE_RUNTIME)
+    monkeypatch.setattr(backend, '_command', lambda directory: [sys.executable, '-u', str(worker), str(directory), 'valid', '640'])
+    original = backend._write
+
+    def malformed(data, deadline):
+        payload = json.loads(data)
+        payload['response_schema'] = schema
+        original(json.dumps(payload).encode() + b'\n', deadline)
+
+    monkeypatch.setattr(backend, '_write', malformed)
+    backend.validate(2)
+    with pytest.raises(ModelUnavailable):
+        backend.infer(inference_request, 2)
+    assert backend._closed

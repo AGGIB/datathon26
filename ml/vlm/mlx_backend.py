@@ -4,6 +4,7 @@ No MLX/Transformers imports or downloads happen in this module. Construct and
 validate explicitly at startup; requests never load a model or restart a worker.
 """
 from contextlib import contextmanager
+from collections.abc import Mapping
 import json
 import math
 import os
@@ -136,7 +137,12 @@ class LocalMLXBackend:
                         or not math.isfinite(frame.timestamp_s) or frame.timestamp_s < 0):
                     raise ValueError("local frames required")
                 frames.append({"path": str(path), "timestamp_s": frame.timestamp_s})
-            data = json.dumps({"id": self._sequence, "prompt": request.prompt, "frames": frames},
+            payload = {"id": self._sequence, "prompt": request.prompt, "frames": frames}
+            if request.response_schema is not None:
+                if not isinstance(request.response_schema, Mapping):
+                    raise ValueError("response schema must be a mapping")
+                payload["response_schema"] = dict(request.response_schema)
+            data = json.dumps(payload,
                               ensure_ascii=False, allow_nan=False).encode() + b"\n"
             if len(data) > MAX_WIRE_BYTES:
                 raise ValueError("request too large")

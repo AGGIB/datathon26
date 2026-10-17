@@ -44,9 +44,11 @@ def main():
         send({"status": "ready"})
         while line := sys.stdin.buffer.readline(MAX_WIRE_BYTES + 1):
             request = _decode_wire(line)
-            if (set(request) != {"id", "prompt", "frames"} or type(request["id"]) is not int
+            if (set(request) not in ({"id", "prompt", "frames"}, {"id", "prompt", "frames", "response_schema"})
+                    or type(request["id"]) is not int
                     or request["id"] <= 0 or not isinstance(request["prompt"], str)
-                    or not isinstance(request["frames"], list) or not 1 <= len(request["frames"]) <= 24):
+                    or not isinstance(request["frames"], list) or not 1 <= len(request["frames"]) <= 24
+                    or ("response_schema" in request and not isinstance(request["response_schema"], dict))):
                 raise ValueError("invalid worker request")
             images = []
             try:
@@ -71,8 +73,15 @@ def main():
                 # Frame times come from the source contract, rather than model-written timestamps.
                 text = "Image order and source times:\n" + "\n".join(times) + "\n" + request["prompt"]
                 prompt = apply_chat_template(processor, config, text, num_images=len(images))
+                generation_options = {}
+                if "response_schema" in request:
+                    from mlx_vlm.structured import build_json_schema_logits_processor
+
+                    tokenizer = processor.tokenizer if hasattr(processor, "tokenizer") else processor
+                    generation_options["logits_processors"] = [
+                        build_json_schema_logits_processor(tokenizer, request["response_schema"])]
                 output = generate(model, processor, prompt, images, max_tokens=tokens, temperature=0.0,
-                                  verbose=False)
+                                  verbose=False, **generation_options)
                 text = output.text
                 if not isinstance(text, str):
                     raise ValueError("invalid generation result")
