@@ -23,7 +23,7 @@
     {
       "codex_code": "Т04",
       "id": "computer_left_unlocked",
-      "name": "Компьютер оставлен открытым после ухода сотрудника",
+      "name": "Включённый экран после ухода кассира",
       "catalog_section": "violations"
     },
     {
@@ -47,7 +47,7 @@
     {
       "codex_code": "Т08",
       "id": "second_client_served_alongside",
-      "name": "Обслуживание второго посетителя рядом с первым",
+      "name": "Второй посетитель у стола во время обслуживания",
       "catalog_section": "violations"
     },
     {
@@ -65,7 +65,7 @@
     {
       "codex_code": "Т11",
       "id": "stamps_and_book_left_on_desk",
-      "name": "Книга и штампы оставлены на столе после ухода",
+      "name": "Предметы, похожие на штампы и журнал, на столе после ухода кассира",
       "catalog_section": "violations"
     },
     {
@@ -89,7 +89,7 @@
     {
       "codex_code": "Т15",
       "id": "personal_items_on_desk",
-      "name": "Личные вещи на кассовом столе",
+      "name": "Предметы, похожие на личные вещи, на кассовом столе",
       "catalog_section": "violations"
     },
     {
@@ -101,7 +101,7 @@
     {
       "codex_code": "Т17",
       "id": "food_or_drink_at_workplace",
-      "name": "Еда или напиток на рабочем месте кассира",
+      "name": "Предметы, похожие на продукты питания, на рабочем столе",
       "catalog_section": "violations"
     },
     {
@@ -113,55 +113,55 @@
     {
       "codex_code": "Д02",
       "id": "loose_banknotes_issued_without_recount",
-      "name": "Выдача отдельных банкнот без требуемого пересчета",
+      "name": "Выдача отдельных банкнот без видимого пересчёта",
       "catalog_section": "violations"
     },
     {
       "codex_code": "Д03",
       "id": "mixed_receipts_across_documents",
-      "name": "Смешение приема по разным приходным документам",
+      "name": "Приём денег по нескольким приходным документам",
       "catalog_section": "violations"
     },
     {
       "codex_code": "Д04",
       "id": "receipt_not_visibly_issued",
-      "name": "Пропуск оформления или выдачи подтверждающего документа",
+      "name": "Приём или выдача наличных без видимого подтверждающего документа",
       "catalog_section": "violations"
     },
     {
       "codex_code": "Д06",
       "id": "damaged_bag_without_special_procedure",
-      "name": "Прием поврежденной инкассаторской сумки без специальной процедуры",
+      "name": "Приём сумки с видимыми признаками повреждения",
       "catalog_section": "violations"
     },
     {
       "codex_code": "Д08",
       "id": "cash_processed_without_required_controller",
-      "name": "Самостоятельная обработка наличности без требуемого контролера",
+      "name": "Обработка наличности без видимого второго работника",
       "catalog_section": "violations"
     },
     {
       "codex_code": "Д09",
       "id": "incorrect_sorting_or_final_packaging",
-      "name": "Неправильная сортировка или завершенная упаковка",
+      "name": "Сортировка или упаковка наличных денег",
       "catalog_section": "violations"
     },
     {
       "codex_code": "Д10",
       "id": "cassette_transferred_unsealed",
-      "name": "Передача подготовленной кассеты без закрытия и пломбирования",
+      "name": "Передача кассеты без видимого закрытия и пломбирования",
       "catalog_section": "violations"
     },
     {
       "codex_code": "Д11",
       "id": "vault_access_without_required_escort",
-      "name": "Нарушение доступа в кладовую или сейфовую комнату",
+      "name": "Вход в кладовую или сейфовую комнату без видимого сопровождения",
       "catalog_section": "violations"
     },
     {
       "codex_code": "Д13",
       "id": "personal_camera_phone_or_cash_in_cash_unit",
-      "name": "Личный смартфон с камерой или собственные деньги в кассовом узле",
+      "name": "Смартфон в руках кассира в кассовом узле",
       "catalog_section": "violations"
     },
     {

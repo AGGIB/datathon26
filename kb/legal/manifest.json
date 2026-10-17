@@ -33,12 +33,59 @@
       "canonical_url": "https://adilet.zan.kz/rus/docs/V1900019680",
       "download_url": "https://old.adilet.zan.kz/rus/docs/V1900019680",
       "checked_on": "2026-10-17",
-      "sha256": "46b670bb4eeadd7fd2105eb756a87586dc7724dc9abea6951b72609ccf6bdc98",
       "status_basis": "Карточка / история текущего adilet.zan.kz проверена планировщиком 17.10.2026; локально сверены заголовок и article переданного официального HTML.",
-      "source_html": "NBRK-231/2026-10-17/source.html",
       "text_file": "NBRK-231/2026-10-17/text.md",
       "portal_updated_on": "2026-10-16",
-      "documents_as_of": "2026-10-14"
+      "documents_as_of": "2026-10-14",
+      "retrieved_html_sha256": "46b670bb4eeadd7fd2105eb756a87586dc7724dc9abea6951b72609ccf6bdc98",
+      "text_sha256": "81bcb471a6cd4f3eb8071c95c73255c50301fa471e0d113eef7ccf97a12c028f",
+      "snapshot_anchor_ids": [
+        "z111",
+        "z112",
+        "z113",
+        "z114",
+        "z117",
+        "z123",
+        "z144",
+        "z150",
+        "z162",
+        "z163",
+        "z164",
+        "z168",
+        "z193",
+        "z196",
+        "z198",
+        "z204",
+        "z206",
+        "z208",
+        "z221",
+        "z222",
+        "z226",
+        "z258",
+        "z284",
+        "z287",
+        "z298",
+        "z299",
+        "z300",
+        "z301",
+        "z302",
+        "z444",
+        "z445",
+        "z446",
+        "z447",
+        "z454",
+        "z457",
+        "z490",
+        "z561",
+        "z562",
+        "z563",
+        "z564",
+        "z81",
+        "z84"
+      ],
+      "snapshot_format": "official_article_text_with_preserved_tables",
+      "anchor_verification": "historical_html_extraction_not_live_dom_validation",
+      "number_date": "Постановление Правления Национального Банка Республики Казахстан от 29.11.2019 № 231 (рег. № 19680)"
     },
     {
       "id": "NBRK-14",
@@ -65,12 +112,28 @@
       "canonical_url": "https://adilet.zan.kz/rus/docs/V2000020075",
       "download_url": "https://old.adilet.zan.kz/rus/docs/V2000020075",
       "checked_on": "2026-10-17",
-      "sha256": "99ff8ab9895c7699d0b5f423c13eed6539b0ef96cea17c2f6c1604e5991427ce",
       "status_basis": "Карточка / история текущего adilet.zan.kz проверена планировщиком 17.10.2026; локально сверены заголовок и article переданного официального HTML.",
-      "source_html": "NBRK-14/2026-10-17/source.html",
       "text_file": "NBRK-14/2026-10-17/text.md",
       "portal_updated_on": "2026-10-16",
-      "documents_as_of": "2026-10-14"
+      "documents_as_of": "2026-10-14",
+      "retrieved_html_sha256": "99ff8ab9895c7699d0b5f423c13eed6539b0ef96cea17c2f6c1604e5991427ce",
+      "text_sha256": "b06341c5d4e66985f4bbfedd40c94fb16e4cbf9c0a88e2cd5d5a7ae1811c91b8",
+      "snapshot_anchor_ids": [
+        "z121",
+        "z124",
+        "z125",
+        "z37",
+        "z38",
+        "z39",
+        "z49",
+        "z50",
+        "z69",
+        "z81",
+        "z90"
+      ],
+      "snapshot_format": "official_article_text_with_preserved_tables",
+      "anchor_verification": "historical_html_extraction_not_live_dom_validation",
+      "number_date": "Постановление Правления Национального Банка Республики Казахстан от 24.02.2020 № 14 (рег. № 20075)"
     },
     {
       "id": "KZ-SECURITY-LAW",
@@ -89,12 +152,19 @@
       "canonical_url": "https://adilet.zan.kz/rus/docs/Z000000085_",
       "download_url": "https://old.adilet.zan.kz/rus/docs/Z000000085_",
       "checked_on": "2026-10-17",
-      "sha256": "d992d73329e93e26b407cb461fd725aaf8ada539878b75397f07360a6aac0a13",
       "status_basis": "Карточка / история текущего adilet.zan.kz проверена планировщиком 17.10.2026; локально сверены заголовок и article переданного официального HTML.",
-      "source_html": "KZ-SECURITY-LAW/2026-10-17/source.html",
       "text_file": "KZ-SECURITY-LAW/2026-10-17/text.md",
       "portal_updated_on": "2026-10-16",
-      "documents_as_of": "2026-10-14"
+      "documents_as_of": "2026-10-14",
+      "retrieved_html_sha256": "d992d73329e93e26b407cb461fd725aaf8ada539878b75397f07360a6aac0a13",
+      "text_sha256": "963c095a892db91356f306071634ec512e61c8e192f5b560738923e8324ed9fd",
+      "snapshot_anchor_ids": [
+        "z27",
+        "z29",
+        "z53"
+      ],
+      "snapshot_format": "official_article_text_with_preserved_tables",
+      "anchor_verification": "historical_html_extraction_not_live_dom_validation"
     },
     {
       "id": "NBRK-49",
@@ -109,11 +179,7 @@
       "revision": "дата изменения акта в инфокарточке 30.06.2026",
       "status_basis": "Официальные HTML и инфокарточка проверены планировщиком; реквизиты и содержимое сверены локально.",
       "scope": "Обменные пункты, в том числе созданные уполномоченным банком; не любая банковская касса.",
-      "sha256": "06dc89596420de80049d2714d40610fc259539453f5c06a6eb76099b955ff0b1",
-      "source_html": "NBRK-49/2026-10-17/source.html",
       "text_file": "NBRK-49/2026-10-17/text.md",
-      "metadata_html": "NBRK-49/2026-10-17/metadata.html",
-      "metadata_sha256": "da9d7d4a6bd2f6fd9753200c718ca6516aa7c8e21b44c357690edf812313a91a",
       "metadata_url": "https://old.adilet.zan.kz/rus/docs/V1900018545/info",
       "reference_anchors": [
         "z1895",
@@ -124,7 +190,20 @@
         "z138"
       ],
       "portal_updated_on": "2026-10-16",
-      "documents_as_of": "2026-10-14"
+      "documents_as_of": "2026-10-14",
+      "retrieved_html_sha256": "06dc89596420de80049d2714d40610fc259539453f5c06a6eb76099b955ff0b1",
+      "retrieved_metadata_sha256": "da9d7d4a6bd2f6fd9753200c718ca6516aa7c8e21b44c357690edf812313a91a",
+      "text_sha256": "a3b84ec57639d4070af3e555d6bb82b8cee322accd512c9f388cd8040e29d474",
+      "snapshot_anchor_ids": [
+        "z138",
+        "z1885",
+        "z1895",
+        "z1896",
+        "z2010",
+        "z54"
+      ],
+      "snapshot_format": "official_article_text_with_preserved_tables",
+      "anchor_verification": "historical_html_extraction_not_live_dom_validation"
     },
     {
       "id": "KZ-AML",
@@ -139,11 +218,7 @@
       "revision": "дата изменения акта в инфокарточке 12.07.2026",
       "status_basis": "Официальные HTML и инфокарточка проверены планировщиком; реквизиты и содержимое сверены локально.",
       "scope": "Надлежащая проверка субъектами финансового мониторинга: системные и документальные сведения, исключения и допустимые способы. Не подменяет самостоятельную визуальную идентификацию по №231.",
-      "sha256": "415b50b6012229e5c05c4912024d69d67f2aa51bb89d8a3a51b2e85edcf64fc8",
-      "source_html": "KZ-AML/2026-10-17/source.html",
       "text_file": "KZ-AML/2026-10-17/text.md",
-      "metadata_html": "KZ-AML/2026-10-17/metadata.html",
-      "metadata_sha256": "2b1b67ac46fd5cf160e8faf557bd460d18ba28963d90cd1f865e5ac3ea99f3e1",
       "metadata_url": "https://old.adilet.zan.kz/rus/docs/Z090000191_/info",
       "reference_anchors": [
         "z65",
@@ -156,7 +231,23 @@
         "z245"
       ],
       "portal_updated_on": "2026-10-16",
-      "documents_as_of": "2026-10-14"
+      "documents_as_of": "2026-10-14",
+      "retrieved_html_sha256": "415b50b6012229e5c05c4912024d69d67f2aa51bb89d8a3a51b2e85edcf64fc8",
+      "retrieved_metadata_sha256": "2b1b67ac46fd5cf160e8faf557bd460d18ba28963d90cd1f865e5ac3ea99f3e1",
+      "text_sha256": "4c54b8d342c654dbb85efb2378cd4000b4555ed2dbbd6a2f821f926edc3ba850",
+      "snapshot_anchor_ids": [
+        "z226",
+        "z245",
+        "z260",
+        "z623",
+        "z63",
+        "z65",
+        "z66",
+        "z71"
+      ],
+      "snapshot_format": "official_article_text_with_preserved_tables",
+      "anchor_verification": "historical_html_extraction_not_live_dom_validation",
+      "number_date": "Закон Республики Казахстан от 28.08.2009 № 191-IV"
     },
     {
       "id": "ARDFM-53",
@@ -171,11 +262,7 @@
       "revision": "дата изменения акта в инфокарточке не указана",
       "status_basis": "Официальные HTML и инфокарточка проверены планировщиком; реквизиты и содержимое сверены локально.",
       "scope": "Информационные системы и внутренние требования информационной безопасности; системная неактивность и исключения п.72 не устанавливаются по одному виду экрана.",
-      "sha256": "90fcd9472810f481f38ce09a158036ddada2354d40af42196c32161c1fd2e4de",
-      "source_html": "ARDFM-53/2026-10-17/source.html",
       "text_file": "ARDFM-53/2026-10-17/text.md",
-      "metadata_html": "ARDFM-53/2026-10-17/metadata.html",
-      "metadata_sha256": "22753262a6ed26fd64b497baea32e6d5c28bde069cb64c6034b35fd1de01a773",
       "metadata_url": "https://old.adilet.zan.kz/rus/docs/V2600038336/info",
       "reference_anchors": [
         "z239",
@@ -190,7 +277,22 @@
       "documents_as_of": "2026-10-14",
       "publication_date": "2026-04-07",
       "calculated_effective_date": "2026-04-18",
-      "effective_date_basis": "Расчёт по правилу введения по истечении десяти календарных дней после первого официального опубликования; не поле инфокарточки."
+      "effective_date_basis": "Расчёт по правилу введения по истечении десяти календарных дней после первого официального опубликования; не поле инфокарточки.",
+      "retrieved_html_sha256": "90fcd9472810f481f38ce09a158036ddada2354d40af42196c32161c1fd2e4de",
+      "retrieved_metadata_sha256": "22753262a6ed26fd64b497baea32e6d5c28bde069cb64c6034b35fd1de01a773",
+      "text_sha256": "ae3a4e09227ba43fce7d3583a2e7768b69ed0db3f32299ec9aa2956317864a81",
+      "snapshot_anchor_ids": [
+        "z12",
+        "z132",
+        "z239",
+        "z240",
+        "z241",
+        "z242",
+        "z79",
+        "z89"
+      ],
+      "snapshot_format": "official_article_text_with_preserved_tables",
+      "anchor_verification": "historical_html_extraction_not_live_dom_validation"
     },
     {
       "id": "KZ-BANKS-2026",
@@ -205,11 +307,7 @@
       "revision": "дата изменения акта в инфокарточке 25.08.2026",
       "status_basis": "Официальные HTML и инфокарточка проверены планировщиком; реквизиты и содержимое сверены локально.",
       "scope": "Банковская тайна по действующим частям ст.69. Ст.69 п.19 вводится с 01.01.2027; п.7-2 ст.50 прежнего закона сохраняется до 01.01.2027 по ст.135 п.6 подп.2. Не считать старую ст.50 полностью отменённой.",
-      "sha256": "7116e8ab21b00cadc10cab2a457eb5fe3cab7b936e89153c638022bbc75684bc",
-      "source_html": "KZ-BANKS-2026/2026-10-17/source.html",
       "text_file": "KZ-BANKS-2026/2026-10-17/text.md",
-      "metadata_html": "KZ-BANKS-2026/2026-10-17/metadata.html",
-      "metadata_sha256": "e356106d955f4ad00549cf51543cef3a447842ecc1bcd78acdb32a501bbcbc2d",
       "metadata_url": "https://old.adilet.zan.kz/rus/docs/Z2600000258/info",
       "reference_anchors": [
         "z1620",
@@ -226,7 +324,24 @@
       "documents_as_of": "2026-10-14",
       "publication_date": "2026-01-17",
       "calculated_effective_date": "2026-03-19",
-      "effective_date_basis": "Расчёт общего введения по ст.135, с исключениями; не поле инфокарточки."
+      "effective_date_basis": "Расчёт общего введения по ст.135, с исключениями; не поле инфокарточки.",
+      "retrieved_html_sha256": "7116e8ab21b00cadc10cab2a457eb5fe3cab7b936e89153c638022bbc75684bc",
+      "retrieved_metadata_sha256": "e356106d955f4ad00549cf51543cef3a447842ecc1bcd78acdb32a501bbcbc2d",
+      "text_sha256": "698e7c33667ec6b61df85362e888a9621930dcb9f801fe8c454b154e6e8eabca",
+      "snapshot_anchor_ids": [
+        "z1620",
+        "z1621",
+        "z1630",
+        "z1631",
+        "z1632",
+        "z2919",
+        "z2922",
+        "z2961",
+        "z2962",
+        "z2963"
+      ],
+      "snapshot_format": "official_article_text_with_preserved_tables",
+      "anchor_verification": "historical_html_extraction_not_live_dom_validation"
     },
     {
       "id": "KZ-PERSONAL-DATA",
@@ -241,11 +356,7 @@
       "revision": "дата изменения акта в инфокарточке 14.09.2026",
       "status_basis": "Официальные HTML и инфокарточка проверены планировщиком; реквизиты и содержимое сверены локально.",
       "scope": "Конфиденциальность персональных данных ограниченного доступа и обязанности по защите. Учитываются согласие и иное законное основание; будущие изменения ст.9 с 01.01.2027 не применяются.",
-      "sha256": "dead8fe9131c1a9e1a75c3152299a246b118ce1a3c12695b20b243fd8412e1dd",
-      "source_html": "KZ-PERSONAL-DATA/2026-10-17/source.html",
       "text_file": "KZ-PERSONAL-DATA/2026-10-17/text.md",
-      "metadata_html": "KZ-PERSONAL-DATA/2026-10-17/metadata.html",
-      "metadata_sha256": "97168cf568ce7a5de8417dad98f851dc2679c3ba6df3a3b958e8a21fbacaa0f2",
       "metadata_url": "https://old.adilet.zan.kz/rus/docs/Z1300000094/info",
       "reference_anchors": [
         "z26",
@@ -256,7 +367,21 @@
         "z55"
       ],
       "portal_updated_on": "2026-10-16",
-      "documents_as_of": "2026-10-14"
+      "documents_as_of": "2026-10-14",
+      "retrieved_html_sha256": "dead8fe9131c1a9e1a75c3152299a246b118ce1a3c12695b20b243fd8412e1dd",
+      "retrieved_metadata_sha256": "97168cf568ce7a5de8417dad98f851dc2679c3ba6df3a3b958e8a21fbacaa0f2",
+      "text_sha256": "e912a2d3575412f02f37e311fba75ea745da1064f3436baff142a434c7bcf6d4",
+      "snapshot_anchor_ids": [
+        "z26",
+        "z27",
+        "z28",
+        "z53",
+        "z54",
+        "z549",
+        "z55"
+      ],
+      "snapshot_format": "official_article_text_with_preserved_tables",
+      "anchor_verification": "historical_html_extraction_not_live_dom_validation"
     }
   ]
 }

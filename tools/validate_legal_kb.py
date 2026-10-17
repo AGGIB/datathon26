@@ -6,6 +6,8 @@ import hashlib
 import json
 import re
 import sys
+import string
+from types import SimpleNamespace
 from collections import Counter
 from html.parser import HTMLParser
 from pathlib import Path
@@ -33,7 +35,7 @@ def normalize(text):
 
 
 class SourceText(HTMLParser):
-    """Читаем текст и якоря HTML; пробелы разделяют блочные элементы."""
+    """Извлекаем текст сохранённой разметки таблиц; это не проверка live DOM."""
 
     def __init__(self, article_only=True):
         super().__init__(convert_charrefs=True)
@@ -158,7 +160,7 @@ def local_file(base, relative, label):
 
 def check_anchors(anchors, parsed, label):
     for anchor in anchors:
-        require(anchor in parsed.anchors, f"{label}: якорь #{anchor} отсутствует в article source.html")
+        require(anchor in parsed.anchors, f"{label}: якорь #{anchor} отсутствует в историческом индексе snapshot_anchor_ids")
 
 
 def check_reference(entry, indexed, label):
@@ -173,8 +175,17 @@ def check_reference(entry, indexed, label):
     check_anchors([parsed_url.fragment], parsed, label)
     quote = normalize(string_field(entry, "quote", label))
     require(quote in parsed.text,
-            f"{label}: цитата не найдена в article {source['source_html']} (нормализация только whitespace/NBSP)")
+            f"{label}: цитата не найдена в текстовом snapshot (нормализация только whitespace/NBSP)")
     require(quote in body, f"{label}: цитата не найдена в локальном тексте {source['text_file']}")
+    introductions = {
+        ("NBRK-231", "z444"): "19. Кассовый работник банка осуществляет следующие действия:",
+        ("NBRK-231", "z445"): "19. Кассовый работник банка осуществляет следующие действия:",
+        ("NBRK-231", "z454"): "31. Кассовый работник банка осуществляет следующие действия:",
+        ("NBRK-14", "z121"): "16. Устройство помещения кассы (касс) соответствуют следующим параметрам:",
+    }
+    intro = introductions.get((sid, parsed_url.fragment))
+    if intro:
+        require(quote.startswith(intro), f"{label}: нужна полная вводная фраза нормы")
     return parsed_url.fragment
 
 
@@ -323,10 +334,26 @@ def validate_catalog(path, indexed, mapping):
         template = entry["description_template"]
         require("это может указывать" in template.casefold(), f"{tid}: нужен условный description_template")
         require(not forbidden.search(template), f"{tid}: категоричное / невидимое утверждение в description_template")
+        try:
+            placeholders = list(string.Formatter().parse(template))
+        except ValueError as error:
+            raise ValueError(f"{tid}: некорректный description_template: {error}") from error
+        names = set()
+        allowed = {"t", "observation", "rule_document", "rule_clause", "rule_number_date"}
+        for literal, name, spec, conversion in placeholders:
+            if name is not None:
+                require(name in allowed and not spec and not conversion,
+                        f"{tid}: недопустимый placeholder / формат в description_template")
+                names.add(name)
+        require({"t", "observation"} <= names, f"{tid}: description_template требует {{t}} и {{observation}}")
+        suffix = "Нормативное основание уточняется." if tid == "Т04" else "Основание: {rule_document}, {rule_clause}."
+        require(template.endswith(suffix), f"{tid}: неверное окончание description_template")
         if tid == "Т04":
+            require(not names & {"rule_document", "rule_clause", "rule_number_date"},
+                    "Т04: description_template не может ссылаться на отсутствующее rule")
             require("rule" not in entry and "related_rules" not in entry and entry["normative_basis"] == "pending",
                     "Т04: rule и related_rules должны отсутствовать; нормативное основание pending")
-            require(entry.get("note") == "нормативное основание уточняется" and entry["note"] in template,
+            require(entry.get("note") == "нормативное основание уточняется" and entry["note"] in template.casefold(),
                     "Т04: нужна фраза «нормативное основание уточняется»")
         else:
             require("rule" in entry and entry["normative_basis"] == "contextual_reference", f"{tid}: нужен rule с контекстом")
@@ -335,10 +362,18 @@ def validate_catalog(path, indexed, mapping):
             require(isinstance(related, list), f"{tid}: related_rules должен быть списком")
             known_refs = {(r["source_id"], r["url"], normalize(r["quote"])) for r in analytical[tid]["refs"]}
             for number, reference in enumerate([entry["rule"], *related]):
-                fields = {"document", "source_id", "clause", "url", "quote", "verified_by", "verified_on",
+                fields = {"document", "number_date", "source_id", "clause", "url", "quote", "verified_by", "verified_on",
                           "citation_status", "verification_scope"} | ({"usage"} if number else set())
-                require(isinstance(reference, dict) and set(reference) == fields, f"{tid}: неверные поля rule/related_rules")
-                string_field(reference, "document", tid)
+                require(isinstance(reference, dict) and fields <= set(reference) <= fields | {"clause_note"},
+                        f"{tid}: неверные поля rule/related_rules; обязательно number_date")
+                source = indexed.get(reference.get("source_id"), ({},))[0]
+                require(string_field(reference, "document", tid) == source.get("title")
+                        and string_field(reference, "number_date", tid) == source.get("number_date"),
+                        f"{tid}: нужны официальное название документа и number_date из manifest")
+                require(re.fullmatch(r"(?:п\.[0-9–-]+(?: подп\.[0-9–-]+)?|ст\.[0-9–-]+(?: п\.[0-9–-]+)?)", reference.get("clause", "")),
+                        f"{tid}: clause содержит только номер; оговорки перенесите в clause_note")
+                if 'clause_note' in reference:
+                    string_field(reference, 'clause_note', tid)
                 require(reference['verified_by'] == 'Codex (агент Олжаса), сверка официального текста'
                         and reference['verified_on'] == '2026-10-17'
                         and reference['citation_status'] == 'citation_verified'
@@ -350,7 +385,7 @@ def validate_catalog(path, indexed, mapping):
                 require((reference["source_id"], reference["url"], normalize(reference["quote"])) in known_refs,
                         f"{tid}: цитата не совпадает с проверенной привязкой; условия и исключения нельзя обрезать")
             expected_refs = {rule_key(r) for r in analytical[tid]["refs"]}
-            overrides = {"Т08": {("NBRK-231", "z111"), ("NBRK-231", "z113")},
+            overrides = {"Т05": {("NBRK-231", "z445"), ("NBRK-231", "z123")}, "Т08": {("NBRK-231", "z111"), ("NBRK-231", "z113")},
                          "Т09": {("NBRK-231", "z111")}, "Т10": {("NBRK-231", "z226")},
                          "Т11": {("NBRK-231", "z226")}, "Т16": {("NBRK-231", "z445"), ("NBRK-231", "z162")}}
             if tid in overrides:
@@ -361,7 +396,7 @@ def validate_catalog(path, indexed, mapping):
 
         heuristic = entry.get("team_heuristics")
         if heuristic is not None:
-            require(tid in {"Т06", "Т09", "Т11", "Т16"} and isinstance(heuristic, dict)
+            require(tid in {"Т06", "Т09", "Т11", "Т16", "Д13"} and isinstance(heuristic, dict)
                     and heuristic.get("source") == "teamlead_heuristic" and heuristic.get("is_normative") is False,
                     f"{tid}: порог / уверенность должны быть отдельной командной эвристикой")
         if tid in {"Т06", "Т09"}:
@@ -377,12 +412,12 @@ def validate_catalog(path, indexed, mapping):
             require(isinstance(heuristic, dict) and heuristic.get("thresholds") == [
                 {"branch_id": timed, "field": "visible_duration_seconds", "operator": ">=", "value": 5, "unit": "seconds"}],
                 f"{tid}: командный порог >=5 секунд нужен только для ветви {timed}")
-        if tid in {"Т11", "Т16"}:
+        if tid in {"Т11", "Т16", "Д13"}:
             require(isinstance(heuristic, dict) and heuristic.get("confidence") == ("medium" if tid == "Т11" else "low")
                     and heuristic.get("confidence_kind") == "qualitative_team_rating"
                     and heuristic.get("measured_probability") is False,
                     f"{tid}: confidence — качественная оценка команды, не измеренная вероятность")
-        primary = {"Т06": ("NBRK-14", "z121"), "Т08": ("NBRK-231", "z111"), "Т09": ("NBRK-231", "z111"),
+        primary = {"Т01": ("NBRK-231", "z204"), "Т05": ("NBRK-231", "z445"), "Т06": ("NBRK-14", "z49"), "Т08": ("NBRK-231", "z111"), "Т09": ("NBRK-231", "z111"),
                    "Т10": ("NBRK-231", "z226"), "Т11": ("NBRK-231", "z226"), "Т13": ("NBRK-14", "z49"),
                    "Т16": ("NBRK-231", "z445"), "Т17": ("NBRK-231", "z81")}
         if tid in primary:
@@ -390,14 +425,13 @@ def validate_catalog(path, indexed, mapping):
             require(rule_key(entry["rule"]) == (sid, indexed[sid][0]["canonical_url"] + "#" + anchor),
                     f"{tid}: неверное основное основание индикатора")
         if tid == "Т06":
-            require(any(r["source_id"] == "NBRK-14" and r["url"].endswith("#z49") for r in entry.get("related_rules", [])),
-                    "Т06: нужен дополнительный п.8 с допустимым погрузочным входом")
+            require(any(r["source_id"] == "NBRK-14" and r["url"].endswith("#z121") for r in entry.get("related_rules", [])),
+                    "Т06: нужен дополнительный временный п.16 подп.1 для двери отдельной кассы")
             require(entry.get("template_selection") == "one_matched_branch"
-                    and template == "{door_observation}; это может указывать на несоблюдение требования об изолированном входе."
                     and by_branch["open_while_working"].get("template_values") == {
-                        "door_observation": "Дверь кассового помещения остаётся открытой"}
+                        "observation": "Дверь кассового помещения остаётся открытой"}
                     and by_branch["leave_without_visible_locking"].get("template_values") == {
-                        "door_observation": "Запирание двери кассового помещения после ухода кассира не видно"},
+                        "observation": "Запирание двери кассового помещения после ухода кассира не видно"},
                     "Т06: шаблон должен выбирать только наблюдение одной сработавшей ветви")
         if tid == "Т13":
             require(not entry.get("related_rules") and entry.get("context_policy") == {
@@ -446,32 +480,30 @@ def validate(base):
         canonical = official_url(string_field(source, "canonical_url", sid), sid)
         require(not canonical.fragment, f"{sid}: canonical_url не должен содержать якорь")
         official_url(string_field(source, "download_url", sid), sid)
-        html_path = local_file(base, string_field(source, "source_html", sid), sid)
         text_path = local_file(base, string_field(source, "text_file", sid), sid)
-        expected = string_field(source, "sha256", sid)
-        require(re.fullmatch(r"[0-9a-f]{64}", expected), f"{sid}: некорректный SHA256")
-        raw = html_path.read_bytes()
-        actual = hashlib.sha256(raw).hexdigest()
-        require(actual == expected, f"{sid}: SHA256 не совпадает: ожидался {expected}, получен {actual}")
-        footer = parse_html(raw.decode("utf-8"), article_only=False).text
-        for field, pattern in (("documents_as_of", r"Документы по состоянию на:\s*(\d{2})\.(\d{2})\.(\d{4})"),
-                               ("portal_updated_on", r"Дата обновления:\s*(\d{2})\.(\d{2})\.(\d{4})")):
-            match = re.search(pattern, footer)
-            require(match is not None, f"{sid}: в футере не найдено поле {field}")
-            require(source.get(field) == f"{match[3]}-{match[2]}-{match[1]}", f"{sid}: {field} не совпадает с футером")
-        if any(key in source for key in ("metadata_html", "metadata_sha256", "metadata_url")):
-            metadata_path = local_file(base, string_field(source, "metadata_html", sid), sid)
+        historical_hash = string_field(source, "retrieved_html_sha256", sid)
+        require(re.fullmatch(r"[0-9a-f]{64}", historical_hash), f"{sid}: некорректный исторический SHA256 HTML")
+        expected = string_field(source, "text_sha256", sid)
+        require(re.fullmatch(r"[0-9a-f]{64}", expected), f"{sid}: некорректный text_sha256")
+        raw = text_path.read_bytes()
+        require(hashlib.sha256(raw).hexdigest() == expected, f"{sid}: text_sha256 не совпадает")
+        require(source.get("snapshot_format") == "official_article_text_with_preserved_tables"
+                and source.get("anchor_verification") == "historical_html_extraction_not_live_dom_validation",
+                f"{sid}: источник должен честно описывать текстовый snapshot и исторический индекс якорей")
+        if "retrieved_metadata_sha256" in source:
+            require(re.fullmatch(r"[0-9a-f]{64}", string_field(source, "retrieved_metadata_sha256", sid)),
+                    f"{sid}: некорректный исторический SHA256 инфокарточки")
             official_url(string_field(source, "metadata_url", sid), sid)
-            metadata_hash = string_field(source, "metadata_sha256", sid)
-            require(hashlib.sha256(metadata_path.read_bytes()).hexdigest() == metadata_hash,
-                    f"{sid}: SHA256 metadata.html не совпадает")
-        parsed = parse_html(raw.decode("utf-8"))
-        check_anchors(string_list(source, "reference_anchors", sid), parsed, sid)
-        text = text_path.read_text(encoding="utf-8")
+        for field in ("documents_as_of", "portal_updated_on"):
+            require(re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", string_field(source, field, sid)),
+                    f"{sid}: неверная историческая дата {field}")
+        text = raw.decode("utf-8")
         require(text.count(ARTICLE_MARKER) == 1, f"{sid}: отсутствует или повторён маркер полного текста")
         body = parse_html(text.split(ARTICLE_MARKER, 1)[1], article_only=False).text
-        require(body == parsed.text,
-                f"{sid}: полный текст text.md отличается от article source.html после нормализации whitespace/NBSP")
+        anchors = string_list(source, "snapshot_anchor_ids", sid)
+        require(len(anchors) == len(set(anchors)), f"{sid}: повторён ID исторического якоря")
+        parsed = SimpleNamespace(text=body, anchors=set(anchors))
+        check_anchors(string_list(source, "reference_anchors", sid), parsed, sid)
         indexed[sid] = (source, parsed, body)
 
     candidates = load_json(base / "candidates.json")
@@ -502,7 +534,7 @@ def validate(base):
         check_anchors(anchors, parsed, cid)
         quote = normalize(string_field(entry, "quote", cid))
         require(quote in parsed.text,
-                f"{cid}: цитата не найдена в article {source['source_html']} (нормализация только whitespace/NBSP)")
+                f"{cid}: цитата не найдена в текстовом snapshot (нормализация только whitespace/NBSP)")
         require(quote in body, f"{cid}: цитата не найдена в локальном тексте {source['text_file']}")
     mapping = validate_mapping(base, indexed)
     active, excluded = validate_catalog(base.parent / "violations.yaml", indexed, mapping)
@@ -520,7 +552,7 @@ def main():
     except (OSError, UnicodeError, ValueError) as error:
         print(f"ОШИБКА: {error}", file=sys.stderr)
         return 1
-    print(f"OK: источников {sources}, кандидатов {candidates}, аналитических типов {mappings}; индикаторов {active}, исключённых {excluded}. YAML, цитаты, якоря, SHA256, условия каталога и статусы проверены.")
+    print(f"OK: источников {sources}, кандидатов {candidates}, аналитических типов {mappings}; индикаторов {active}, исключённых {excluded}. YAML, цитаты, исторический индекс якорей, SHA256 текста, условия каталога и статусы проверены; live DOM/актуальность не проверялись.")
     return 0
 
 
