@@ -155,6 +155,14 @@ def test_draft_type_has_no_rule_and_says_basis_is_being_clarified():
     assert "adilet" not in v["description"]
 
 
+def test_unverified_types_can_be_switched_off(monkeypatch):
+    import ml.assemble as assemble_module
+
+    monkeypatch.setattr(assemble_module, "EMIT_UNVERIFIED_TYPES", False)
+    result = run([cand(type_id="computer_left_unlocked"), cand(type_id="door_left_open", t0=30.0, t1=31.0)])
+    assert [v["type_id"] for v in result["violations"]] == ["door_left_open"]
+
+
 def test_empty_observation_falls_back_to_kb_summary():
     text = describe(cand(obs="  "), TYPES["cash_left_on_desk"])
     assert text.startswith("На 10,0 с пачка оставлена на столе при уходе кассира.")

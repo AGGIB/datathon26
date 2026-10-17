@@ -19,6 +19,9 @@ MAX_VIOLATIONS = 5  # most confident ones are kept, then shown in time order
 MERGE_GAP_SEC = 1.0  # same-type candidates closer than this are one episode
 MAX_EVIDENCE_FRAMES = 3
 DRAFT_BASIS = "нормативное основание уточняется"
+# Types without a verified norm are reported without `rule` and with DRAFT_BASIS (lead's decision);
+# set to False to follow the stricter kb/violations.yaml note and drop them instead.
+EMIT_UNVERIFIED_TYPES = True
 
 RenderFrames = Callable[[Candidate], list[dict]]
 
@@ -26,10 +29,13 @@ RenderFrames = Callable[[Candidate], list[dict]]
 def _known(candidates: Iterable[Candidate], types: Mapping[str, ViolationType]) -> list[Candidate]:
     known = []
     for c in candidates:
-        if c.type_id in types:
-            known.append(c)
-        else:
+        vtype = types.get(c.type_id)
+        if vtype is None:
             log.warning("assemble: unknown type_id %r from rules (t=%.1fs) dropped", c.type_id, c.t_peak)
+        elif vtype.rule is None and not EMIT_UNVERIFIED_TYPES:
+            log.info("assemble: %s has no verified norm, dropped (t=%.1fs)", c.type_id, c.t_peak)
+        else:
+            known.append(c)
     return known
 
 
