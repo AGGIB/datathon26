@@ -26,10 +26,9 @@ from . import rules
 from .assemble import assemble
 from .candidates import Candidate
 from .detect import INPUT_SIZE, Detection
-from .events import extract_events
 from .evidence import render_candidates
 from .kb import ViolationType, catalog
-from .perception import SAMPLE_FPS, Perception, perceive
+from .perception import SAMPLE_FPS, Perception, analyze_frames, perceive
 from .shared_detector import CALIBRATION_FRAMES, SharedDetector
 from .video import VideoInfo, frames_at, probe
 
@@ -107,14 +106,19 @@ _SHARED = SharedDetector()
 
 
 def _truncate(perception: Perception, n_frames: int) -> Perception:
-    """Perception of the analysed prefix only, so rules do not read the missing part as an empty room."""
+    """Perception of the analysed prefix only, so rules do not read the missing part as an empty room.
+
+    Tracks, roles and all events (role-aware ones included) are recomputed on the prefix (< 100 ms).
+    """
     frames = perception.frames[:n_frames]
     info = perception.info
     t_cut = frames[-1].t if frames else 0.0
     cut_info = dataclasses.replace(info, frame_count=min(info.frame_count, math.floor(t_cut * info.fps) + 1))
-    tracks = tuple(tr for tr in perception.tracks if tr.t_end <= t_cut)
-    events = tuple(extract_events(tracks, duration=cut_info.duration))
-    return dataclasses.replace(perception, info=cut_info, frames=frames, tracks=tracks, events=events)
+    scene = analyze_frames(frames, cut_info.duration, perception.sample_fps)
+    return dataclasses.replace(
+        perception, info=cut_info, frames=frames, tracks=scene.roles.in_room, events=scene.events,
+        roles=scene.roles, all_tracks=scene.all_tracks,
+    )
 
 
 def _finalize(perception: Perception, guard: _BudgetedDetector, plan: SamplingPlan) -> Perception:
@@ -151,6 +155,7 @@ def _perceive(video_path: str, info: VideoInfo, time_budget_sec: float | None, s
     perception = perceive(
         video_path, guard, sample_fps=plan.sample_fps,
         on_progress=lambda p, _stage: report(PROGRESS_DETECT_END * p, "detect"),
+        input_size=plan.input_size,
     )
     log.info("pipeline: %d frames detected in %.1fs", guard.processed, perception.elapsed_sec)
     return _finalize(perception, guard, plan)

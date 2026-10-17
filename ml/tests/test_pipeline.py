@@ -119,7 +119,7 @@ def test_plan_keeps_full_rate_when_it_fits():
 
 
 def test_plan_lowers_rate_before_shrinking_input():
-    cost_at, _ = costs(0.3, 0.17)
+    cost_at, _ = costs(0.35, 0.17)
     plan = pipeline.plan_sampling(142.5, 185.0, cost_at)
     assert plan.input_size == INPUT_SIZE
     assert pipeline.SAFE_MIN_FPS <= plan.sample_fps < pipeline.MAX_SAMPLE_FPS
@@ -392,3 +392,22 @@ def test_real_video_end_to_end(monkeypatch):
     frame = parsed.violations[0].evidence_frames[0]
     assert len(frame.image_base64) <= 150 * 1024
     assert elapsed < 200.0
+
+
+def test_truncated_perception_keeps_role_events_of_the_analysed_prefix():
+    from ml.perception import FrameObjects, analyze_frames
+    from ml.video import VideoInfo
+
+    seat = (100.0, 300.0, 200.0, 500.0)
+    frames = tuple(
+        FrameObjects(round(i / 3, 3), (Detection(seat, 0.9, "person"),) if i / 3 <= 10 else (), ((0.5, 0.5),)
+                     if i / 3 <= 10 else ())
+        for i in range(3 * 30 + 1)
+    )
+    info = VideoInfo(fps=30.0, frame_count=901, width=300, height=600)
+    scene = analyze_frames(frames, info.duration, 3.0)
+    full = Perception(info, frames, scene.roles.in_room, scene.events, 1.0, scene.roles, scene.all_tracks, 3.0)
+    cut = pipeline._truncate(full, n_frames=3 * 16 + 1)  # analysed up to 16 s
+    assert [e.t for e in cut.events if e.kind == "cashier_left"] == [10.0]
+    assert cut.roles is not None and cut.roles.cashier_ids and cut.info.duration <= 16.1
+    assert all(p.t <= 16.0 for tr in cut.all_tracks for p in tr.points)
