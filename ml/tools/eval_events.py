@@ -13,6 +13,7 @@ for a cashier leaving: from standing up / starting to leave to walking away from
 """
 
 import argparse
+import functools
 import logging
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -194,6 +195,7 @@ def cached_source(fps: float, build: bool) -> EventSource:
 
         return Detector()
 
+    @functools.cache
     def source(name: str) -> Sequence[Event]:
         cached = det_cache.load_or_build(videos[name], CACHE_FPS, factory if build else None)
         frames = [

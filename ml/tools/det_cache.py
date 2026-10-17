@@ -106,10 +106,12 @@ def build(video_path: Path, detector, fps: float, cache_dir: Path = CACHE_DIR) -
 
 
 def load(path: Path, name: str = "") -> CachedVideo:
-    z = np.load(path)
+    with np.load(path) as npz:
+        z = {k: npz[k] for k in npz.files}  # NpzFile decompresses on every item access: read each array once
     fps, count, width, height, sample_fps, elapsed = z["meta"].tolist()
     labels = [str(x) for x in z["labels"]]
-    crop_of = {int(r): z["crops"][i] for i, r in enumerate(z["crop_row"])}
+    crops = z["crops"]
+    crop_of = {int(r): crops[i] for i, r in enumerate(z["crop_row"])}
     per_frame: list[list[tuple[Detection, np.ndarray | None]]] = [[] for _ in z["times"]]
     for row, (fi, box, score, li) in enumerate(zip(z["det_frame"], z["det_box"], z["det_score"], z["det_label"])):
         det = Detection(box=tuple(float(v) for v in box), score=float(score), label=labels[int(li)])
