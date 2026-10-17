@@ -8,10 +8,11 @@ import { ViolationCard } from './ViolationCard';
 interface ResultScreenProps {
   file: File;
   result: AnalysisResult;
+  isMock?: boolean;
   onReset: () => void;
 }
 
-export function ResultScreen({ file, result, onReset }: ResultScreenProps) {
+export function ResultScreen({ file, result, isMock = false, onReset }: ResultScreenProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [videoUrl, setVideoUrl] = useState('');
   const [duration, setDuration] = useState(0);
@@ -39,7 +40,9 @@ export function ResultScreen({ file, result, onReset }: ResultScreenProps) {
     <>
       <section className={`verdict ${hasViolations ? 'warning' : 'clear'}`} aria-live="polite">
         <div>
-          <p className="eyebrow">{IS_DEMO ? 'Пример результата' : 'Проверка завершена'}</p>
+          <p className="eyebrow">
+            {IS_DEMO || isMock ? 'Пример результата' : 'Проверка завершена'}
+          </p>
           <h2>{result.verdict}</h2>
           <p>
             {hasViolations

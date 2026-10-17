@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { getPipelineMode } from './api';
 import { ParticleBackground } from './components/ParticleBackground';
 import { ResultScreen } from './components/ResultScreen';
 import { UploadScreen } from './components/UploadScreen';
@@ -11,7 +12,17 @@ const STEPS = ['Загрузка записи', 'Обработка', 'Резу�
 export default function App() {
   const analysis = useAnalysis();
   const [particlesEnabled, setParticlesEnabled] = useState(true);
+  const [pipelineMode, setPipelineMode] = useState<'mock' | 'real'>();
   const currentStep = analysis.phase === 'done' ? 2 : analysis.isBusy ? 1 : 0;
+
+  useEffect(() => {
+    if (IS_DEMO) return;
+    const controller = new AbortController();
+    void getPipelineMode(controller.signal).then((mode) => {
+      if (!controller.signal.aborted) setPipelineMode(mode);
+    });
+    return () => controller.abort();
+  }, []);
 
   return (
     <>
@@ -26,7 +37,15 @@ export default function App() {
         </a>
         <div className="header-meta">
           <span className="project-label">Datathon 26 · Прототип</span>
-          <span className="environment">{IS_DEMO ? 'Демо' : 'API настроен'}</span>
+          <span className="environment">
+            {IS_DEMO
+              ? 'Локальное демо'
+              : pipelineMode === 'mock'
+                ? 'API · mock'
+                : pipelineMode === 'real'
+                  ? 'API · ML'
+                  : 'API настроен'}
+          </span>
         </div>
       </header>
 
@@ -72,6 +91,13 @@ export default function App() {
           <aside className="demo-banner">
             <strong>Демонстрация интерфейса.</strong> Видео остаётся на устройстве. Результаты
             вымышлены и показывают возможности просмотра.
+          </aside>
+        )}
+
+        {!IS_DEMO && pipelineMode === 'mock' && (
+          <aside className="demo-banner">
+            <strong>Сервер работает в mock-режиме.</strong> Результаты заглушки не являются
+            ML-анализом видео.
           </aside>
         )}
 
@@ -125,7 +151,12 @@ export default function App() {
         )}
 
         {analysis.phase === 'done' && analysis.result && analysis.file && (
-          <ResultScreen file={analysis.file} result={analysis.result} onReset={analysis.reset} />
+          <ResultScreen
+            file={analysis.file}
+            result={analysis.result}
+            isMock={pipelineMode === 'mock'}
+            onReset={analysis.reset}
+          />
         )}
 
         <footer>
