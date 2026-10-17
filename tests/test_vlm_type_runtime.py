@@ -503,6 +503,7 @@ def test_pipeline_preload_verification_flag_requires_explicit_discovery_opt_in(
     seen=[]
     monkeypatch.setenv('ML_VLM_DISCOVERY',discovery_flag)
     monkeypatch.setenv('ML_VLM_VERIFY_ACTIONS',verify_flag)
+    monkeypatch.delenv('ML_VLM_COMPACT_VERIFY_ACTIONS',raising=False)
     monkeypatch.setenv('ML_VLM_MODEL','scripted-model')
     monkeypatch.setenv('ML_VLM_PYTHON','scripted-python')
     monkeypatch.setattr(runtime,'configure_discovery',lambda **kwargs: seen.append(kwargs) or True)
@@ -510,7 +511,7 @@ def test_pipeline_preload_verification_flag_requires_explicit_discovery_opt_in(
     if expected is None:
         assert not seen
     else:
-        assert seen==[{'model_path':'scripted-model','python_executable':'scripted-python','verify_actions':expected}]
+        assert seen==[{'model_path':'scripted-model','python_executable':'scripted-python','verify_actions':expected,'compact_verify_actions':False}]
 
 
 @pytest.mark.parametrize('proposal_action,object_kind,expected_calls,expected_addition',[
@@ -572,3 +573,135 @@ def test_actual_owned_v5_verifier_and_shared_budget_preserve_cv_without_model_or
     assert raw.validated==[180]
     runtime.configure_discovery()
     assert raw.closed==1
+
+
+@pytest.fixture
+def scripted_compact_module(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    module=ModuleType('ml.vlm.compact_verified_action_backend')
+    module.DECODER_POLICY='scripted_compact_blind_policy'
+    module.constructed=[]
+    class Compact:
+        def __init__(self,inner,*,catalog):
+            self.inner,self.types=inner,catalog
+            module.constructed.append(self)
+        def validate(self,timeout_s):
+            self.inner.validate(timeout_s)
+        def close(self):
+            self.inner.close()
+        def infer_with_budget(self,request,budget):
+            assert budget.claim()
+            return self.inner.infer(request,budget.remaining())
+    module.CompactVerifiedActionBackend=Compact
+    monkeypatch.setitem(sys.modules,module.__name__,module)
+    return module
+
+
+@pytest.mark.parametrize('legacy',[False,True])
+def test_owned_compact_precedes_legacy_single_raw_lifecycle_and_no_job_startup(
+        monkeypatch,scripted_compact_module,legacy):
+    from ml import kb
+    from ml.vlm import action_backend,mlx_backend,verified_action_backend
+
+    types=catalog()
+    raw=OwnedScriptedActions('{"findings":[]}')
+    created=[]
+    def other_wrapper(*args,**kwargs):
+        pytest.fail('compact must wrap raw worker exactly once')
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: created.append(True) or raw)
+    monkeypatch.setattr(kb,'catalog',lambda: types)
+    monkeypatch.setattr(verified_action_backend,'VerifiedActionBackend',other_wrapper)
+    monkeypatch.setattr(action_backend,'ActionContrastBackend',other_wrapper)
+    assert runtime.configure_discovery(model_path='scripted',python_executable='scripted',
+                                       compact_verify_actions=True,verify_actions=legacy,frame_source=ScriptedFrames())
+    config=runtime._configuration
+    assert config.backend is scripted_compact_module.constructed[0] and config.backend.inner is raw
+    assert config.backend.types is types and config.max_calls==4 and config.owned
+    original=candidate()
+    for _ in range(2):
+        assert runtime.augment_types('scripted.mp4',[original],types,duration_sec=20.,deadline=None)[0] is original
+    assert len(raw.requests)==2 and created==[True] and raw.validated==[180]
+    runtime.configure_discovery()
+    assert raw.closed==1
+
+
+def test_injected_compact_declares_four_calls_without_wrapping_or_taking_ownership(
+        monkeypatch,scripted_compact_module):
+    from ml import kb
+    from ml.vlm import mlx_backend
+
+    raw=OwnedScriptedActions('{"findings":[]}')
+    def unexpected(*args,**kwargs):
+        pytest.fail('injected backend is already caller prepared')
+    monkeypatch.setattr(scripted_compact_module,'CompactVerifiedActionBackend',unexpected)
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',unexpected)
+    monkeypatch.setattr(kb,'catalog',unexpected)
+    assert runtime.configure_discovery(backend=raw,compact_verify_actions=True)
+    assert runtime._configuration.backend is raw and not runtime._configuration.owned
+    observed=[]
+    def discover(*args,**kwargs):
+        observed.append((kwargs['backend'],kwargs['budget'].max_calls))
+        return SimpleNamespace(added_candidates=(),status='completed',calls_used=0)
+    monkeypatch.setattr(runtime,'discover_types',discover)
+    original=candidate()
+    assert runtime.augment_types('scripted.mp4',[original],{},duration_sec=20.,deadline=None)==[original]
+    assert observed==[(raw,4)] and raw.validated==[180]
+    runtime.configure_discovery()
+    assert raw.closed==0
+
+
+@pytest.mark.parametrize('invalid',[0,1,None,'1'])
+def test_compact_flag_requires_bool_before_existing_configuration_is_closed(invalid):
+    raw=OwnedScriptedActions('{"findings":[]}')
+    assert runtime.configure_discovery(backend=raw)
+    before=runtime._configuration
+    with pytest.raises(ValueError,match='compact_verify_actions must be boolean'):
+        runtime.configure_discovery(backend=object(),compact_verify_actions=invalid)
+    assert runtime._configuration is before and raw.closed==0 and raw.validated==[180]
+
+
+@pytest.mark.parametrize('stage',['catalog','wrapper','validate'])
+def test_owned_compact_startup_failure_closes_raw_and_stays_unavailable(
+        monkeypatch,scripted_compact_module,stage):
+    from ml import kb
+    from ml.vlm import mlx_backend
+
+    raw=OwnedScriptedActions('{"findings":[]}')
+    created=[]
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: created.append(True) or raw)
+    def fail(*args,**kwargs):
+        raise RuntimeError('scripted compact startup failure')
+    if stage=='catalog':
+        monkeypatch.setattr(kb,'catalog',fail)
+    elif stage=='wrapper':
+        monkeypatch.setattr(scripted_compact_module,'CompactVerifiedActionBackend',fail)
+    else:
+        monkeypatch.setattr(raw,'validate',fail)
+    assert not runtime.configure_discovery(model_path='scripted',python_executable='scripted',compact_verify_actions=True)
+    assert raw.closed==1 and runtime._configuration is None
+    for _ in range(2):
+        original=candidate()
+        assert runtime.augment_types('scripted.mp4',[original],{},duration_sec=20.,deadline=None)==[original]
+    assert created==[True] and not raw.requests
+
+
+@pytest.mark.parametrize('discovery,compact,expected',[
+    ('1','1',True),('1','true',False),('1','0',False),('0','1',None),('true','1',None),
+])
+def test_pipeline_compact_environment_requires_exact_explicit_discovery_opt_in(
+        monkeypatch,discovery,compact,expected):
+    from ml import pipeline
+
+    observed=[]
+    monkeypatch.setenv('ML_VLM_DISCOVERY',discovery)
+    monkeypatch.setenv('ML_VLM_COMPACT_VERIFY_ACTIONS',compact)
+    monkeypatch.setenv('ML_VLM_VERIFY_ACTIONS','1')
+    monkeypatch.setattr(runtime,'configure_discovery',lambda **kwargs: observed.append(kwargs) or True)
+    pipeline.preload()
+    if expected is None:
+        assert not observed
+    else:
+        assert len(observed)==1 and observed[0]['compact_verify_actions'] is expected
+        assert observed[0]['verify_actions'] is True

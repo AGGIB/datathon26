@@ -425,7 +425,7 @@ def test_verify_actions_overrides_contrast_uses_four_call_budget_and_coded_audit
     assert 'decoder_last_call_actions' in audit['videos']['X-1']
 
 
-@pytest.mark.parametrize('name',['verify_actions','action_contrast'])
+@pytest.mark.parametrize('name',['verify_actions','action_contrast','compact_verify_actions'])
 @pytest.mark.parametrize('invalid',[1,0,'true',None])
 def test_experiment_mode_flags_require_exact_booleans(local_probe,name,invalid):
     case=local_probe
@@ -443,9 +443,11 @@ def test_cli_parses_verification_as_explicit_opt_in_only(monkeypatch):
     monkeypatch.setattr(module,'run',lambda args: received.append(args) or {})
     argv=['probe','--model','scripted-model','--python','scripted-python','--out','var/scripted.json']
     monkeypatch.setattr(sys,'argv',argv)
-    assert module.main()==0 and received[-1].verify_actions is False
+    assert module.main()==0 and received[-1].verify_actions is False and received[-1].compact_verify_actions is False
     monkeypatch.setattr(sys,'argv',argv+['--verify-actions','--action-contrast'])
     assert module.main()==0 and received[-1].verify_actions is True and received[-1].action_contrast is True
+    monkeypatch.setattr(sys,'argv',argv+['--compact-verify-actions'])
+    assert module.main()==0 and received[-1].compact_verify_actions is True and received[-1].verify_actions is False
 
 
 def test_coded_verifier_diagnostics_never_copy_free_text():
@@ -456,3 +458,72 @@ def test_coded_verifier_diagnostics_never_copy_free_text():
     assert _coded_verifications([{'episode_id':True,'accepted':True,'reason':'supported'},
                                 {'episode_id':1,'accepted':1,'reason':'supported'},
                                 {'episode_id':1,'accepted':False,'reason':'PRIVATE ERROR PATH'}])==[]
+
+
+@pytest.mark.parametrize('legacy,contrast',[(False,False),(False,True),(True,False),(True,True)])
+def test_compact_probe_precedence_fingerprint_physical_budget_and_safe_diagnostics(
+        local_probe,monkeypatch,legacy,contrast):
+    import json
+    import sys
+    from types import ModuleType
+    from ml.vlm import action_backend,verified_action_backend
+
+    case=local_probe
+    module=ModuleType('ml.vlm.compact_verified_action_backend')
+    module.DECODER_POLICY='scripted_compact_blind_policy'
+    created=[]
+    class Compact:
+        def __init__(self,inner,*,catalog):
+            self.inner=inner
+            self.last_actions=()
+            self.last_verifications=({'episode_id':1,'accepted':False,'reason':'primitive_evidence_not_supported',
+                                      'observations':'SYNTHETIC_PRIVATE_VALUE'},)
+            created.append(self)
+        def validate(self,timeout_s):
+            self.inner.validate(timeout_s)
+        def close(self):
+            self.inner.close()
+    module.CompactVerifiedActionBackend=Compact
+    monkeypatch.setitem(sys.modules,module.__name__,module)
+    def wrong_wrapper(*args,**kwargs):
+        pytest.fail('compact mode must construct exactly one wrapper')
+    monkeypatch.setattr(action_backend,'ActionContrastBackend',wrong_wrapper)
+    monkeypatch.setattr(verified_action_backend,'VerifiedActionBackend',wrong_wrapper)
+    case.args.compact_verify_actions=True
+    case.args.verify_actions=legacy
+    case.args.action_contrast=contrast
+    original=case.discovery.discover_types
+    def discover(*args,**kwargs):
+        assert kwargs['backend'] is created[0] and kwargs['budget'].max_calls==4
+        report=original(*args,**kwargs)
+        report.calls_used=4
+        return report
+    monkeypatch.setattr(case.discovery,'discover_types',discover)
+    results=case.module.run(case.args)
+    for key in results:
+        assert all(row in results[key]['violations'] for row in case.baseline[key]['violations'])
+    audit=json.loads(case.args.out.with_suffix('.audit.json').read_text())
+    assert audit['config']['decoder_policy']==module.DECODER_POLICY
+    assert audit['config']['max_model_calls_per_video']==4
+    assert len(created)==len(case.prepared)==len(case.closed)==1
+    assert audit['videos']['X-1']['actual_calls_used']==4 and audit['videos']['X-3']['actual_calls_used']==0
+    assert audit['videos']['X-1']['verifier_last_call_decisions']==[
+        {'episode_id':1,'accepted':False,'reason':'primitive_evidence_not_supported'}]
+    assert 'SYNTHETIC_PRIVATE_VALUE' not in json.dumps(audit)
+
+
+def test_compact_probe_wrapper_construction_failure_closes_raw_worker(local_probe,monkeypatch):
+    import sys
+    from types import ModuleType
+
+    case=local_probe
+    module=ModuleType('ml.vlm.compact_verified_action_backend')
+    module.DECODER_POLICY='scripted_compact_blind_policy'
+    def fail(*args,**kwargs):
+        raise RuntimeError('scripted compact construction failure')
+    module.CompactVerifiedActionBackend=fail
+    monkeypatch.setitem(sys.modules,module.__name__,module)
+    case.args.compact_verify_actions=True
+    with pytest.raises(RuntimeError,match='scripted compact construction failure'):
+        case.module.run(case.args)
+    assert case.closed==[True] and not case.prepared and not case.calls

@@ -27,18 +27,23 @@ _configuration: _Configuration | None = None
 def configure_discovery(*, model_path: str | Path | None = None,
                         python_executable: str | Path | None = None,
                         backend: Backend | None = None, frame_source=None,
-                        startup_timeout_s: float = 180, verify_actions: bool = False) -> bool:
+                        startup_timeout_s: float = 180, verify_actions: bool = False,
+                        compact_verify_actions: bool = False) -> bool:
     """Call once at startup, before accepting jobs; no network or implicit installs.
 
     Injected backends own their lifecycle. Owned MLX workers are closed on
     explicit reconfiguration and use the same action decoder as the measured
     experimental probe. A failed load stays unavailable for later jobs.
-    For an injected backend, verify_actions declares the four-call video cap;
+    Compact verification takes precedence over legacy verification. Both are
+    default-off; neither changes sampling or starts a model inside a job.
+    For an injected backend, either verifier flag declares the four-call cap;
     the caller supplies its own verifier wrapper and still owns its lifecycle.
     """
     global _configuration
     if type(verify_actions) is not bool:
         raise ValueError("verify_actions must be boolean")
+    if type(compact_verify_actions) is not bool:
+        raise ValueError("compact_verify_actions must be boolean")
     if (isinstance(startup_timeout_s, bool) or not isinstance(startup_timeout_s, (float, int))
             or not math.isfinite(startup_timeout_s) or startup_timeout_s <= 0):
         raise ValueError("positive finite startup timeout required")
@@ -58,7 +63,11 @@ def configure_discovery(*, model_path: str | Path | None = None,
             # so catalog/import/constructor failures still close its resources.
             from ml.kb import catalog
 
-            if verify_actions:
+            if compact_verify_actions:
+                from .compact_verified_action_backend import CompactVerifiedActionBackend
+
+                backend = CompactVerifiedActionBackend(backend, catalog=catalog())
+            elif verify_actions:
                 from .verified_action_backend import VerifiedActionBackend
 
                 backend = VerifiedActionBackend(backend, catalog=catalog())
@@ -79,7 +88,7 @@ def configure_discovery(*, model_path: str | Path | None = None,
                 log.warning("vlm discovery: unavailable worker could not close")
         log.warning("vlm discovery: local runtime unavailable")
         return False
-    _configuration = _Configuration(backend, frame_source, owned, 4 if verify_actions else 2)
+    _configuration = _Configuration(backend, frame_source, owned, 4 if (compact_verify_actions or verify_actions) else 2)
     return True
 
 
