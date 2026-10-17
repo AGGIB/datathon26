@@ -7,7 +7,7 @@ import sys
 import tempfile
 
 from external23_annotations import validate_annotations
-from external23_common import SafeParser, active_path, local_path, read_json, require, sha256, write_json
+from external23_common import SafeParser, active_path, read_json, require, sha256, write_json
 from external23_policy import selected_record, verify_proof
 
 REPO = Path(__file__).resolve().parents[1]
@@ -34,6 +34,7 @@ def export_selected(root, index, annotations, output_dir='exports', split_json=F
     sys.path.insert(0, str(REPO))
     from ml.labels import normalize_video_name
     root = Path(root).absolute()
+    output = active_path(root, output_dir)
     validate_annotations(annotations, index['records'])
     drafts = {row['clip_id']: row for row in annotations['clips']}
     selected = [r for r in index['records'] if r.get('selection') == 'selected'
@@ -77,10 +78,9 @@ def export_selected(root, index, annotations, output_dir='exports', split_json=F
         items.append({'video_id': video_id, 'angle_id': record['angle_id'],
                       'content_sha256': record['clip_sha256'], 'source_group': record['source_group'],
                       'split': 'external_holdout'})
-    output = local_path(root, output_dir)
     output.mkdir(parents=True, exist_ok=True)
     for name in ('annotations.csv', 'labels.csv', 'external_holdout.json'):
-        local_path(root, output / name)
+        active_path(root, output / name)
     csv_file(output / 'annotations.csv', ANNOTATION_FIELDS, annotations_out)
     csv_file(output / 'labels.csv', LABEL_FIELDS, labels)
     write_json(output / 'external_holdout.json', {
@@ -99,11 +99,11 @@ def main():
     parser.add_argument('--split-json', action='store_true', help='Refused: reviewed base train inputs are required')
     try:
         args = parser.parse_args()
-        for value in (args.index, args.annotations, args.output_dir):
-            path = local_path(PRIVATE.absolute(), value)
-            require(not {'excluded', 'quarantine'} & set(path.relative_to(PRIVATE).parts), 'EXCLUDED_INPUT_OR_OUTPUT')
-        summary = export_selected(PRIVATE.absolute(), read_json(local_path(PRIVATE, args.index)),
-                                  read_json(local_path(PRIVATE, args.annotations)), args.output_dir, args.split_json)
+        index_path, annotation_path, output_path = (
+            active_path(PRIVATE.absolute(), value)
+            for value in (args.index, args.annotations, args.output_dir))
+        summary = export_selected(PRIVATE.absolute(), read_json(index_path),
+                                  read_json(annotation_path), output_path, args.split_json)
     except (OSError, ValueError, KeyError, TypeError):
         print('ERROR: external23_export_invalid', file=sys.stderr)
         return 1

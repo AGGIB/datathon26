@@ -701,3 +701,21 @@ def test_local_candidate_rejects_excluded_source_before_processing(kit, monkeypa
     with pytest.raises(ValueError, match='EXCLUDED_INPUT_OR_OUTPUT'):
         do_import(kit, allow_partial=True)
     assert not list((kit.root / 'clips').glob('*.mp4'))
+
+
+@pytest.mark.parametrize('folder', ['QuArAnTiNe', 'ExClUdEd'])
+@pytest.mark.parametrize('cli_option', ['--output-dir', '--index', '--annotations'])
+def test_mixed_case_excluded_output_rejected_before_creation_in_api_and_cli(kit, monkeypatch, capsys, folder, cli_option):
+    index, drafts = reviewed_pair(kit, monkeypatch)
+    output_dir = folder + '/exports'
+    monkeypatch.setattr(export_api, 'csv_file', lambda *args, **kwargs: pytest.fail('excluded output write'))
+    monkeypatch.setattr(export_api, 'write_json', lambda *args, **kwargs: pytest.fail('excluded output write'))
+    with pytest.raises(ValueError, match='EXCLUDED_INPUT_OR_OUTPUT'):
+        export_api.export_selected(kit.root, index, drafts, output_dir=output_dir)
+    assert not (kit.root / folder).exists()
+    monkeypatch.setattr(export_api, 'PRIVATE', kit.root)
+    monkeypatch.setattr(sys, 'argv', ['synthetic', cli_option, output_dir])
+    monkeypatch.setattr(export_api, 'read_json', lambda *args, **kwargs: pytest.fail('input read before output guard'))
+    assert export_api.main() == 1
+    assert not (kit.root / folder).exists()
+    assert 'ERROR:' in capsys.readouterr().err
