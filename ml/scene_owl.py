@@ -22,6 +22,7 @@ MODEL_ID = "google/owlv2-base-patch16-ensemble"
 DEFAULT_THRESHOLD = 0.08
 NMS_IOU = 0.5
 MAX_HITS_PER_QUERY = 8
+MAX_BATCH = 2  # views per forward pass; larger batches swap on a shared unified-memory Mac
 
 log = logging.getLogger(__name__)
 
@@ -120,8 +121,10 @@ class OwlDetector:
             if results[i] is None:
                 todo.append((i, rect))
                 crops.append(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
-        if todo:
-            for (i, rect), hits in zip(todo, self._forward(crops, queries, [r for _, r in todo], threshold)):
+        for start in range(0, len(todo), MAX_BATCH):  # 960x960 ViT attention: ~0.6 GB per image in flight
+            chunk = todo[start:start + MAX_BATCH]
+            hits_list = self._forward(crops[start:start + MAX_BATCH], queries, [r for _, r in chunk], threshold)
+            for (i, rect), hits in zip(chunk, hits_list):
                 results[i] = hits
                 self._cache_put(keys[i], queries, rect, threshold, hits)
         return results
