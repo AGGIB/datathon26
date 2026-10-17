@@ -1,0 +1,5 @@
+# Optional isolated Apple Silicon environment. Do not install over the CV runtime.
+# uv venv --python .venv/bin/python var/venvs/vlm-mlx
+# uv pip install --python var/venvs/vlm-mlx/bin/python -r requirements-ml-vlm-mlx.txt
+mlx-vlm==0.7.8
+PyYAML==6.0.2
