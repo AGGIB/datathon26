@@ -528,9 +528,9 @@ def test_actual_owned_v5_verifier_and_shared_budget_preserve_cv_without_model_or
     actions={'actions':[{'action':proposal_action,'insufficient_evidence':False,'confidence':.95,
                          'start_frame':10,'peak_frame':11,'end_frame':12}]}
     facts={'episodes':[{'id':1,'rows':[
-        [10,'a','cashier','x',object_kind,'held','hand','none'],
-        [11,'a','cashier','x',object_kind,'placing','own_workdesk','none'],
-        [12,'a','cashier','x',object_kind,'resting','own_workdesk','none']]}]}
+        [1,'a','cashier','x',object_kind,'held','hand','none'],
+        [2,'a','cashier','x',object_kind,'placing','own_workdesk','none'],
+        [3,'a','cashier','x',object_kind,'resting','own_workdesk','none']]}]}
     class Raw(OwnedScriptedActions):
         def __init__(self):
             super().__init__('')
@@ -563,7 +563,10 @@ def test_actual_owned_v5_verifier_and_shared_budget_preserve_cv_without_model_or
     assert measured==[(expected_calls,expected_calls,4)]
     assert len(raw.requests)==wrapper.calls_used==expected_calls
     if expected_calls==2:
-        assert raw.requests[0][0].frames is raw.requests[1][0].frames
+        proposal_frames=raw.requests[0][0].frames
+        verifier_frames=raw.requests[1][0].frames
+        assert len(verifier_frames)==3
+        assert all(original is focused for original,focused in zip(proposal_frames[-3:],verifier_frames,strict=True))
         assert 'cashier_places_removed_outerwear_on_cashdesk' not in raw.requests[1][0].prompt
         assert wrapper.last_verifications[0]['accepted'] is expected_addition
     assert raw.validated==[180]
