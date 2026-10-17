@@ -179,3 +179,11 @@ def test_person_further_behind_the_seat_away_from_the_desk_is_behind_cashier():
     further_back = (50.0, 110.0, 90.0, 230.0)  # foot (70, 230): 1.77 widths from the seat, opposite to the desk
     ev = extract_role_events(roles([trk(1, 0, 20, SEAT)], [trk(9, 5, 12, further_back)], wp=wp), times(20), 20.0)
     assert [(e.t, e.t_end) for e in kinds(ev, "person_behind_cashier")] == [(5.0, 12.0)]
+
+
+def test_thresholds_on_the_sampling_lattice_do_not_depend_on_float_noise():
+    step = 1 / 3
+    ts = [i * step + (1e-9 if i == 15 else 0.0) for i in range(61)]  # 3 fps; 15 -> 24 is 3.0 s minus noise
+    seated = [TrackPoint(t, SEAT, 0.9) for t in ts if t <= 5.0 + 1e-6 or t >= 8.0 - 1e-6]
+    ev = extract_role_events(roles([Track(1, tuple(seated))]), ts, duration=20.0)
+    assert [round(e.t, 2) for e in kinds(ev, "cashier_left")] == [5.0]

@@ -7,6 +7,7 @@ analyze_frames()  is the pure post-detection part: tracking, cleanup, roles, eve
 
 import dataclasses
 import logging
+import math
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -46,11 +47,21 @@ class Tolerances:
     min_empty_sec: float  # an empty room / exit must last clearly longer than any bridged dropout
 
 
+def _off_lattice(seconds: float, step: float) -> float:
+    """Move a limit half a sampling step past the lattice (n + 0.5 steps) so that frame-time jitter between
+    29.76 and 30 fps videos cannot decide whether n steps are within it."""
+    return (math.floor(seconds / step + 1e-6) + 0.5) * step
+
+
 def tolerances(sample_fps: float) -> Tolerances:
     step = 1.0 / sample_fps
-    tracker_gap = max(TRACKER_GAP_SEC, TRACKER_GAP_SAMPLES * step)
+    tracker_gap = _off_lattice(max(TRACKER_GAP_SEC, TRACKER_GAP_SAMPLES * step), step)
     longer = tracker_gap + step
-    return Tolerances(tracker_gap, max(STITCH_GAP_SEC, longer), max(MIN_EMPTY_SEC, longer))
+    return Tolerances(
+        tracker_gap,
+        _off_lattice(max(STITCH_GAP_SEC, longer), step),
+        _off_lattice(max(MIN_EMPTY_SEC, longer), step),
+    )
 
 
 @dataclass(frozen=True)

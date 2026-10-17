@@ -158,10 +158,16 @@ def _clear_stay(points: Sequence[TrackPoint], wp: Workplace) -> bool:
     return mean_score >= STAY_MIN_SCORE and widths[len(widths) // 2] >= STAY_MIN_WIDTH
 
 
+def _slack(times: Sequence[float]) -> float:
+    """A quarter of the sampling step: durations that sit exactly on a threshold must not flip on float noise."""
+    return (times[-1] - times[0]) / (len(times) - 1) / 4 if len(times) > 1 else 0.0
+
+
 def _is_return(obs: Sequence[tuple[int, TrackPoint] | None], times: Sequence[float], wp: Workplace) -> bool:
     """The stay contains RETURN_MIN_SEC of clear presence in the usual posture."""
     for i, j in _runs([o is not None and _settled(o[1], wp) for o in obs], value=True):
-        if times[j - 1] - times[i] >= RETURN_MIN_SEC and _clear_stay([o[1] for o in obs[i:j]], wp):
+        long_enough = times[j - 1] - times[i] >= RETURN_MIN_SEC - _slack(times)
+        if long_enough and _clear_stay([o[1] for o in obs[i:j]], wp):
             return True
     return False
 
@@ -188,7 +194,7 @@ def _at_work_flags(obs: Sequence[tuple[int, TrackPoint] | None], times: Sequence
         stay = obs[i:j]
         short_dropout = (
             last_at_work is not None
-            and times[i] - times[last_at_work] < CASHIER_MIN_AWAY_SEC
+            and times[i] - times[last_at_work] < CASHIER_MIN_AWAY_SEC - _slack(times)
             and not _walked_off(obs[last_at_work + 1:i], wp)
         )
         if _clear_stay([o[1] for o in stay], wp) and (short_dropout or _is_return(stay, times[i:j], wp)):
@@ -209,7 +215,7 @@ def _cashier_events(roles: Roles, times: Sequence[float], duration: float) -> li
         left_t, left_id = times[i - 1], obs[i - 1][0]
         back = j < len(times)
         away = (times[j] if back else duration) - left_t
-        if away < (CASHIER_MIN_AWAY_SEC if back else CASHIER_MIN_AWAY_AT_END_SEC):
+        if away < (CASHIER_MIN_AWAY_SEC if back else CASHIER_MIN_AWAY_AT_END_SEC) - _slack(times):
             continue
         back_id = obs[j][0] if back else None
         ids = tuple(dict.fromkeys([left_id] + ([back_id] if back else [])))
@@ -229,7 +235,7 @@ def _visitor_events(visitors: Sequence[Track], duration: float, edge_sec: float)
     return events
 
 
-def _overlap_events(visitors: Sequence[Track]) -> list[Event]:
+def _overlap_events(visitors: Sequence[Track], slack: float) -> list[Event]:
     events = []
     start: float | None = None
     present: set[int] = set()
@@ -239,7 +245,7 @@ def _overlap_events(visitors: Sequence[Track]) -> list[Event]:
             start = t if start is None else start
             present |= now
         elif start is not None:
-            if t - start >= MIN_OVERLAP_SEC:
+            if t - start >= MIN_OVERLAP_SEC - slack:
                 ids = tuple(sorted(present))
                 events.append(Event("visitors_overlap", start, t_end=t, count=len(ids), track_ids=ids))
             start, present = None, set()
@@ -254,18 +260,19 @@ def _is_behind(p: TrackPoint, wp: Workplace) -> bool:
     return wp.distance(p.box) <= reach and (toward is None or toward <= BEHIND_MAX_TOWARD_DESK)
 
 
-def _behind_events(visitors: Sequence[Track], wp: Workplace) -> list[Event]:
+def _behind_events(visitors: Sequence[Track], wp: Workplace, slack: float) -> list[Event]:
+    run_gap = max(RUN_GAP_SEC, 6 * slack) + slack  # 6 slacks = 1.5 sampling steps
     events = []
     for v in visitors:
         hits = [p.t for p in v.points if _is_behind(p, wp)]
         runs: list[list[float]] = []
         for t in hits:
-            if runs and t - runs[-1][-1] <= RUN_GAP_SEC:
+            if runs and t - runs[-1][-1] <= run_gap:
                 runs[-1].append(t)
             else:
                 runs.append([t])
         for run in runs:
-            if run[-1] - run[0] >= MIN_BEHIND_SEC:
+            if run[-1] - run[0] >= MIN_BEHIND_SEC - slack:
                 events.append(Event("person_behind_cashier", run[0], t_end=run[-1], track_id=v.track_id,
                                     track_ids=(v.track_id,)))
     return events
@@ -280,7 +287,7 @@ def extract_role_events(
     events = (
         _cashier_events(roles, times, duration)
         + _visitor_events(roles.visitors, duration, edge_sec)
-        + _overlap_events(roles.visitors)
-        + _behind_events(roles.visitors, roles.workplace)
+        + _overlap_events(roles.visitors, _slack(times))
+        + _behind_events(roles.visitors, roles.workplace, _slack(times))
     )
     return sorted(events, key=lambda e: (e.t, e.kind))

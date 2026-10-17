@@ -88,8 +88,18 @@ def build(video_path: Path, detector, fps: float, cache_dir: Path = CACHE_DIR) -
     labels = sorted({d.label for _, d in rows}) or ["person"]
     out = cache_path(name, fps, cache_dir)
     out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(out.name + ".part")  # an interrupted run must not leave a truncated cache behind
+    with open(tmp, "wb") as fh:
+        _save(fh, info, fps, elapsed, times, rows, labels, crop_rows, crops, thumb)
+    tmp.replace(out)
+    log.info("%s: %d frames, %d detections, %.1fs -> %s", name, len(times), len(rows), elapsed, out)
+    return out
+
+
+def _save(fh, info: VideoInfo, fps: float, elapsed: float, times: list[float], rows: list[tuple[int, Detection]],
+          labels: list[str], crop_rows: list[int], crops: list[np.ndarray], thumb: np.ndarray | None) -> None:
     np.savez_compressed(
-        out,
+        fh,
         meta=np.array([info.fps, info.frame_count, info.width, info.height, fps, elapsed], dtype=np.float64),
         times=np.array(times, dtype=np.float64),
         det_frame=np.array([fi for fi, _ in rows], dtype=np.int32),
@@ -101,8 +111,6 @@ def build(video_path: Path, detector, fps: float, cache_dir: Path = CACHE_DIR) -
         crops=np.array(crops, dtype=np.uint8).reshape(-1, CROP_H, CROP_W, 3),
         thumb=thumb if thumb is not None else np.zeros((1, 1, 3), np.uint8),
     )
-    log.info("%s: %d frames, %d detections, %.1fs -> %s", name, len(times), len(rows), elapsed, out)
-    return out
 
 
 def load(path: Path, name: str = "") -> CachedVideo:

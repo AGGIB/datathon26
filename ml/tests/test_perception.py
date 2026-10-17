@@ -84,10 +84,18 @@ def test_missed_detections_at_any_sampling_rate_are_not_an_empty_room(fps, misse
 
 def test_perception_tolerances_follow_the_sampling_interval():
     slow, fast = tolerances(1.25), tolerances(4.0)
-    assert slow.tracker_gap_sec == pytest.approx(2.0) and fast.tracker_gap_sec == pytest.approx(1.0)
+    assert slow.tracker_gap_sec >= 2.0 and fast.tracker_gap_sec >= 1.0
     assert slow.min_empty_sec > slow.tracker_gap_sec + 1 / 1.25 - 1e-9
-    assert fast.min_empty_sec == pytest.approx(2.0)
+    assert fast.min_empty_sec >= 2.0
     assert slow.stitch_gap_sec > slow.tracker_gap_sec
+
+
+@pytest.mark.parametrize("fps", [1.25, 2.2, 3.0, 4.0])
+def test_tolerances_sit_half_a_step_off_the_sampling_lattice(fps):
+    tol = tolerances(fps)
+    for limit in (tol.tracker_gap_sec, tol.stitch_gap_sec, tol.min_empty_sec):
+        steps = limit * fps
+        assert steps - int(steps) == pytest.approx(0.5)
 
 
 class FakeDetector:
