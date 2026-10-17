@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .media import FFMPEG_SAFE_INPUT
 from .runner import ProgressFn
 
 log = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ STAGES = ("decode", "detect", "rules", "verify")
 def _frame_b64(video_path: str, t_sec: float) -> str:
     """Real frame from the uploaded video if ffmpeg can read it, placeholder otherwise."""
     cmd = [
-        "ffmpeg", "-v", "error", "-ss", f"{t_sec:.2f}", "-i", video_path,
+        "ffmpeg", "-v", "error", *FFMPEG_SAFE_INPUT, "-ss", f"{t_sec:.2f}", "-i", video_path,
         "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "4", "-",
     ]
     try:

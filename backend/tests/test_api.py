@@ -32,7 +32,11 @@ def client(settings):
         yield c
 
 
-def _upload(client, name="clip.mov", content=b"fake-video", key=API_KEY):
+# Minimal ISO-BMFF header: size + 'ftyp' box, which is what real .mov/.mp4 files start with.
+FAKE_MOV = b"\x00\x00\x00\x14ftypqt  \x00\x00\x02\x00qt  " + b"\x00" * 64
+
+
+def _upload(client, name="clip.mov", content=FAKE_MOV, key=API_KEY):
     headers = {"X-API-Key": key} if key is not None else {}
     files = {"file": (name, io.BytesIO(content), "video/quicktime")}
     return client.post("/api/v1/analyze", files=files, headers=headers)
@@ -73,6 +77,21 @@ def test_rejects_too_large_upload(client):
 
 def test_rejects_empty_upload(client):
     assert _upload(client, content=b"").status_code == 400
+
+
+def test_rejects_non_isobmff_payload_with_mov_name(client):
+    # e.g. an HLS playlist renamed to .mov — ffmpeg would follow its URLs
+    playlist = b"#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\nfile:///etc/passwd\n"
+    assert _upload(client, content=playlist).status_code == 415
+
+
+def test_oversized_content_length_rejected_before_body_is_read(client):
+    resp = client.post(
+        "/api/v1/analyze",
+        content=b"tiny",
+        headers={"X-API-Key": API_KEY, "Content-Length": str(50 * 1024 * 1024), "Content-Type": "multipart/form-data; boundary=x"},
+    )
+    assert resp.status_code == 413
 
 
 def test_upload_returns_job_id_and_processing_status(client):
