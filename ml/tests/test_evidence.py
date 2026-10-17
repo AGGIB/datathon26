@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 import ml.evidence as evidence
+from ml.assemble import clamp_time
 from ml.candidates import Candidate
 from ml.evidence import MAX_FRAME_BYTES, draw_boxes, encode_jpeg_b64, frames_for, render_candidates, wanted_times
 from ml.video import probe, sample_frames
@@ -178,23 +179,45 @@ def test_render_candidates_with_nothing_to_render_does_not_touch_the_video(tmp_p
 
 # --- real video ---------------------------------------------------------------------------------------
 
+VIDEOS = REPO / "data" / "open" / "videos"
+END = -1.0  # stands for "the last moment of the video"
+
+
+def _diff(a: np.ndarray, b: np.ndarray) -> float:
+    small = (a.shape[1] // 4, a.shape[0] // 4)
+    return float(np.abs(cv2.resize(a, small).astype(int) - cv2.resize(b, small).astype(int)).mean())
+
+
+def _sampled_frame(path: Path, t: float) -> np.ndarray:
+    """The frame sample_frames yields for t (or the last one before it), decoding every frame."""
+    info = probe(path)
+    target = round(t * info.fps)
+    last = None
+    for ts, frame in sample_frames(path, info.fps):
+        if round(ts * info.fps) > target:
+            break
+        last = frame
+    assert last is not None
+    return last
+
 
 @pytest.mark.slow
 @pytest.mark.skipif(not X11.exists(), reason="data/open link is missing")
-def test_real_vfr_video_evidence_matches_sampled_frame():
-    t = 10.0
-    info = probe(X11)
-    target_idx = round(t * info.fps)
-    reference = next(frame for ts, frame in sample_frames(X11, info.fps) if round(ts * info.fps) == target_idx)
-    wrong = next(frame for ts, frame in sample_frames(X11, 1.0) if ts >= 18.5)  # where seeking used to land
+@pytest.mark.parametrize(("name", "t"), [("Х-11", 0.0), ("Х-11", 10.0), ("Х-11", END), ("Х-39", 30.0), ("Х-39", END)])
+def test_real_vfr_video_evidence_matches_sampled_frame(name, t):
+    path = VIDEOS / f"{name}.mov"  # VFR-like h264 files where seeking returned wrong or no frames
+    info = probe(path)
+    t = clamp_time(info.duration, info.duration) if t == END else t
 
-    [rendered] = render_candidates(X11, [cand(peak=t, boxes=())], duration=info.duration).values()
+    [rendered] = render_candidates(path, [cand(peak=t, boxes=())], duration=info.duration).values()
     assert rendered[0]["timestamp_sec"] == t
     got = decode(rendered[0]["image_base64"])
+    assert _diff(got, _sampled_frame(path, t)) < 4.0  # JPEG noise only
 
-    def diff(a, b):
-        small = (a.shape[1] // 4, a.shape[0] // 4)
-        return float(np.abs(cv2.resize(a, small).astype(int) - cv2.resize(b, small).astype(int)).mean())
 
-    assert diff(got, reference) < 4.0  # JPEG noise only
-    assert diff(got, reference) < diff(got, wrong)
+@pytest.mark.slow
+@pytest.mark.skipif(not X11.exists(), reason="data/open link is missing")
+def test_real_vfr_video_evidence_is_not_the_frame_seeking_used_to_return():
+    [rendered] = render_candidates(X11, [cand(peak=10.0, boxes=())], duration=probe(X11).duration).values()
+    got = decode(rendered[0]["image_base64"])
+    assert _diff(got, _sampled_frame(X11, 10.0)) < _diff(got, _sampled_frame(X11, 18.7))
