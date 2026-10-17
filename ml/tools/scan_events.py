@@ -36,13 +36,17 @@ def main() -> None:
         lb = labels[name]
         note = notes.get(name, {})
         tag = f"VIOL@{lb.t_sec:.0f}s" if lb.has_violation else "clean"
+        roles = p.roles
         print(f"\n{name} [{tag}] {note.get('type_id', '')} dur={p.info.duration:.1f}s "
-              f"tracks={len(p.tracks)} took={p.elapsed_sec:.1f}s")
+              f"tracks={len(p.all_tracks)} in_room={len(p.tracks)} took={p.elapsed_sec:.1f}s")
+        if roles is not None:
+            print(f"   roles: cashier={roles.cashier_ids} visitors={roles.visitor_ids} rejected={len(roles.rejected)}")
         print(f"   codex: {note.get('what_visible', '')[:110]}")
         for e in p.events:
             extra = f"..{e.t_end:.1f}" if e.t_end is not None else ""
             extra += f" n={e.count}" if e.count else ""
-            print(f"   {e.t:6.1f}{extra:10} {e.kind}")
+            ids = e.track_ids or ((e.track_id,) if e.track_id is not None else ())
+            print(f"   {e.t:6.1f}{extra:12} {e.kind:22} {ids or ''}")
     print(f"\ntotal perception time {total:.1f}s")
 
 
