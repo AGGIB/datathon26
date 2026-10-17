@@ -224,8 +224,6 @@ def test_late_progress_callback_does_not_overwrite_completed_job(settings):
 
 def test_unfinished_job_resumes_and_completes_after_restart(settings, monkeypatch):
     """If service crashes (kill -9) while job is processing, restart resumes it to done."""
-    import time
-    from unittest.mock import MagicMock
 
     # Create a job directly in store in 'processing' state as if killed mid-run
     store = JobStore(settings.data_dir / "jobs")
@@ -332,13 +330,12 @@ def test_header_only_ftyp_without_media_rejected(client):
 
 def test_queue_timeout_marks_job_failed(client, tmp_path):
     import time
-    from pathlib import Path
     runner = client.app.state.runner
     store = client.app.state.store
 
     video_path = tmp_path / "dummy.mov"
     video_path.write_bytes(b"\x00" * 32)
-    record = store.create("aabbccddee11", video_path, "dummy.mov")
+    store.create("aabbccddee11", video_path, "dummy.mov")
     # Simulate job created 300 seconds ago (exceeds 30s budget)
     store.update("aabbccddee11", created_at=time.time() - 300)
 
