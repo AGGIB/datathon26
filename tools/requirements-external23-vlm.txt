@@ -1,0 +1,2 @@
+# Optional Apple Silicon environment; core intake needs only stdlib + ffmpeg/ffprobe.
+mlx-vlm==0.7.8
