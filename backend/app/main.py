@@ -2,13 +2,14 @@
 
 import functools
 import logging
+import re
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import mock_pipeline
@@ -17,6 +18,58 @@ from .media import looks_like_isobmff
 from .runner import JobRunner, PipelineFn
 from .schemas import JobAccepted, JobView
 from .store import JobStore, new_job_id
+
+_FALLBACK_INDEX_HTML = """<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ForteBank Datathon 26 — Видео-контроль кассовой дисциплины</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card-bg: #161b22;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-heading: #f0f6fc;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: var(--font); display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+    header { width: 100%; max-width: 900px; padding: 40px 24px 20px; box-sizing: border-box; border-bottom: 1px solid var(--border); }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; background: rgba(63, 185, 80, 0.15); color: var(--green); border: 1px solid var(--green); margin-bottom: 12px; }
+    h1 { color: var(--text-heading); font-size: 28px; margin: 0 0 10px; }
+    p.lead { color: #8b949e; font-size: 16px; margin: 0; }
+    main { width: 100%; max-width: 900px; padding: 30px 24px; box-sizing: border-box; display: grid; grid-gap: 20px; }
+    .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 24px; }
+    h2 { color: var(--text-heading); font-size: 18px; margin-top: 0; margin-bottom: 16px; }
+    .btn { display: inline-block; background: #238636; color: #fff; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-weight: 500; font-size: 14px; margin-right: 10px; }
+    .btn.secondary { background: #21262d; border: 1px solid var(--border); color: var(--text-heading); }
+    code { background: rgba(110, 118, 129, 0.2); padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 13px; color: #e6edf3; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="badge">● Сервис активен и готов к проверке</div>
+    <h1>ForteBank Datathon 26: Видео-контроль кассовой дисциплины</h1>
+    <p class="lead">Бэкенд API для проверки нарушений регламента кассовых операций (ТЗ п. 10, Контракт К1).</p>
+  </header>
+  <main>
+    <div class="card">
+      <h2>🚀 Интерактивная документация и точки входа</h2>
+      <p>Сервис полностью сконфигурирован и отвечает по контракту жюри:</p>
+      <div style="margin: 20px 0;">
+        <a class="btn" href="/docs">Swagger UI (/docs)</a>
+        <a class="btn secondary" href="/health">Healthcheck (/health)</a>
+      </div>
+      <p>Точка анализа видео: <code>POST /api/v1/analyze</code> с заголовком <code>X-API-Key</code>.</p>
+    </div>
+  </main>
+</body>
+</html>
+"""
+
 
 log = logging.getLogger(__name__)
 
@@ -29,8 +82,9 @@ MULTIPART_OVERHEAD_BYTES = 64 * 1024
 def load_pipeline(settings: Settings) -> PipelineFn:
     if settings.pipeline == "mock":
         return functools.partial(mock_pipeline.analyze, delay_sec=settings.mock_delay_sec)
-    from ml.pipeline import analyze  # heavy imports only when the real pipeline is enabled
+    from ml.pipeline import analyze, preload  # heavy imports only when the real pipeline is enabled
 
+    preload()  # a broken kb must stop the boot, not fail every job
     return analyze
 
 
@@ -63,6 +117,7 @@ def create_app(settings: Settings, pipeline_fn: PipelineFn | None = None) -> Fas
         pipeline_fn or load_pipeline(settings),
         workers=settings.workers,
         time_budget_sec=settings.job_timeout_sec,
+        soft_budget_sec=getattr(settings, "pipeline_timeout_sec", None),
     )
 
     @asynccontextmanager
@@ -115,7 +170,9 @@ def create_app(settings: Settings, pipeline_fn: PipelineFn | None = None) -> Fas
         job_id = new_job_id()
         job_dir = store.job_dir(job_id)
         job_dir.mkdir(parents=True)
-        video_path = job_dir / f"input{ext}"
+        stem = re.sub(r"[^a-zA-Z0-9_\-]", "_", Path(filename).stem)[:32]
+        video_name = f"input_{stem}{ext}" if stem else f"input{ext}"
+        video_path = job_dir / video_name
         size = await _save_upload(file, video_path, max_upload_bytes)
         if size == 0:
             video_path.unlink(missing_ok=True)
@@ -143,6 +200,16 @@ def create_app(settings: Settings, pipeline_fn: PipelineFn | None = None) -> Fas
 
     if settings.frontend_dist and settings.frontend_dist.is_dir():
         app.mount("/", StaticFiles(directory=settings.frontend_dist, html=True), name="ui")
+    else:
+        dist_index = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist" / "index.html"
+        if dist_index.is_file():
+            html_content = dist_index.read_text(encoding="utf-8")
+        else:
+            html_content = _FALLBACK_INDEX_HTML
+
+        @app.get("/", response_class=HTMLResponse)
+        def index() -> HTMLResponse:
+            return HTMLResponse(content=html_content)
 
     return app
 
