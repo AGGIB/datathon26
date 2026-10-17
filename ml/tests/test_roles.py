@@ -58,7 +58,7 @@ def test_workplace_is_where_the_cashier_sits_most_of_the_time():
 
 def test_workplace_distance_is_in_cashier_widths():
     assert WP.distance(DESK_FAR_SIDE) == pytest.approx(((15**2 + 200**2) ** 0.5) / 100)
-    assert WP.occupied_by(SEAT) and not WP.occupied_by(DESK_FAR_SIDE)
+    assert WP.occupied_by(SEAT) and not WP.occupied_by(DESK_FAR_SIDE) and not WP.occupied_by(SEAT, score=0.5)
 
 
 def test_weaker_look_alike_living_alongside_is_a_mirror():

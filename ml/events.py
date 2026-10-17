@@ -102,6 +102,7 @@ def extract_events(
 
 CASHIER_MIN_AWAY_SEC = 3.0  # away from the seat at least this long (or until the video ends)
 CASHIER_MIN_AWAY_AT_END_SEC = 1.5
+CASHIER_MIN_SEATED_SEC = 1.5  # shorter stays on the seat are flicker (e.g. someone passing behind the glass)
 MIN_OVERLAP_SEC = 2.0
 BEHIND_DIST = 1.3  # cashier widths from the seat
 BEHIND_MIN_HEIGHT = 0.9  # standing person next to a seated cashier is at least about as tall
@@ -121,26 +122,34 @@ def _point_at(track: Track, t: float, tol: float) -> TrackPoint | None:
 def _seated_cashier(cashier: Sequence[Track], wp: Workplace, t: float, tol: float) -> int | None:
     for tr in cashier:
         p = _point_at(tr, t, tol)
-        if p is not None and wp.occupied_by(p.box):
+        if p is not None and wp.occupied_by(p.box, p.score):
             return tr.track_id
     return None
 
 
-def _runs(flags: Sequence[bool]) -> list[tuple[int, int]]:
-    """Index ranges [i, j) of consecutive False values."""
+def _runs(flags: Sequence[bool], value: bool = False) -> list[tuple[int, int]]:
+    """Index ranges [i, j) of consecutive entries equal to `value`."""
     runs, start = [], None
-    for i, flag in enumerate(list(flags) + [True]):
-        if not flag and start is None:
+    for i, flag in enumerate(list(flags) + [not value]):
+        if flag == value and start is None:
             start = i
-        elif flag and start is not None:
+        elif flag != value and start is not None:
             runs.append((start, i))
             start = None
     return runs
 
 
+def _drop_short_stays(seated: list[int | None], times: Sequence[float]) -> list[int | None]:
+    out = list(seated)
+    for i, j in _runs([s is not None for s in seated], value=True):
+        if i > 0 and times[j - 1] - times[i] < CASHIER_MIN_SEATED_SEC:
+            out[i:j] = [None] * (j - i)
+    return out
+
+
 def _cashier_events(roles: Roles, times: Sequence[float], duration: float) -> list[Event]:
     tol = (times[1] - times[0]) / 2 + 1e-6 if len(times) > 1 else 0.5
-    seated = [_seated_cashier(roles.cashier, roles.workplace, t, tol) for t in times]
+    seated = _drop_short_stays([_seated_cashier(roles.cashier, roles.workplace, t, tol) for t in times], times)
     events = []
     for i, j in _runs([s is not None for s in seated]):
         if i == 0:

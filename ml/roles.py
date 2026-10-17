@@ -20,8 +20,8 @@ log = logging.getLogger(__name__)
 MIN_TRACK_SEC = 1.0
 ANCHOR_MIN_SCORE = 0.7
 HOME_RADIUS = 0.25  # in box heights: foot points this close are "the same place" when finding the seat
-AT_DESK_IOU = 0.3  # cashier box vs typical seated box
-AT_DESK_DIST = 0.5  # ... or foot within this many cashier widths of the seat
+SEATED_IOU = 0.55  # box overlap with the typical seated box: standing up already drops below this
+SEATED_MIN_SCORE = 0.7  # a weak box over the seat is someone behind the glass, not the cashier sitting
 
 # in-room test for non-cashier tracks
 NEAR_DIST = 2.5  # cashier widths from the seat
@@ -62,8 +62,9 @@ class Workplace:
         fx, fy = foot(box)
         return float(np.hypot(fx - self.home[0], fy - self.home[1]) / max(self.width, 1.0))
 
-    def occupied_by(self, box: Box) -> bool:
-        return iou(box, self.box) >= AT_DESK_IOU or self.distance(box) <= AT_DESK_DIST
+    def occupied_by(self, box: Box, score: float = 1.0) -> bool:
+        """Someone sits where the cashier usually sits."""
+        return score >= SEATED_MIN_SCORE and iou(box, self.box) >= SEATED_IOU
 
     def toward_desk(self, box: Box) -> float | None:
         """How far the foot point lies in the direction of the desk, in cashier widths (None: desk unknown)."""
