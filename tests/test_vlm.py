@@ -75,6 +75,14 @@ class VLMTests(unittest.TestCase):
         except ModuleNotFoundError:
             self.fail("ml.vlm verification API has not been implemented")
 
+    def test_verifier_candidate_keeps_original_public_import(self):
+        api = self.api()
+        contracts = importlib.import_module("ml.vlm.contracts")
+        self.assertIs(api.Candidate, api.VerifierCandidate)
+        self.assertIs(contracts.Candidate, contracts.VerifierCandidate)
+        self.assertEqual(set(api.VerifierCandidate.__annotations__),
+                         {"candidate_id", "violation_type", "start_s", "end_s", "rule_id"})
+
     def test_missing_local_model_preserves_original_candidate_as_uncertain(self):
         api = self.api()
         candidate = {"candidate_id": "cv-1", "violation_type": "fixture_action",

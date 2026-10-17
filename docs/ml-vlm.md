@@ -2,10 +2,14 @@
 
 ## Статус и границы
 
-**VLM не подключена к `ml.pipeline`.** Отдельный офлайн-эксперимент на пяти
+**Этот advisory runtime не вызывается из `ml.pipeline`.** Отдельный офлайн-эксперимент на пяти
 парах с реальными кадрами не показал пользы исследованного SmolVLM-256M:
 0/5 пар, все десять ответов не прошли JSON-контракт. Методика и настоящие
 времена: [ml-vlm-pairs.md](ml-vlm-pairs.md). Qwen3-VL-4B здесь не запускалась.
+
+Отдельная opt-in ветвь type discovery из [PR #42](https://github.com/AGGIB/datathon26/pull/42)
+использует собственный runtime и по умолчанию выключена. Её экспериментальные
+добавления не меняют advisory-контракт ниже и не удаляют исходные CV-события.
 
 `ml.vlm` — инструмент проверки видимых действий, не юридическое заключение
 и не замена CV. Advisory API сохраняет **все исходные Candidate**, включая
@@ -108,8 +112,9 @@ Retained tuple содержит исходные объекты; вложенн�
 попадают в prompt. Draft/unknown нормы не расходуют inference. Open checklist
 в production-адаптере выключен и не создаёт новые CV-кандидаты.
 
-Низкоуровневый TypedDict экспортируется как **`VerifierCandidate`**, не Candidate,
-чтобы не путать его с владельческим frozen dataclass. API
+Основное имя низкоуровневого TypedDict — **`VerifierCandidate`**, чтобы не путать
+его с владельческим frozen dataclass `ml.candidates.Candidate`. Старое имя
+`ml.vlm.Candidate` сохранено как совместимый alias. API
 `verify_candidates(video_path, candidates, rules, *, backend, frame_source,
 budget_sec)` не создаёт/не загружает backend. Передавать явно подготовленный
 `LocalTransformersBackend`, затем закрывать его в finally.

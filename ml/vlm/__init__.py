@@ -1,5 +1,5 @@
 """Local-only VLM candidate verification. No model/image imports at import time."""
-from .contracts import (Backend, VerifierCandidate, Frame, FrameSource, FrameTimestamp,
+from .contracts import (Backend, Candidate, VerifierCandidate, Frame, FrameSource, FrameTimestamp,
                         InferenceRequest, Rule, VerificationReport, VerificationResult, VideoInfo)
 from .preflight import ModelUnavailable, PreflightResult, preflight
 from .frames import FFmpegFrames
@@ -8,7 +8,7 @@ from .verifier import verify_candidates
 from .pipeline_adapter import PipelineVerificationReport, verify_pipeline_candidates
 from .runtime import configure, verify
 
-__all__ = ["Backend", "VerifierCandidate", "Frame", "FrameSource", "FrameTimestamp", "InferenceRequest",
+__all__ = ["Backend", "Candidate", "VerifierCandidate", "Frame", "FrameSource", "FrameTimestamp", "InferenceRequest",
            "Rule", "VerificationReport", "VerificationResult", "VideoInfo", "verify_candidates",
            "FFmpegFrames", "ModelUnavailable", "PreflightResult", "preflight", "LocalTransformersBackend",
            "PipelineVerificationReport", "verify_pipeline_candidates", "configure", "verify"]

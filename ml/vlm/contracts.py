@@ -12,6 +12,10 @@ class VerifierCandidate(TypedDict):
     rule_id: str | None
 
 
+# Preserve the original public import while using the unambiguous name in new code.
+Candidate = VerifierCandidate
+
+
 class Rule(TypedDict):
     rule_id: str
     violation_type: str
