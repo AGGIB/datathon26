@@ -1,0 +1,240 @@
+"""K2 augmentation preserves baseline answers; all evidence here is scripted."""
+from dataclasses import replace
+import json
+from types import SimpleNamespace
+import time
+
+import pytest
+
+from ml.candidates import Candidate
+from ml.kb import catalog
+from ml.vlm import type_runtime as runtime
+from ml.vlm.contracts import Frame
+
+
+def candidate(kind="safe_left_open", t=1., confidence=.6):
+    return Candidate(kind, t, t + 1, t, confidence, "Синтетический пример", (t,))
+
+
+@pytest.fixture(autouse=True)
+def reset_runtime():
+    runtime.configure_discovery()
+    yield
+    runtime.configure_discovery()
+
+
+def test_unavailable_runtime_preserves_every_original_without_decoding(monkeypatch):
+    monkeypatch.setattr(runtime, "discover_types", lambda *a, **kw: pytest.fail("unavailable model must not decode"))
+    originals = [candidate(), candidate(confidence=.2)]
+    result = runtime.augment_types("private.mov", originals, catalog(), duration_sec=20., deadline=time.monotonic() + 2)
+    assert all(actual is expected for actual, expected in zip(result, originals))
+
+
+def test_failed_startup_is_not_retried_by_video_jobs(monkeypatch):
+    calls = []
+    class Unavailable:
+        def validate(self, timeout_s):
+            calls.append(timeout_s)
+            raise RuntimeError("scripted startup failure")
+    assert not runtime.configure_discovery(backend=Unavailable())
+    for _ in range(2):
+        original = candidate()
+        assert runtime.augment_types("private.mov", [original], catalog(), duration_sec=20., deadline=None) == [original]
+    assert calls == [180]
+
+
+def test_shared_deadline_and_baseline_slots_are_preserved(monkeypatch):
+    originals = [candidate("safe_left_open", i * 3., .51) for i in range(4)]
+    low = candidate("door_left_open", 18., .2)
+    originals.append(low)
+    additions = [candidate("food_or_drink_at_workplace", 2., .8),
+                 candidate("personal_items_on_desk", 8., .99)]
+    deadline = time.monotonic() + 2.
+    def discover(*args, **kwargs):
+        assert args[1] == originals
+        assert kwargs["budget"].deadline == deadline
+        assert kwargs["budget"].max_calls == 2
+        return SimpleNamespace(added_candidates=additions, status="completed", calls_used=1)
+    monkeypatch.setattr(runtime, "discover_types", discover)
+    assert runtime.configure_discovery(backend=object())
+    result = runtime.augment_types("private.mov", originals, catalog(), duration_sec=20., deadline=deadline)
+    assert all(actual is expected for actual, expected in zip(result, originals))
+    assert result[-1] is additions[1] and len(result) == len(originals) + 1
+    from ml.assemble import select
+    selected = select(result, catalog())
+    assert len(selected) == 5
+    assert all(original in selected for original in originals[:-1])
+
+
+@pytest.mark.parametrize("failure", [TimeoutError, RuntimeError])
+def test_discovery_failure_does_not_suppress_cv(monkeypatch, failure):
+    assert runtime.configure_discovery(backend=object())
+    def fail(*args, **kwargs):
+        raise failure("scripted")
+    monkeypatch.setattr(runtime, "discover_types", fail)
+    original = candidate()
+    assert runtime.augment_types("private.mov", [original], catalog(), duration_sec=20., deadline=None)[0] is original
+
+
+def test_exhausted_deadline_and_full_baseline_do_not_spend_model_calls(monkeypatch):
+    assert runtime.configure_discovery(backend=object())
+    monkeypatch.setattr(runtime, "discover_types", lambda *a, **kw: pytest.fail("no calls expected"))
+    original = candidate()
+    assert runtime.augment_types("private.mov", [original], catalog(), duration_sec=20., deadline=0)[0] is original
+    originals = [replace(original, t_start=i * 3., t_end=i * 3. + 1, t_peak=i * 3., evidence_times=(i * 3.,))
+                 for i in range(5)]
+    assert runtime.augment_types("private.mov", originals, catalog(), duration_sec=20., deadline=None) == originals
+
+
+@pytest.mark.parametrize("stage", ["constructor", "validate_and_close"])
+def test_owned_startup_and_cleanup_errors_fail_closed_without_job_reload(monkeypatch, stage):
+    from ml.vlm import mlx_backend
+
+    calls = []
+    class Unavailable:
+        def __init__(self, *args, **kwargs):
+            calls.append("constructor")
+            if stage == "constructor":
+                raise ValueError("scripted constructor failure")
+        def validate(self, timeout_s):
+            calls.append("validate")
+            raise RuntimeError("scripted load failure")
+        def close(self):
+            calls.append("close")
+            raise RuntimeError("scripted cleanup failure")
+    monkeypatch.setattr(mlx_backend, "LocalMLXBackend", Unavailable)
+    assert not runtime.configure_discovery(model_path="scripted-model", python_executable="scripted-python")
+    original = candidate()
+    for _ in range(2):
+        assert runtime.augment_types("private.mov", [original], catalog(), duration_sec=20., deadline=None) == [original]
+    assert calls == (["constructor"] if stage == "constructor" else ["constructor", "validate", "close"])
+
+
+class ScriptedFrames:
+    def __init__(self):
+        self.calls = 0
+
+    def extract(self, video_path, timestamps, directory, timeout_s):
+        self.calls += 1
+        result = []
+        for index, timestamp in enumerate(timestamps):
+            path = directory / f"scripted-{index}.png"
+            path.write_bytes(b"SYNTHETIC SCRIPTED EVIDENCE ONLY")
+            result.append(Frame(timestamp, path, timestamp))
+        return tuple(result)
+
+
+class ScriptedBackend:
+    def __init__(self, findings):
+        self.findings = findings
+        self.calls = 0
+
+    def infer(self, request, timeout_s):
+        self.calls += 1
+        assert 0 < timeout_s <= runtime.MAX_VIDEO_SECONDS
+        if isinstance(self.findings, str):
+            return self.findings
+        findings = []
+        for kind, first, last, confidence in self.findings:
+            start, end = request.frames[first].timestamp_s, request.frames[last].timestamp_s
+            findings.append({"type_id": kind, "t_start": start, "t_peak": start, "t_end": end,
+                             "confidence": confidence, "insufficient_evidence": False,
+                             "observations": [{"timestamp_s": start, "text": "Видимое действие в начале"},
+                                              {"timestamp_s": end, "text": "Видимое действие в конце"}]})
+        return json.dumps({"findings": findings}, ensure_ascii=False)
+
+
+@pytest.fixture
+def scripted_pipeline(monkeypatch):
+    import numpy as np
+    from ml import evidence, pipeline
+    from ml.shared_detector import SharedDetector
+    from ml.video import VideoInfo
+
+    info = VideoInfo(fps=10., frame_count=200, width=32, height=32)
+    originals = [candidate("key_left_in_safe_lock", 0., .51),
+                 candidate("safe_left_open", 5., .52),
+                 candidate("door_left_open", 9., .53),
+                 candidate("cash_left_on_desk_when_leaving", 13., .54)]
+    monkeypatch.setenv("ML_SCENE", "0")
+    monkeypatch.delenv("ML_VLM_DISCOVERY", raising=False)
+    monkeypatch.setattr(pipeline, "_SHARED", SharedDetector(factory=object))
+    monkeypatch.setattr(pipeline, "probe", lambda path: info)
+    monkeypatch.setattr(pipeline, "_perceive", lambda *args: SimpleNamespace(info=info, frames=[object()]))
+    monkeypatch.setattr(pipeline.rules, "find_candidates", lambda *args, **kwargs: originals)
+    # Exercise actual rendering/assembly on synthetic pixels without a video/model.
+    monkeypatch.setattr(evidence, "frames_at", lambda path, times: {
+        timestamp: np.zeros((32, 32, 3), dtype=np.uint8) for timestamp in times})
+    return pipeline, originals
+
+
+@pytest.mark.parametrize("findings", [
+    [("food_or_drink_at_workplace", 5, 6, .8), ("personal_items_on_desk", 7, 8, .99)],
+    [("key_left_in_safe_lock", 1, 2, .99), ("personal_items_on_desk", 7, 8, .8)],
+])
+def test_actual_pipeline_keeps_cv_output_and_uses_free_slot_for_highest_separate_addition(
+        scripted_pipeline, monkeypatch, findings):
+    from backend.app.schemas import AnalysisResult
+
+    pipeline, originals = scripted_pipeline
+    baseline = pipeline.analyze("scripted.mp4")
+    backend, source = ScriptedBackend(findings), ScriptedFrames()
+    assert runtime.configure_discovery(backend=backend, frame_source=source)
+    monkeypatch.setenv("ML_VLM_DISCOVERY", "1")
+    result = pipeline.analyze("scripted.mp4", time_budget_sec=30.)
+    AnalysisResult.model_validate(result)
+    by_type = {row["type_id"]: row for row in result["violations"]}
+    assert all(by_type[row["type_id"]] == row for row in baseline["violations"])
+    assert len(result["violations"]) == 5 and "personal_items_on_desk" in by_type
+    assert "food_or_drink_at_workplace" not in by_type
+    assert [item.confidence for item in originals] == [.51, .52, .53, .54]
+    assert backend.calls == source.calls == 1
+
+
+@pytest.mark.parametrize("reply", ['{"findings":[]}', 'not JSON'])
+def test_actual_pipeline_empty_or_malformed_discovery_leaves_cv_answer_identical(
+        scripted_pipeline, monkeypatch, reply):
+    pipeline, _ = scripted_pipeline
+    baseline = pipeline.analyze("scripted.mp4")
+    backend, source = ScriptedBackend(reply), ScriptedFrames()
+    assert runtime.configure_discovery(backend=backend, frame_source=source)
+    monkeypatch.setenv("ML_VLM_DISCOVERY", "1")
+    assert pipeline.analyze("scripted.mp4", time_budget_sec=30.) == baseline
+    assert backend.calls == source.calls == 1
+
+
+@pytest.mark.parametrize("flag", [None, "0", "true", "yes"])
+def test_actual_pipeline_discovery_requires_exact_explicit_opt_in(scripted_pipeline, monkeypatch, flag):
+    pipeline, _ = scripted_pipeline
+    baseline = pipeline.analyze("scripted.mp4")
+    backend, source = ScriptedBackend('{"findings":[]}'), ScriptedFrames()
+    assert runtime.configure_discovery(backend=backend, frame_source=source)
+    monkeypatch.setattr(runtime, "configure_discovery", lambda **kwargs: pytest.fail("unexpected startup"))
+    if flag is not None:
+        monkeypatch.setenv("ML_VLM_DISCOVERY", flag)
+    pipeline.preload()
+    assert pipeline.analyze("scripted.mp4") == baseline
+    assert backend.calls == source.calls == 0
+
+
+def test_actual_pipeline_jobs_without_preload_never_start_a_model(scripted_pipeline, monkeypatch):
+    pipeline, _ = scripted_pipeline
+    baseline = pipeline.analyze("scripted.mp4")
+    monkeypatch.setenv("ML_VLM_DISCOVERY", "1")
+    monkeypatch.setattr(runtime, "configure_discovery", lambda **kwargs: pytest.fail("job must not configure"))
+    assert pipeline.analyze("scripted.mp4", time_budget_sec=30.) == baseline
+
+
+def test_actual_pipeline_discovery_uses_original_deadline_after_perception(scripted_pipeline, monkeypatch):
+    pipeline, _ = scripted_pipeline
+    baseline = pipeline.analyze("scripted.mp4")
+    perceive = pipeline._perceive
+    def delayed(*args):
+        time.sleep(.03)
+        return perceive(*args)
+    monkeypatch.setattr(pipeline, "_perceive", delayed)
+    backend, source = ScriptedBackend('{"findings":[]}'), ScriptedFrames()
+    assert runtime.configure_discovery(backend=backend, frame_source=source)
+    monkeypatch.setenv("ML_VLM_DISCOVERY", "1")
+    assert pipeline.analyze("scripted.mp4", time_budget_sec=pipeline.FINISH_RESERVE_SEC + .01) == baseline
+    assert backend.calls == source.calls == 0

@@ -246,6 +246,12 @@ def preload() -> None:
     """Load and validate what every job depends on (the kb catalog). The backend calls it at startup."""
     types = catalog()
     log.info("pipeline: kb ready, %d violation types", len(types))
+    if os.environ.get("ML_VLM_DISCOVERY", "0") == "1":
+        from .vlm.type_runtime import configure_discovery
+
+        ready = configure_discovery(model_path=os.environ.get("ML_VLM_MODEL"),
+                                    python_executable=os.environ.get("ML_VLM_PYTHON"))
+        log.info("pipeline: optional local VLM discovery ready=%s", ready)
 
 
 def analyze(
@@ -276,6 +282,13 @@ def _analyze(video_path: str, report: ProgressFn, time_budget_sec: float | None)
     report(PROGRESS_DETECT_END, "rules")
     scene_deadline = None if time_budget_sec is None else started + time_budget_sec - FINISH_RESERVE_SEC
     candidates = _judge(video_path, perception, scene_deadline)
+
+    if os.environ.get("ML_VLM_DISCOVERY", "0") == "1":
+        from .vlm.type_runtime import augment_types
+
+        report(0.8, "verify")
+        candidates = augment_types(video_path, candidates, types,
+                                   duration_sec=perception.info.duration, deadline=scene_deadline)
 
     report(PROGRESS_RULES_END, "evidence")
     analysed = perception.info.duration  # shorter than the video after a budget stop or a lost tail
