@@ -234,3 +234,15 @@ def test_frontend_dist_mounted_and_serves_ui(settings, tmp_path):
         # Ensure /health and API endpoints still work
         assert c.get("/health").status_code == 200
 
+
+def test_upload_clean_file_returns_no_violation(client):
+    resp = _upload(client, name="cashier_clean_sample.mov")
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+    done = _wait_done(client, job_id)
+    assert done.status_code == 200
+    body = done.json()
+    assert body["status"] == "done"
+    assert body["verdict"] == "no_violation"
+    assert body["violations"] == []
+

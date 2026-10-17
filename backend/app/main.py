@@ -2,6 +2,7 @@
 
 import functools
 import logging
+import re
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -115,7 +116,9 @@ def create_app(settings: Settings, pipeline_fn: PipelineFn | None = None) -> Fas
         job_id = new_job_id()
         job_dir = store.job_dir(job_id)
         job_dir.mkdir(parents=True)
-        video_path = job_dir / f"input{ext}"
+        stem = re.sub(r"[^a-zA-Z0-9_\-]", "_", Path(filename).stem)[:32]
+        video_name = f"input_{stem}{ext}" if stem else f"input{ext}"
+        video_path = job_dir / video_name
         size = await _save_upload(file, video_path, max_upload_bytes)
         if size == 0:
             video_path.unlink(missing_ok=True)
