@@ -1,0 +1,505 @@
+"""Stage 1b: scene state. Where the desk, safe, entrance door and laptop are, and what state they are in over time.
+
+Usage by the rules stage (see docs/scene.md for the field reference):
+
+    from ml.scene import analyze_scene
+    from ml.scene_owl import OwlDetector
+
+    scene = analyze_scene(video_path, perception, owl=OwlDetector())
+    scene.layout.safe                    # box or None
+    st = scene.state_at(12.0)
+    st.safe_open, st.door_open           # 0..1 or None
+    st.laptop_screen_on, st.laptop_screen_work, st.key_in_lock
+    scene.items_near(12.0)               # DeskItem tuple from the closest keyframe
+
+How it works (no hard-coded pixel coordinates; everything is located per video):
+* frames are sampled at SAMPLE_FPS; person boxes from perception mask people out;
+* the masked median of the samples is the empty-room background: OWLv2 finds desk, safe, glass door with handle
+  and laptop on it (COCO laptop boxes take precedence);
+* safe_open / door_open measure how much the safe / door region differs from the room as it was at the start
+  of the video (`initial_background`). This assumes the safe and the door are closed when the clip starts,
+  which holds for every clip in the open set (the cashier opens them on camera);
+* laptop_screen_* are image statistics of the laptop box against its surroundings;
+* desk items come from COCO detections at every sampled time plus OWLv2 on a zoomed desk crop at a few
+  keyframes (after exits / while the room is empty), filtered by novelty against the initial background.
+"""
+
+import logging
+import time
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+from .detect import Box, Detection
+from .events import Event
+from .perception import Perception
+from .scene_geometry import center, clip_box, expand_box, overlap_fraction, to_int_box
+from .scene_items import ITEM_SCAN_QUERIES, DeskItem, desk_zone, items_from_coco, items_from_owl, merge_items
+from .scene_layout import (
+    LAYOUT_QUERIES,
+    LOCK_QUERIES,
+    pick_desk,
+    pick_door,
+    pick_laptop,
+    pick_lock,
+    pick_safe,
+)
+from .scene_owl import OwlDetector, OwlHit
+from .scene_signals import (
+    change_score,
+    global_gain,
+    hold_fill,
+    initial_background,
+    masked_median,
+    median_smooth,
+    person_mask,
+    ramp,
+    screen_features,
+)
+
+SAMPLE_FPS = 2.0
+MAX_BACKGROUND_FRAMES = 30
+MAX_KEYFRAMES = 6
+KEYFRAME_MIN_GAP = 1.5
+PERSON_MATCH_SEC = 0.4
+SMOOTH_K = 3
+
+SAFE_ROI_GROW = (0.15, 0.05)  # a little room for the door swinging out
+SAFE_CHANGE = (0.07, 0.17)  # share of changed cells vs. the start -> safe_open 0..1
+DOOR_CHANGE = (0.10, 0.30)
+MIN_ROI_VISIBLE = 0.8
+LAPTOP_CONTEXT_GROW = 0.6
+MAX_LAPTOP_PERSON_COVER = 0.35
+KEY_WINDOW = (0.14, 0.05)  # half-size of the key window as share of the safe width/height
+KEY_TEXTURE = (1.6, 3.0)  # edge energy around the lock / on the plain door face
+MIN_ITEM_NOVELTY = 0.3
+STRONG_ITEM_SCORE = 0.45
+
+log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Layout:
+    """Per-video static layout; boxes are (x0, y0, x1, y1) in source pixels, None when not found."""
+
+    width: int
+    height: int
+    desk: Box | None
+    safe: Box | None
+    door: Box | None
+    laptop: Box | None
+    lock: Box | None
+    confidence: dict[str, float] = field(default_factory=dict)  # 0..1 per element
+
+
+@dataclass(frozen=True)
+class SceneState:
+    """Scene at time t. Scores are 0..1 (higher = more likely); None = element not located."""
+
+    t: float
+    safe_open: float | None
+    door_open: float | None
+    laptop_screen_on: float | None  # screen emits light (any content, lock screen included)
+    laptop_screen_work: float | None  # bright document-like content (spreadsheet), not a lock screen
+    key_in_lock: float | None  # experimental, see docs/scene.md
+    desk_items: tuple[DeskItem, ...]  # COCO items at t; plus OWLv2 items when t is a keyframe
+    keyframe: bool = False
+    people: int = 0  # person detections at t (from perception)
+
+    def has_item(self, label: str, min_score: float = 0.0) -> bool:
+        return any(i.label == label and i.score >= min_score for i in self.desk_items)
+
+    @property
+    def item_labels(self) -> tuple[str, ...]:
+        return tuple(sorted({i.label for i in self.desk_items}))
+
+
+@dataclass(frozen=True)
+class SceneAnalysis:
+    layout: Layout
+    states: tuple[SceneState, ...]
+    keyframes: tuple[float, ...]
+    elapsed_sec: float
+    owl_calls: int = 0
+
+    def state_at(self, t: float) -> SceneState:
+        return min(self.states, key=lambda s: abs(s.t - t))
+
+    def items_near(self, t: float, max_dt: float = 3.0) -> tuple[DeskItem, ...]:
+        """Desk items of the keyframe closest to t (within max_dt), else COCO items at t."""
+        keyed = [s for s in self.states if s.keyframe and abs(s.t - t) <= max_dt]
+        if keyed:
+            return min(keyed, key=lambda s: abs(s.t - t)).desk_items
+        return self.state_at(t).desk_items
+
+    def series(self, name: str) -> list[tuple[float, float | None]]:
+        return [(s.t, getattr(s, name)) for s in self.states]
+
+
+# --------------------------------------------------------------------------------------------------- frames
+
+
+def read_frames(video_path: Path | str, times: Sequence[float]) -> list[np.ndarray]:
+    """Frames nearest to the requested times, decoded in one sequential pass (seeking is unreliable here)."""
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise ValueError(f"cannot open video: {video_path}")
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        wanted = sorted((max(0, int(round(t * fps))), i) for i, t in enumerate(times))
+        out: dict[int, np.ndarray] = {}
+        idx, last = 0, None
+        while wanted and cap.grab():
+            if wanted[0][0] <= idx:
+                ok, frame = cap.retrieve()
+                last = frame if ok else last
+                while wanted and wanted[0][0] <= idx:
+                    out[wanted.pop(0)[1]] = last
+            idx += 1
+        for _, i in wanted:  # requested past the end: repeat the last decoded frame
+            out[i] = last
+    finally:
+        cap.release()
+    if any(v is None for v in out.values()):
+        raise ValueError(f"no frames decoded from {video_path}")
+    return [out[i] for i in range(len(times))]
+
+
+def persons_at(perception: Perception, t: float, max_dt: float = PERSON_MATCH_SEC) -> list[Detection]:
+    if not perception.frames:
+        return []
+    nearest = min(perception.frames, key=lambda f: abs(f.t - t))
+    if abs(nearest.t - t) > max_dt:
+        return []
+    return [d for d in nearest.detections if d.label == "person"]
+
+
+def detections_at(perception: Perception, t: float, max_dt: float = PERSON_MATCH_SEC) -> list[Detection]:
+    if not perception.frames:
+        return []
+    nearest = min(perception.frames, key=lambda f: abs(f.t - t))
+    return list(nearest.detections) if abs(nearest.t - t) <= max_dt else []
+
+
+# --------------------------------------------------------------------------------------------------- layout
+
+
+def _even_subset(n: int, k: int) -> list[int]:
+    if n <= k:
+        return list(range(n))
+    return sorted({int(round(i)) for i in np.linspace(0, n - 1, k)})
+
+
+def locate_layout(
+    frames: Sequence[np.ndarray],
+    detections: Sequence[Sequence[Detection]],
+    owl: OwlDetector | None = None,
+    cache_key: str | None = None,
+) -> tuple[Layout, np.ndarray]:
+    """Find the static layout from time-ordered sampled frames and their detections.
+
+    Returns (layout, start_background): the room as it was at the start of the video with people removed.
+    The start is used (not the median) because doors and the safe are closed before the cashier acts.
+    """
+    h, w = frames[0].shape[:2]
+    masks = [person_mask((h, w), [d.box for d in dets if d.label == "person"]) for dets in detections]
+    idx = _even_subset(len(frames), MAX_BACKGROUND_FRAMES)
+    fallback = masked_median(np.stack([frames[i] for i in idx]), np.stack([masks[i] for i in idx]))
+    background = initial_background(frames, masks, fallback)
+    coco_laptops = [d.box for dets in detections for d in dets if d.label == "laptop"]
+    hits: list[OwlHit] = []
+    if owl is not None:
+        hits = owl.detect(background, LAYOUT_QUERIES, cache_key=f"{cache_key}_layout" if cache_key else None)
+    laptop, c_laptop = pick_laptop(coco_laptops, hits)
+    desk, c_desk = pick_desk(hits, laptop, w, h)
+    safe, c_safe = pick_safe(hits, desk, laptop, w, h)
+    door, c_door = pick_door(hits, w, h)
+    lock, c_lock = None, 0.0
+    if owl is not None and safe is not None:
+        region = expand_box(safe, 0.3, 0.1, width=w, height=h)
+        lock_hits = owl.detect(background, LOCK_QUERIES, region=region,
+                               cache_key=f"{cache_key}_lock" if cache_key else None)
+        lock, c_lock = pick_lock(lock_hits, safe)
+    conf = {"desk": c_desk, "safe": c_safe, "door": c_door, "laptop": c_laptop, "lock": c_lock}
+    layout = Layout(w, h, desk, safe, door, laptop, lock, {k: round(v, 3) for k, v in conf.items()})
+    log.info("layout %s", layout)
+    return layout, background
+
+
+# --------------------------------------------------------------------------------------------------- signals
+
+
+def _region_change(
+    gray: np.ndarray, ref: np.ndarray, visible: np.ndarray, roi: Box | None, gain: float,
+    ignore: np.ndarray | None = None,
+) -> float | None:
+    """Change share inside roi; None when people hide too much of it (a half-hidden door looks unchanged)."""
+    if roi is None:
+        return None
+    x0, y0, x1, y1 = to_int_box(clip_box(roi, gray.shape[1], gray.shape[0]))
+    vis = visible[y0:y1, x0:x1]
+    if vis.size == 0 or vis.mean() < MIN_ROI_VISIBLE:
+        return None
+    valid = vis if ignore is None else vis & ~ignore[y0:y1, x0:x1]
+    return change_score(gray[y0:y1, x0:x1], ref[y0:y1, x0:x1], valid, gain=gain)
+
+
+def _laptop_box(dets: Sequence[Detection], layout: Layout) -> Box | None:
+    laptops = [d for d in dets if d.label == "laptop"]
+    if layout.laptop is None:
+        return max(laptops, key=lambda d: d.score).box if laptops else None
+    near = [d for d in laptops if overlap_fraction(layout.laptop, d.box) > 0.3]
+    return max(near, key=lambda d: d.score).box if near else layout.laptop
+
+
+def _screen(frame: np.ndarray, box: Box | None, persons: Sequence[Box]) -> tuple[float | None, float | None]:
+    if box is None or any(overlap_fraction(box, p) > MAX_LAPTOP_PERSON_COVER for p in persons):
+        return None, None
+    h, w = frame.shape[:2]
+    x0, y0, x1, y1 = to_int_box(clip_box(box, w, h))
+    cx0, cy0, cx1, cy1 = to_int_box(expand_box(box, LAPTOP_CONTEXT_GROW, width=w, height=h))
+    feats = screen_features(frame[y0:y1, x0:x1], frame[cy0:cy1, cx0:cx1])
+    return feats.on, feats.work
+
+
+def _edge_energy(gray: np.ndarray, box: Box) -> float:
+    x0, y0, x1, y1 = to_int_box(clip_box(box, gray.shape[1], gray.shape[0]))
+    patch = gray[y0:y1, x0:x1].astype(np.float32)
+    if patch.shape[0] < 3 or patch.shape[1] < 3:
+        return 0.0
+    gx = cv2.Sobel(patch, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(patch, cv2.CV_32F, 0, 1, ksize=3)
+    return float(np.mean(np.abs(gx) + np.abs(gy)))
+
+
+def key_windows(layout: Layout) -> tuple[Box, Box] | None:
+    """Window around the lock (where a key would stick out) and a control window on the plain door face."""
+    if layout.lock is None or layout.safe is None:
+        return None
+    sw, sh = layout.safe[2] - layout.safe[0], layout.safe[3] - layout.safe[1]
+    cx, cy = center(layout.lock)
+    hw, hh = KEY_WINDOW[0] * sw, KEY_WINDOW[1] * sh
+    win = clip_box((cx - hw, cy - hh, cx + hw, cy + hh), layout.width, layout.height)
+    shift = 3 * hh
+    below = clip_box((win[0], win[1] + shift, win[2], win[3] + shift), layout.width, layout.height)
+    above = clip_box((win[0], win[1] - shift, win[2], win[3] - shift), layout.width, layout.height)
+    ctrl = below if below[3] <= layout.safe[3] else above
+    return win, ctrl
+
+
+def _key_raw(gray: np.ndarray, windows: tuple[Box, Box] | None, persons: Sequence[Box]) -> float | None:
+    if windows is None:
+        return None
+    win, ctrl = windows
+    if any(overlap_fraction(win, p) > 0.2 or overlap_fraction(ctrl, p) > 0.2 for p in persons):
+        return None
+    return _edge_energy(gray, win) / (_edge_energy(gray, ctrl) + 1.0)
+
+
+def _novelty(gray: np.ndarray, ref: np.ndarray, valid: np.ndarray, box: Box, gain: float) -> float | None:
+    x0, y0, x1, y1 = to_int_box(clip_box(box, gray.shape[1], gray.shape[0]))
+    return change_score(gray[y0:y1, x0:x1], ref[y0:y1, x0:x1], valid[y0:y1, x0:x1], gain=gain, cell=4)
+
+
+def _keep_item(item: DeskItem) -> bool:
+    return item.score >= STRONG_ITEM_SCORE or item.novelty is None or item.novelty >= MIN_ITEM_NOVELTY
+
+
+def _with_novelty(items: Sequence[DeskItem], gray, ref, valid, gain) -> tuple[DeskItem, ...]:
+    out = []
+    for it in items:
+        nov = _novelty(gray, ref, valid, it.box, gain)
+        cand = DeskItem(it.label, it.box, it.score, it.source, it.query, None if nov is None else round(nov, 3))
+        if _keep_item(cand):
+            out.append(cand)
+    return tuple(out)
+
+
+# --------------------------------------------------------------------------------------------------- keyframes
+
+
+def pick_keyframes(events: Sequence[Event], duration: float, max_n: int = MAX_KEYFRAMES) -> list[float]:
+    """Moments worth an OWLv2 desk scan: right after people leave, inside empty-room spans, then start/mid/end."""
+    primary: list[float] = []
+    for e in sorted(events, key=lambda e: e.t):
+        if e.kind == "exit":
+            primary.append(e.t + 1.0)
+        elif e.kind == "room_empty" and e.t_end is not None:
+            primary.append(min(e.t + 1.0, (e.t + e.t_end) / 2))
+            primary.append((e.t + e.t_end) / 2)
+    fallback = [0.15 * duration, 0.5 * duration, 0.92 * duration]
+    chosen: list[float] = []
+    for t in primary + fallback:
+        t = min(max(t, 0.2), max(duration - 0.2, 0.2))
+        if len(chosen) < max_n and all(abs(t - c) >= KEYFRAME_MIN_GAP for c in chosen):
+            chosen.append(round(t, 2))
+    return sorted(chosen)
+
+
+# --------------------------------------------------------------------------------------------------- states
+
+
+def _finish(raw: Sequence[float | None], lo_hi: tuple[float, float]) -> list[float | None]:
+    smoothed = hold_fill(median_smooth(raw, SMOOTH_K))
+    return [None if v is None else round(ramp(v, *lo_hi), 3) for v in smoothed]
+
+
+def _finish_unit(raw: Sequence[float | None]) -> list[float | None]:
+    smoothed = hold_fill(median_smooth(raw, SMOOTH_K))
+    return [None if v is None else round(v, 3) for v in smoothed]
+
+
+@dataclass
+class _Raw:
+    safe: list[float | None] = field(default_factory=list)
+    door: list[float | None] = field(default_factory=list)
+    screen_on: list[float | None] = field(default_factory=list)
+    screen_work: list[float | None] = field(default_factory=list)
+    key: list[float | None] = field(default_factory=list)
+    items: list[tuple[DeskItem, ...]] = field(default_factory=list)
+    people: list[int] = field(default_factory=list)
+
+
+def _measure(
+    times: Sequence[float],
+    frames: Sequence[np.ndarray],
+    perception: Perception,
+    layout: Layout,
+    keyframe_items: dict[float, list[DeskItem]],
+    background: np.ndarray,
+) -> _Raw:
+    h, w = layout.height, layout.width
+    dets_all = [detections_at(perception, t) for t in times]
+    masks = [person_mask((h, w), [d.box for d in dets if d.label == "person"]) for dets in dets_all]
+    grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
+    ref = cv2.cvtColor(background, cv2.COLOR_BGR2GRAY)
+    safe_roi = (expand_box(layout.safe, *SAFE_ROI_GROW, width=w, height=h) if layout.safe else None)
+    laptop_mask = np.zeros((h, w), dtype=bool)
+    if layout.laptop is not None:
+        x0, y0, x1, y1 = to_int_box(expand_box(layout.laptop, 0.1, width=w, height=h))
+        laptop_mask[y0:y1, x0:x1] = True
+    zone = desk_zone(layout.desk, w, h) if layout.desk else None
+    windows = key_windows(layout)
+    raw = _Raw()
+    for t, frame, gray, dets, mask in zip(times, frames, grays, dets_all, masks):
+        persons = [d.box for d in dets if d.label == "person"]
+        valid = ~mask
+        gain = global_gain(gray, ref, valid)
+        raw.safe.append(_region_change(gray, ref, valid, safe_roi, gain, ignore=laptop_mask))
+        raw.door.append(_region_change(gray, ref, valid, layout.door, gain))
+        on, work = _screen(frame, _laptop_box(dets, layout), persons)
+        raw.screen_on.append(on)
+        raw.screen_work.append(work)
+        raw.key.append(_key_raw(gray, windows, persons))
+        items: list[DeskItem] = []
+        if zone is not None:
+            items = items_from_coco(dets, zone, persons) + keyframe_items.get(t, [])
+        raw.items.append(_with_novelty(merge_items(items), gray, ref, valid, gain))
+        raw.people.append(len(persons))
+    return raw
+
+
+def _scan_keyframes(
+    times: Sequence[float],
+    frames: Sequence[np.ndarray],
+    perception: Perception,
+    layout: Layout,
+    owl: OwlDetector | None,
+    keyframes: Sequence[float],
+    cache_key: str | None,
+) -> dict[float, list[DeskItem]]:
+    """OWLv2 desk scan at keyframes, keyed by the sampled time each keyframe snaps to."""
+    if owl is None or layout.desk is None:
+        return {}
+    zone = desk_zone(layout.desk, layout.width, layout.height)
+    region = expand_box(zone, 0.05, width=layout.width, height=layout.height)
+    out: dict[float, list[DeskItem]] = {}
+    for kt in keyframes:
+        i = int(np.argmin([abs(t - kt) for t in times]))
+        persons = [d.box for d in persons_at(perception, times[i])]
+        key = f"{cache_key}_desk_{times[i]:.2f}" if cache_key else None
+        hits = owl.detect(frames[i], ITEM_SCAN_QUERIES, region=region, cache_key=key)
+        out[times[i]] = items_from_owl(hits, zone, persons)
+    return out
+
+
+def _build_states(
+    times: Sequence[float],
+    frames: Sequence[np.ndarray],
+    perception: Perception,
+    layout: Layout,
+    owl: OwlDetector | None,
+    keyframes: Sequence[float],
+    cache_key: str | None,
+    background: np.ndarray,
+) -> tuple[list[SceneState], tuple[float, ...]]:
+    keyframe_items = _scan_keyframes(times, frames, perception, layout, owl, keyframes, cache_key)
+    raw = _measure(times, frames, perception, layout, keyframe_items, background)
+    safe, door = _finish(raw.safe, SAFE_CHANGE), _finish(raw.door, DOOR_CHANGE)
+    on, work = _finish_unit(raw.screen_on), _finish_unit(raw.screen_work)
+    key = _finish(raw.key, KEY_TEXTURE)
+    states = [
+        SceneState(t=round(t, 3), safe_open=safe[i], door_open=door[i], laptop_screen_on=on[i],
+                   laptop_screen_work=work[i], key_in_lock=key[i], desk_items=raw.items[i],
+                   keyframe=t in keyframe_items, people=raw.people[i])
+        for i, t in enumerate(times)
+    ]
+    return states, tuple(sorted(keyframe_items))
+
+
+def scene_states(
+    video_path: Path | str,
+    perception: Perception,
+    times: Sequence[float],
+    layout: Layout | None = None,
+    owl: OwlDetector | None = None,
+    keyframes: Sequence[float] | None = None,
+    cache_key: str | None = None,
+) -> list[SceneState]:
+    """Scene state at each requested time (returned sorted by t). Locates the layout when not given.
+
+    `times` should be reasonably dense (>= 1 per second): the start-of-video reference and smoothing
+    are computed from the requested samples.
+    """
+    times = sorted(times)
+    frames = read_frames(video_path, times)
+    found, background = locate_layout(frames, [detections_at(perception, t) for t in times],
+                                      owl if layout is None else None, cache_key)
+    layout = layout or found
+    if keyframes is None:
+        keyframes = pick_keyframes(perception.events, perception.info.duration)
+    states, _ = _build_states(times, frames, perception, layout, owl, keyframes, cache_key, background)
+    return states
+
+
+def sample_times(duration: float, fps: float = SAMPLE_FPS) -> list[float]:
+    n = max(1, int(duration * fps))
+    return [round(i / fps, 3) for i in range(n)]
+
+
+def analyze_scene(
+    video_path: Path | str,
+    perception: Perception,
+    owl: OwlDetector | None = None,
+    sample_fps: float = SAMPLE_FPS,
+    cache_key: str | None = None,
+) -> SceneAnalysis:
+    """One-call entry for the pipeline: layout + states at `sample_fps` over the whole video."""
+    started = time.monotonic()
+    calls_before = owl.calls if owl else 0
+    times = sample_times(perception.info.duration, sample_fps)
+    frames = read_frames(video_path, times)
+    layout, background = locate_layout(frames, [detections_at(perception, t) for t in times], owl, cache_key)
+    keyframes = pick_keyframes(perception.events, perception.info.duration)
+    states, used = _build_states(times, frames, perception, layout, owl, keyframes, cache_key, background)
+    calls = (owl.calls - calls_before) if owl else 0
+    return SceneAnalysis(layout, tuple(states), used, time.monotonic() - started, calls)
+
+
+__all__ = [
+    "DeskItem", "Layout", "SceneAnalysis", "SceneState", "analyze_scene", "locate_layout", "pick_keyframes",
+    "read_frames", "sample_times", "scene_states",
+]

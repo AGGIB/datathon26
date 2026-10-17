@@ -24,7 +24,7 @@ ZNCC_MIN = 0.5
 MEAN_DIFF = 30.0
 
 # laptop screen
-SCREEN_RATIO_OFF, SCREEN_RATIO_ON = 0.9, 1.3  # p90 of box luminance / median context luminance
+SCREEN_RATIO_OFF, SCREEN_RATIO_ON = 1.0, 1.15  # p95 of box luminance / p90 of context luminance
 COLOR_FRAC_OFF, COLOR_FRAC_ON = 0.05, 0.25  # share of bright saturated pixels (wallpaper, lock screen)
 WORK_FRAC_OFF, WORK_FRAC_ON = 0.04, 0.2  # share of white low-saturation pixels brighter than the surroundings
 COLOR_MIN_SAT, COLOR_MIN_VAL = 110, 90
@@ -63,22 +63,27 @@ def masked_median(frames: np.ndarray, masks: np.ndarray) -> np.ndarray:
     return np.clip(np.rint(out), 0, 255).astype(np.uint8)
 
 
-def initial_background(frames: np.ndarray, masks: np.ndarray, first_k: int = 3) -> np.ndarray:
-    """Per-pixel median of the first `first_k` unmasked observations: the room as it was at the start.
+def initial_background(
+    frames: Sequence[np.ndarray], masks: Sequence[np.ndarray], fallback: np.ndarray | None = None
+) -> np.ndarray:
+    """The room as it was at the start: each pixel from the first frame where no person hides it.
 
-    Falls back to the masked median for pixels that are never visible.
+    frames are in time order; pixels never visible take `fallback` (default: median of the frames).
     """
-    visible = ~masks  # (N, H, W)
-    order = np.cumsum(visible, axis=0)  # 1-based index of each visible observation
-    take = visible & (order <= first_k)
-    data = frames.astype(np.float32)
-    data[~np.broadcast_to(take[..., None], data.shape)] = np.nan
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN columns are handled below
-        early = np.nanmedian(data, axis=0)
-    fallback = masked_median(frames, masks).astype(np.float32)
-    out = np.where(np.isnan(early), fallback, early)
-    return np.clip(np.rint(out), 0, 255).astype(np.uint8)
+    out = np.zeros_like(frames[0])
+    filled = np.zeros(masks[0].shape, dtype=bool)
+    for frame, mask in zip(frames, masks):
+        take = ~mask & ~filled
+        if take.any():
+            out[take] = frame[take]
+            filled |= take
+        if filled.all():
+            return out
+    if fallback is None:
+        step = max(1, len(frames) // 15)
+        fallback = np.median(np.stack(frames[::step]), axis=0).astype(frames[0].dtype)
+    out[~filled] = fallback[~filled]
+    return out
 
 
 def _cells(arr: np.ndarray, cell: int) -> np.ndarray:
@@ -102,6 +107,8 @@ def change_score(
 
     Returns None when too little of the region is visible to say anything.
     """
+    if cur.shape[0] < cell or cur.shape[1] < cell:
+        return None
     if gain is None:
         gain = global_gain(cur, ref, valid)
     a = _cells(cur.astype(np.float32), cell)
@@ -145,9 +152,8 @@ def screen_features(box_bgr: np.ndarray, context_bgr: np.ndarray) -> ScreenFeatu
     ctx = cv2.cvtColor(context_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
     hsv = cv2.cvtColor(box_bgr, cv2.COLOR_BGR2HSV)
     sat, val = hsv[..., 1], hsv[..., 2]
-    ctx_med = max(float(np.median(ctx)), 10.0)
     ctx_hi = float(np.percentile(ctx, 90))
-    ratio = float(np.percentile(lum, 90)) / ctx_med
+    ratio = float(np.percentile(lum, 95)) / max(ctx_hi, 10.0)
     color_frac = float(((sat >= COLOR_MIN_SAT) & (val >= COLOR_MIN_VAL)).mean())
     white_frac = float(((lum > ctx_hi + WORK_MARGIN) & (sat <= WORK_MAX_SAT)).mean())
     on = max(ramp(ratio, SCREEN_RATIO_OFF, SCREEN_RATIO_ON), ramp(color_frac, COLOR_FRAC_OFF, COLOR_FRAC_ON))

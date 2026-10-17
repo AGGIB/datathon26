@@ -48,12 +48,22 @@ def test_masked_median_falls_back_to_plain_median_when_always_masked():
     assert masked_median(frames, masks)[0, 0, 0] == 20
 
 
-def test_initial_background_uses_earliest_unmasked_observations():
-    frames = _frames([250, 10, 12, 14, 200, 200, 200])
-    masks = np.zeros((7, 4, 4), dtype=bool)
-    masks[0] = True  # a person covers everything in the first frame
-    bg = initial_background(frames, masks, first_k=3)
+def test_initial_background_uses_first_unmasked_observation():
+    frames = list(_frames([250, 10, 12, 14, 200]))
+    masks = [np.zeros((4, 4), dtype=bool) for _ in frames]
+    masks[0] = np.ones((4, 4), dtype=bool)  # a person covers everything in the first frame
+    masks[1][0, 0] = True  # ...and one pixel also in the second
+    bg = initial_background(frames, masks)
+    assert bg[1, 1, 0] == 10
     assert bg[0, 0, 0] == 12
+
+
+def test_initial_background_falls_back_for_never_visible_pixels():
+    frames = list(_frames([10, 20, 30]))
+    masks = [np.ones((4, 4), dtype=bool) for _ in frames]
+    assert initial_background(frames, masks)[0, 0, 0] == 20
+    fallback = np.full((4, 4, 3), 99, dtype=np.uint8)
+    assert initial_background(frames, masks, fallback)[0, 0, 0] == 99
 
 
 def test_change_score_zero_for_identical_and_high_for_new_structure():
@@ -78,6 +88,11 @@ def test_change_score_detects_flat_region_turning_bright():
     cur = ref.copy()
     cur[:32] = 200
     assert change_score(cur, ref, np.ones_like(ref, dtype=bool), gain=1.0) == pytest.approx(0.5)
+
+
+def test_change_score_none_for_regions_smaller_than_a_cell():
+    tiny = np.zeros((3, 40), dtype=np.uint8)
+    assert change_score(tiny, tiny, np.ones_like(tiny, dtype=bool)) is None
 
 
 def test_change_score_none_when_nothing_visible():

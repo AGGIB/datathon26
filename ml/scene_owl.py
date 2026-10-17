@@ -97,6 +97,8 @@ class OwlDetector:
     ) -> list[OwlHit]:
         h, w = frame_bgr.shape[:2]
         x0, y0, x1, y1 = to_int_box(clip_box(region, w, h)) if region else (0, 0, w, h)
+        if cache_key is not None:  # the key names the call; the content hash keeps stale hits out
+            cache_key = f"{cache_key}_{hashlib.sha1(frame_bgr[y0:y1, x0:x1].tobytes()).hexdigest()[:12]}"
         cached = self._cache_get(cache_key, queries, (x0, y0, x1, y1), threshold)
         if cached is not None:
             return cached
