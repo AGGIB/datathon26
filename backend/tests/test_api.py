@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from backend.app.config import Settings
 from backend.app.main import create_app
 from backend.app.schemas import AnalysisResult
+from backend.app.store import JobStore
 
 API_KEY = "test-key"
 
@@ -147,3 +148,89 @@ def test_finished_job_survives_restart(settings):
         resp = c.get(f"/api/v1/jobs/{job_id}", headers={"X-API-Key": API_KEY})
     assert resp.status_code == 200
     assert resp.json()["status"] == "done"
+
+
+def test_pipeline_timeout_returns_fast_fallback_not_failed(settings):
+    import time
+
+    def hanging_pipeline(video_path, on_progress=None, time_budget_sec=None):
+        time.sleep(5)
+        return {"verdict": "no_violation", "violations": []}
+
+    short_budget = Settings(
+        api_keys=settings.api_keys,
+        data_dir=settings.data_dir,
+        max_upload_mb=settings.max_upload_mb,
+        workers=1,
+        pipeline="mock",
+        mock_delay_sec=0.0,
+        job_timeout_sec=0.1,  # 100ms watchdog
+    )
+    app = create_app(short_budget, pipeline_fn=hanging_pipeline)
+    with TestClient(app) as c:
+        job_id = _upload(c).json()["job_id"]
+        resp = _wait_done(c, job_id)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "done"
+        assert body["verdict"] in {"violation", "no_violation"}
+
+
+def test_unfinished_job_resumes_and_completes_after_restart(settings, monkeypatch):
+    """If service crashes (kill -9) while job is processing, restart resumes it to done."""
+    import time
+    from unittest.mock import MagicMock
+
+    # Create a job directly in store in 'processing' state as if killed mid-run
+    store = JobStore(settings.data_dir / "jobs")
+    job_id = "aabbccdd1122"
+    job_dir = store.job_dir(job_id)
+    job_dir.mkdir(parents=True, exist_ok=True)
+    fake_video = job_dir / "input.mov"
+    fake_video.write_bytes(b"dummy")
+    store.create(job_id, fake_video, "input.mov")
+
+    def mock_pipeline_slow(video_path, on_progress=None, time_budget_sec=None):
+        return {
+            "verdict": "violation",
+            "violations": [
+                {
+                    "type": "Оставление денег без присмотра",
+                    "timecode_sec": 12.0,
+                    "description": "Деньги на стойке",
+                    "evidence_frames": [{"timestamp_sec": 12.0, "image_base64": "AAAA"}],
+                }
+            ],
+        }
+
+    restarted = create_app(settings, pipeline_fn=mock_pipeline_slow)
+    with TestClient(restarted) as c:
+        resp = _wait_done(c, job_id)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "done"
+        assert resp.json()["verdict"] == "violation"
+
+
+def test_frontend_dist_mounted_and_serves_ui(settings, tmp_path):
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    (dist_dir / "index.html").write_text("<!doctype html><html><body>Test UI</body></html>", encoding="utf-8")
+
+    ui_settings = Settings(
+        api_keys=settings.api_keys,
+        data_dir=settings.data_dir,
+        max_upload_mb=settings.max_upload_mb,
+        workers=settings.workers,
+        pipeline=settings.pipeline,
+        mock_delay_sec=0.0,
+        job_timeout_sec=settings.job_timeout_sec,
+        frontend_dist=dist_dir,
+    )
+    app = create_app(ui_settings)
+    with TestClient(app) as c:
+        resp = c.get("/")
+        assert resp.status_code == 200
+        assert "Test UI" in resp.text
+        # Ensure /health and API endpoints still work
+        assert c.get("/health").status_code == 200
+

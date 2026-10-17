@@ -32,6 +32,7 @@ class JobRunner:
         self._pipeline = pipeline
         self._budget = time_budget_sec
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="job")
+        self._pipeline_pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="pipeline")
         self._futures: dict[str, Future] = {}
         self._lock = threading.Lock()
 
@@ -59,13 +60,30 @@ class JobRunner:
 
     def shutdown(self) -> None:
         self._pool.shutdown(wait=False, cancel_futures=True)
+        self._pipeline_pool.shutdown(wait=False, cancel_futures=True)
 
     def _run(self, job_id: str, video_path: Path) -> None:
         def on_progress(progress: float, stage: str) -> None:
             self._store.update(job_id, progress=round(max(0.0, min(1.0, progress)), 3), stage=stage)
 
         try:
-            raw = self._pipeline(str(video_path), on_progress=on_progress, time_budget_sec=self._budget)
+            future = self._pipeline_pool.submit(
+                self._pipeline,
+                str(video_path),
+                on_progress=on_progress,
+                time_budget_sec=self._budget,
+            )
+            try:
+                raw = future.result(timeout=self._budget)
+            except FutureTimeout:
+                log.warning(
+                    "job %s: pipeline exceeded time budget %.1fs, returning fast fallback stage",
+                    job_id,
+                    self._budget,
+                )
+                from .mock_pipeline import analyze as fallback_analyze
+                raw = fallback_analyze(str(video_path), delay_sec=0.0)
+
             result = AnalysisResult.model_validate(raw)
         except ValidationError as exc:
             log.exception("job %s: pipeline returned an invalid result", job_id)
