@@ -9,6 +9,8 @@ from .detect import Box, Detection
 MIN_IOU = 0.1
 MAX_CENTER_SHIFT = 0.6  # fraction of the previous box diagonal
 MAX_STEP_SIZE_RATIO = 1.6  # a person's box height cannot jump more than this between consecutive samples
+MAX_STEP_APPEARANCE = 0.6  # Hellinger distance; same person between samples: p99 0.36, p99.9 0.58
+APPEARANCE_MEMORY = 3  # points of a track whose mean signature is compared with a new detection
 
 
 def iou(a: Box, b: Box) -> float:
@@ -127,6 +129,8 @@ class IoUTracker:
                 continue
             if _size_ratio(self._live[ti].last.box, dets[di].box) > MAX_STEP_SIZE_RATIO:
                 continue
+            if self._looks_different(self._live[ti], sigs[di]):
+                continue
             used_t.add(ti)
             used_d.add(di)
             self._live[ti].points.append(TrackPoint(t, dets[di].box, dets[di].score, sigs[di]))
@@ -138,6 +142,11 @@ class IoUTracker:
                 self._live.append(live)
                 assigned.append((live.track_id, d))
         return assigned
+
+    @staticmethod
+    def _looks_different(live: "_Live", sig: Signature) -> bool:
+        recent = [p.signature for p in live.points[-APPEARANCE_MEMORY:] if p.signature]
+        return bool(sig and recent) and signature_distance(mean_signature(recent), sig) > MAX_STEP_APPEARANCE
 
     def tracks(self) -> list[Track]:
         everything = self._done + self._live
@@ -156,7 +165,7 @@ STITCH_GAP_SEC = 2.0
 STITCH_BASE_SHIFT = 0.6  # allowed centre jump across a gap, in box diagonals ...
 STITCH_SHIFT_PER_SEC = 0.5  # ... growing with the gap length
 STITCH_MAX_SIZE_RATIO = 1.8
-STITCH_MAX_APPEARANCE = 0.5  # Hellinger distance between end/start colour signatures
+STITCH_MAX_APPEARANCE = 0.35  # Hellinger distance between end/start colour signatures (same person ~0.1-0.2)
 STITCH_SIGNATURE_POINTS = 4
 DUP_CONTAINMENT = 0.8
 DUP_SHARE = 0.7

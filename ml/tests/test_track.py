@@ -76,3 +76,11 @@ def test_small_far_box_is_not_hijacked_by_a_much_bigger_overlapping_box():
     small = tr.update(0.0, [det(0, 0, 20, 40)])[0][0]
     big = tr.update(0.5, [det(0, 0, 40, 100)])[0][0]
     assert big != small
+
+
+def test_track_is_not_continued_by_a_person_who_looks_completely_different():
+    tr = IoUTracker()
+    white = tr.update(0.0, [det(0, 0, 10, 20)], signatures=[(1.0, 0.0)])[0][0]
+    dark = tr.update(0.5, [det(1, 0, 11, 20)], signatures=[(0.0, 1.0)])[0][0]
+    same = tr.update(1.0, [det(1, 0, 11, 20)], signatures=[(0.0, 1.0)])[0][0]
+    assert dark != white and same == dark
