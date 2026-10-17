@@ -53,3 +53,19 @@ def test_finished_tracks_expose_full_history():
 def test_non_person_detections_are_ignored():
     tr = IoUTracker()
     assert tr.update(0.0, [det(0, 0, 10, 20, label="laptop")]) == []
+
+
+def test_tracker_keeps_appearance_signature_per_point():
+    tr = IoUTracker()
+    tr.update(0.0, [det(0, 0, 10, 20), det(50, 0, 60, 20, label="laptop")], signatures=[(1.0,), ()])
+    [track] = tr.tracks()
+    assert track.points[0].signature == (1.0,)
+
+
+def test_track_box_at_and_presence_helpers():
+    tr = IoUTracker()
+    tr.update(0.0, [det(0, 0, 10, 20)])
+    tr.update(1.0, [det(2, 0, 12, 20)])
+    [track] = tr.tracks()
+    assert track.box_at(0.9) == (2, 0, 12, 20)
+    assert track.foot_at(0.0) == (5.0, 20.0)
