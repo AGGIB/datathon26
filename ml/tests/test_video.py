@@ -37,3 +37,8 @@ def test_probe_rejects_unreadable_file(tmp_path):
     bad.write_bytes(b"not a video")
     with pytest.raises(ValueError):
         probe(bad)
+
+
+def test_probe_rejects_oversized_frames(synthetic_video):
+    with pytest.raises(ValueError):
+        probe(synthetic_video, max_pixels=64 * 48 - 1)

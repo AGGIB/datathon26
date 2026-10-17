@@ -27,7 +27,10 @@ def _open(path: Path) -> cv2.VideoCapture:
     return cap
 
 
-def probe(path: Path | str) -> VideoInfo:
+MAX_PIXELS = 3840 * 2160  # reject absurd resolutions before decoding (memory safety)
+
+
+def probe(path: Path | str, max_pixels: int = MAX_PIXELS) -> VideoInfo:
     cap = _open(Path(path))
     try:
         fps = cap.get(cv2.CAP_PROP_FPS)
@@ -38,6 +41,8 @@ def probe(path: Path | str) -> VideoInfo:
         cap.release()
     if fps <= 0 or count <= 0 or width <= 0:
         raise ValueError(f"not a readable video: {path}")
+    if width * height > max_pixels:
+        raise ValueError(f"video resolution {width}x{height} exceeds the supported maximum")
     return VideoInfo(fps=fps, frame_count=count, width=width, height=height)
 
 

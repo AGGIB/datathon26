@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 MODEL_ID = "PekingU/rtdetr_v2_r18vd"
+MODEL_REVISION = "5650961749fa93567c0d46fc7f43ea4f9e914107"  # pinned: reproducible + offline-cacheable
 INPUT_SIZE = 640
 
 # COCO classes used as signals (names as in the model config; it mixes VOC-style spellings).
@@ -55,7 +56,11 @@ class Detector:
         self._torch = torch
         self.device = device or _pick_device()
         self.input_size = input_size
-        self.model = AutoModelForObjectDetection.from_pretrained(model_id).to(self.device).eval()
+        self.model = (
+            AutoModelForObjectDetection.from_pretrained(model_id, revision=MODEL_REVISION, use_safetensors=True)
+            .to(self.device)
+            .eval()
+        )
         self._id2label = dict(self.model.config.id2label)
 
     def _prep(self, frames: list[np.ndarray]):
@@ -81,11 +86,12 @@ def decode_queries(probs: np.ndarray, boxes: np.ndarray, shape: tuple, id2label:
     scores = probs[np.arange(len(best)), best]
     dets = []
     for q in np.flatnonzero(scores >= min(OBJECT_THRESHOLD, *DEFAULT_THRESHOLDS.values())):
-        label = id2label[int(best[q])]
+        label = id2label.get(int(best[q]))
         score = float(scores[q])
         if label not in LABELS_OF_INTEREST or score < DEFAULT_THRESHOLDS.get(label, OBJECT_THRESHOLD):
             continue
         cx, cy, bw, bh = boxes[q]
-        box = ((cx - bw / 2) * w, (cy - bh / 2) * h, (cx + bw / 2) * w, (cy + bh / 2) * h)
-        dets.append(Detection(box=tuple(float(v) for v in box), score=score, label=label))
+        x0, x1 = np.clip([(cx - bw / 2) * w, (cx + bw / 2) * w], 0, w)
+        y0, y1 = np.clip([(cy - bh / 2) * h, (cy + bh / 2) * h], 0, h)
+        dets.append(Detection(box=(float(x0), float(y0), float(x1), float(y1)), score=score, label=label))
     return _nms(dets, NMS_IOU)
