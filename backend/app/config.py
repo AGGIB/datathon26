@@ -1,10 +1,24 @@
 """Runtime settings, read once from environment variables."""
 
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
 PIPELINES = frozenset({"mock", "real"})
+
+
+def positive_budget(value: float, name: str) -> float:
+    """Validate configured budgets before a pool or timer receives them."""
+    try:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError
+        result = float(value)
+        if not math.isfinite(result) or result <= 0:
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{name} must be finite and > 0") from None
+    return result
 
 
 def _strip_inline_comment(line: str) -> str:
@@ -49,15 +63,22 @@ class Settings:
     # Soft pipeline budget (K2 returns best effort result) and hard watchdog limit
     pipeline_timeout_sec: float = 200.0
     job_timeout_sec: float = 270.0
+    min_budget_sec: float = 20.0
     frontend_dist: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.api_keys:
             raise ValueError("At least one API key is required")
+        for key in self.api_keys:
+            if key.startswith("change-me-"):
+                raise ValueError(f"Placeholder API key {key!r} is not allowed. Configure real keys.")
         if self.pipeline not in PIPELINES:
             raise ValueError(f"PIPELINE must be one of {sorted(PIPELINES)}, got {self.pipeline!r}")
         if self.workers < 1:
             raise ValueError("WORKERS must be >= 1")
+        positive_budget(self.min_budget_sec, "MIN_BUDGET_SEC")
+        positive_budget(self.pipeline_timeout_sec, "PIPELINE_TIMEOUT_SEC")
+        positive_budget(self.job_timeout_sec, "JOB_TIMEOUT_SEC")
 
     @classmethod
     def from_env(cls, env_path: Path | None = None) -> "Settings":
@@ -96,5 +117,6 @@ class Settings:
             mock_delay_sec=float(get_val("MOCK_DELAY_SEC", "2.0")),
             pipeline_timeout_sec=float(get_val("PIPELINE_TIMEOUT_SEC", "200")),
             job_timeout_sec=float(get_val("JOB_TIMEOUT_SEC", "270")),
+            min_budget_sec=float(get_val("MIN_BUDGET_SEC", "20.0")),
             frontend_dist=Path(dist).resolve() if dist else None,
         )
