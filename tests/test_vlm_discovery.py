@@ -101,6 +101,7 @@ def test_prompt_contains_only_generic_criteria_and_one_based_image_time_map():
     assert payload["images_in_supplied_order"] == [
         {"image_index": i, "timestamp_s": frame.timestamp_s} for i, frame in enumerate(request.frames, 1)]
     assert "money-counting machine is not evidence" in request.prompt
+    assert "complete unobscured handling cycle with no gaps" in request.prompt
 
 
 def test_seventeen_type_frontier_has_compact_prompt_and_explicit_t04_abstention():
