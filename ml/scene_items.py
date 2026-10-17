@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from .detect import Box, Detection
 from .scene_geometry import box_area, center, expand_box, intersection, overlap_fraction
+from .scene_owl import OwlHit
 
 # query -> item label. Bundles of banknotes seen from above look like a small stack of paper to OWLv2.
 ITEM_QUERIES: dict[str, str] = {
@@ -100,7 +101,7 @@ def _explained_by_static(hit_box: Box, score: float, statics: Sequence[tuple[Box
     return any(overlap_fraction(hit_box, b) > STATIC_COVER and s >= score * 0.7 for b, s in statics)
 
 
-def items_from_owl(hits: Sequence, zone: Box, person_boxes: Sequence[Box]) -> list[DeskItem]:
+def items_from_owl(hits: Sequence[OwlHit], zone: Box, person_boxes: Sequence[Box]) -> list[DeskItem]:
     statics = [(h.box, h.score) for h in hits if h.query in STATIC_QUERIES]
     items = []
     for h in hits:
