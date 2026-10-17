@@ -1,15 +1,36 @@
 # data — never commit videos, frames or weights
 data/
 open/
-*.mov
-*.mp4
-*.avi
+# video/image patterns are case-insensitive on purpose (Linux/CI/Docker are case-sensitive)
+*.[mM][oO][vV]
+*.[mM][pP]4
+*.[aA][vV][iI]
+*.[mM][kK][vV]
+*.[wW][eE][bB][mM]
+*.[mM]4[vV]
+*.3[gG][pP]
+*.[mM][tT][sS]
+*.[jJ][pP][gG]
+*.[jJ][pP][eE][gG]
+*.[pP][nN][gG]
+!backend/app/fixtures/placeholder.jpg
 weights/
 *.pt
 *.pth
 *.onnx
 *.safetensors
+*.bin
+*.ckpt
+*.gguf
+*.npz
 var/
+
+# keys and credentials
+*.pem
+*.key
+id_rsa*
+credentials*.json
+*.p12
 
 # python
 __pycache__/
@@ -31,6 +52,10 @@ frontend/dist/
 
 # os
 .DS_Store
+
+# agent worktrees
+.claude/
+.playwright-mcp/
 
 # Local intake and case-insensitive video exclusions
 tmp/
