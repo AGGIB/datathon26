@@ -1,33 +1,43 @@
-# data — never commit videos, frames or weights
-data/
+# Local datasets, model weights, extracted evidence and private reports.
+/data/
 open/
+weights/
+var/
+*.onnx
+/models/
+/artifacts/
+/reports/
+/evidence/
+open_labels.xlsx
 *.mov
+*.MOV
 *.mp4
 *.avi
-weights/
+*.mkv
+*.safetensors
+*.gguf
 *.pt
 *.pth
-*.onnx
-*.safetensors
-var/
+*.npz
 
-# python
-__pycache__/
-*.pyc
+# Environments, caches and local credentials.
 .venv/
+venv/
+__pycache__/
+*.py[cod]
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
-.ruff_cache/
-
-# node
-node_modules/
-frontend/dist/
-
-# env / secrets
 .env
 .env.*
 !.env.example
+*.log
 
-# os
+# Build products and editor state.
+node_modules/
+dist/
+build/
 .DS_Store
+.vscode/
+.idea/

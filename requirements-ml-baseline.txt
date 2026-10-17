@@ -1,0 +1,7 @@
+# Optional local-only ML dependencies. Install/download is handled by the project owner.
+# Standard-library tests/help work without these. ffmpeg is a separate local executable.
+numpy>=1.26,<3
+Pillow>=10,<13
+torch>=2.2,<3
+transformers>=4.37,<6
+safetensors>=0.4,<1
