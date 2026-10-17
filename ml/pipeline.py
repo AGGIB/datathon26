@@ -8,147 +8,107 @@ on_progress(progress: float 0..1, stage: str) may be called any number of times.
 time_budget_sec: soft deadline; on overrun return the best result so far instead of failing.
 
 Stages: perception (detect, 0..0.7) -> rules (0.7..0.85) -> evidence + assembly (0.85..1).
-The backend runs several worker threads; they share one detector, initialised once and
-used by one thread at a time.
+Speed differs ~30x between MPS and a CPU container, so the detector's cost per frame is measured
+(calibrate), and the sampling rate / input size are chosen so that detection ends before the deadline.
 """
 
 import dataclasses
 import logging
 import math
-import threading
 import time
-from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
-from functools import partial
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 
 from . import rules
 from .assemble import assemble
 from .candidates import Candidate
-from .detect import Detection, Detector
+from .detect import INPUT_SIZE, Detection
 from .events import extract_events
-from .evidence import render_candidate
+from .evidence import render_evidence
+from .kb import ViolationType, catalog
 from .perception import SAMPLE_FPS, Perception, perceive
+from .shared_detector import SharedDetector
 from .video import VideoInfo, probe
 
 log = logging.getLogger(__name__)
 
 ProgressFn = Callable[[float, str], None]
+CostFn = Callable[[int], float]
 
 PROGRESS_DETECT_END = 0.7
 PROGRESS_RULES_END = 0.85
 
+TRACKER_GAP_SEC = 1.0  # IoUTracker(max_gap_sec=1.0) inside perceive(): a longer gap ends a track
 MAX_SAMPLE_FPS = SAMPLE_FPS
-MIN_SAMPLE_FPS = 1.0  # below this, short hand-overs between frames are lost
-PLAN_SHARE = 0.7  # share of the remaining budget the detection plan may use; the rest absorbs contention
-FIXED_OVERHEAD_SEC = 20.0  # first-run warm-up, rules, evidence
-FINISH_RESERVE_SEC = 15.0  # detection stops this long before the deadline so rules and evidence still run
-# Seconds per sampled frame for RT-DETRv2-R18 at 640 px, batch 8 (MPS measured ~0.09, CPU ~0.46 on M-series).
-SEC_PER_FRAME_PRIOR = {"cuda": 0.05, "mps": 0.15, "cpu": 0.6}
-SPEED_EMA_ALPHA = 0.3
+SAFE_MIN_FPS = 2.2  # one missed detection still fits into the tracker gap (2 / 2.2 = 0.91 s)
+HARD_MIN_FPS = 1.25  # consecutive samples still link (0.8 s); any miss splits the track
+SMALL_INPUT_SIZE = 480  # ~0.55x the CPU cost of 640; on MPS it saves nothing
+# (input size, lowest acceptable fps) from best to cheapest
+PLAN_LADDER = ((INPUT_SIZE, SAFE_MIN_FPS), (SMALL_INPUT_SIZE, SAFE_MIN_FPS), (SMALL_INPUT_SIZE, HARD_MIN_FPS))
+PLAN_SHARE = 0.8  # share of the detection window the plan may fill; the rest absorbs decode and jitter
+FINISH_RESERVE_SEC = 15.0  # detection ends this long before the deadline so rules and evidence still run
+TAIL_TOLERANCE_SEC = 1.0  # missing video end beyond one sampling step + this is treated as undecodable
+RENDER_ERRORS = (ValueError, OSError, cv2.error)
 
 
-class SharedDetector:
-    """One model for all worker threads: lazy init and inference under locks, plus measured speed."""
-
-    def __init__(self, factory: Callable[[], Detector] = Detector) -> None:
-        self._factory = factory
-        self._model: Detector | None = None
-        self._init_lock = threading.Lock()
-        self._infer_lock = threading.Lock()
-        self._jobs_lock = threading.Lock()
-        self._active_jobs = 0
-        self._warmed_up = False
-        self._sec_per_frame: float | None = None
-
-    @contextmanager
-    def job(self) -> Iterator[None]:
-        """Marks a running analysis, so planners know how many jobs compete for the model."""
-        with self._jobs_lock:
-            self._active_jobs += 1
-        try:
-            yield
-        finally:
-            with self._jobs_lock:
-                self._active_jobs -= 1
-
-    def active_jobs(self) -> int:
-        return self._active_jobs
-
-    def model(self) -> Detector:
-        with self._init_lock:
-            if self._model is None:
-                started = time.monotonic()
-                self._model = self._factory()
-                log.info("pipeline: detector ready on %s in %.1fs", self.device_of(self._model),
-                         time.monotonic() - started)
-            return self._model
-
-    @staticmethod
-    def device_of(model: Detector) -> str:
-        return str(getattr(model, "device", "cpu"))
-
-    def detect(self, frames: list[np.ndarray]) -> list[list[Detection]]:
-        model = self.model()
-        with self._infer_lock:
-            started = time.monotonic()
-            out = model.detect(frames)
-            self._record_speed(time.monotonic() - started, len(frames))
-        return out
-
-    def _record_speed(self, elapsed: float, n_frames: int) -> None:
-        if n_frames == 0:
-            return
-        if not self._warmed_up:  # the first batch pays for kernel compilation / cache warm-up
-            self._warmed_up = True
-            return
-        per_frame = elapsed / n_frames
-        prev = self._sec_per_frame
-        self._sec_per_frame = per_frame if prev is None else prev + SPEED_EMA_ALPHA * (per_frame - prev)
-
-    def sec_per_frame(self) -> float:
-        if self._sec_per_frame is not None:
-            return self._sec_per_frame
-        return SEC_PER_FRAME_PRIOR.get(self.device_of(self.model()), SEC_PER_FRAME_PRIOR["cpu"])
+@dataclasses.dataclass(frozen=True)
+class SamplingPlan:
+    sample_fps: float
+    input_size: int
+    sec_per_frame: float  # expected inference cost per frame (0.0 when no budget, nothing measured)
 
 
-class _DeadlineDetector:
-    """Per-job view of the shared model: after the deadline frames are skipped, not inferred."""
+def plan_sampling(duration_sec: float, window_sec: float | None, cost_at: CostFn, contention: int = 1) -> SamplingPlan:
+    """Best (input size, fps) whose detection fits `window_sec`; cost_at(size) is called only when needed."""
+    if window_sec is None or duration_sec <= 0:
+        return SamplingPlan(MAX_SAMPLE_FPS, INPUT_SIZE, 0.0)
+    if window_sec <= 0:
+        return SamplingPlan(HARD_MIN_FPS, SMALL_INPUT_SIZE, 0.0)
+    for size, min_fps in PLAN_LADDER:
+        cost = cost_at(size)
+        fps = window_sec * PLAN_SHARE / (duration_sec * max(cost * contention, 1e-6))
+        if fps >= min_fps:
+            return SamplingPlan(min(MAX_SAMPLE_FPS, fps), size, cost)
+    # Even the sparsest plan does not fit: run it anyway, the deadline guard cuts the tail.
+    return SamplingPlan(HARD_MIN_FPS, SMALL_INPUT_SIZE, cost_at(SMALL_INPUT_SIZE))
 
-    def __init__(self, shared: SharedDetector, deadline: float | None) -> None:
+
+class _BudgetedDetector:
+    """Per-job view of the shared model: once a batch would end after the deadline, the rest is skipped."""
+
+    def __init__(self, shared: SharedDetector, plan: SamplingPlan, deadline: float | None) -> None:
         self._shared = shared
+        self._plan = plan
         self._deadline = deadline
+        self._stopped = False
         self.processed = 0
         self.skipped = 0
 
     def detect(self, frames: list[np.ndarray]) -> list[list[Detection]]:
-        if self._deadline is not None and time.monotonic() >= self._deadline:
-            self.skipped += len(frames)
-            return [[] for _ in frames]
-        out = self._shared.detect(frames)
-        self.processed += len(frames)
-        return out
+        if not self._stopped:
+            out = self._infer(frames)
+            if out is not None:
+                self.processed += len(frames)
+                return out
+            self._stopped = True  # never resume: the analysed part must stay a prefix of the video
+        self.skipped += len(frames)
+        return [[] for _ in frames]
+
+    def _infer(self, frames: list[np.ndarray]) -> list[list[Detection]] | None:
+        if self._deadline is None:
+            return self._shared.detect(frames, self._plan.input_size)
+        return self._shared.detect_before(frames, self._plan.input_size, self._deadline, self._plan.sec_per_frame)
 
 
 _SHARED = SharedDetector()
 
 
-def plan_sample_fps(duration_sec: float, budget_sec: float | None, sec_per_frame: float) -> float:
-    """Highest sampling rate (MIN..MAX) whose detection cost fits the remaining budget."""
-    if budget_sec is None or duration_sec <= 0:
-        return MAX_SAMPLE_FPS
-    available = budget_sec * PLAN_SHARE - FIXED_OVERHEAD_SEC
-    if available <= 0:
-        return MIN_SAMPLE_FPS
-    fps = available / (duration_sec * max(sec_per_frame, 1e-6))
-    return float(min(MAX_SAMPLE_FPS, max(MIN_SAMPLE_FPS, fps)))
-
-
 def _truncate(perception: Perception, n_frames: int) -> Perception:
-    """Perception of the analysed prefix only, so rules do not read skipped frames as an empty room."""
+    """Perception of the analysed prefix only, so rules do not read the missing part as an empty room."""
     frames = perception.frames[:n_frames]
     info = perception.info
     t_cut = frames[-1].t if frames else 0.0
@@ -158,37 +118,56 @@ def _truncate(perception: Perception, n_frames: int) -> Perception:
     return dataclasses.replace(perception, info=cut_info, frames=frames, tracks=tracks, events=events)
 
 
-def _reporter(on_progress: ProgressFn | None) -> ProgressFn:
-    def report(progress: float, stage: str) -> None:
-        if on_progress is not None:
-            on_progress(progress, stage)
-
-    return report
-
-
-def _perceive_within(
-    video_path: str, info: VideoInfo, deadline: float | None, budget_left: float | None, report: ProgressFn
-) -> Perception:
-    # inference is serialised, so every job running in parallel slows this one down proportionally
-    cost = _SHARED.sec_per_frame() * max(1, _SHARED.active_jobs())
-    fps = plan_sample_fps(info.duration, budget_left, cost)
-    guard = _DeadlineDetector(_SHARED, deadline)
-    perception = perceive(
-        video_path, guard, sample_fps=fps,
-        on_progress=lambda p, _stage: report(PROGRESS_DETECT_END * p, "detect"),
-    )
-    log.info("pipeline: %s %.1fs video sampled at %.2f fps, %d frames in %.1fs",
-             Path(video_path).name, info.duration, fps, len(perception.frames), perception.elapsed_sec)
+def _finalize(perception: Perception, guard: _BudgetedDetector, plan: SamplingPlan) -> Perception:
     if guard.skipped:
         log.warning("pipeline: time budget reached, %d of %d frames skipped — analysing the first %d",
                     guard.skipped, guard.skipped + guard.processed, guard.processed)
         return _truncate(perception, guard.processed)
+    if not perception.frames:
+        raise ValueError("no frames could be decoded from the video")
+    missing = perception.info.duration - perception.frames[-1].t
+    if missing > 1.0 / plan.sample_fps + TAIL_TOLERANCE_SEC:
+        log.warning("pipeline: last %.1fs of the video could not be decoded — analysing the decoded part", missing)
+        return _truncate(perception, len(perception.frames))
     return perception
 
 
-def _find_candidates(perception: Perception) -> Sequence[Candidate]:
+def _perceive(video_path: str, info: VideoInfo, time_budget_sec: float | None, started: float,
+              report: ProgressFn) -> Perception:
+    deadline = None if time_budget_sec is None else started + time_budget_sec - FINISH_RESERVE_SEC
+    window = None if deadline is None else deadline - time.monotonic()
+    frame_hw = (info.height, info.width)
+    plan = plan_sampling(info.duration, window, lambda size: _SHARED.calibrate(frame_hw, size),
+                         contention=max(1, _SHARED.active_jobs()))
+    log.info("pipeline: %s %.1fs video, plan %.2f fps at %d px (%.3f s/frame expected, %d jobs)",
+             Path(video_path).name, info.duration, plan.sample_fps, plan.input_size, plan.sec_per_frame,
+             _SHARED.active_jobs())
+    guard = _BudgetedDetector(_SHARED, plan, deadline)
+    perception = perceive(
+        video_path, guard, sample_fps=plan.sample_fps,
+        on_progress=lambda p, _stage: report(PROGRESS_DETECT_END * p, "detect"),
+    )
+    log.info("pipeline: %d frames detected in %.1fs", guard.processed, perception.elapsed_sec)
+    return _finalize(perception, guard, plan)
+
+
+def _render(video_path: str, candidate: Candidate) -> list[dict]:
+    """Evidence at the rule's moments; if that fails, at the interval edges without boxes."""
+    attempts = ((candidate.evidence_times, candidate.highlight_boxes), ((candidate.t_start, candidate.t_end), ()))
+    for times, boxes in attempts:
+        try:
+            frames = render_evidence(video_path, times, boxes)
+        except RENDER_ERRORS:
+            log.exception("pipeline: evidence for %s at %s failed", candidate.type_id, times)
+            continue
+        if frames:
+            return frames
+    return []
+
+
+def _judge(perception: Perception) -> Sequence[Candidate]:
     if not perception.frames:
-        log.warning("pipeline: no frames were analysed, nothing to judge")
+        log.warning("pipeline: no frames were analysed in time, nothing to judge")
         return []
     return rules.find_candidates(perception, scene=None)
 
@@ -202,21 +181,27 @@ def analyze(
         return _analyze(video_path, _reporter(on_progress), time_budget_sec)
 
 
+def _reporter(on_progress: ProgressFn | None) -> ProgressFn:
+    def report(progress: float, stage: str) -> None:
+        if on_progress is not None:
+            on_progress(progress, stage)
+
+    return report
+
+
 def _analyze(video_path: str, report: ProgressFn, time_budget_sec: float | None) -> dict[str, Any]:
     started = time.monotonic()
     report(0.0, "detect")
-    info = probe(video_path)  # unreadable input fails here, before the model is touched
+    types: Mapping[str, ViolationType] = catalog()  # a broken kb fails now, not after detection
+    info = probe(video_path)  # so does an unreadable video
     _SHARED.model()
-
-    deadline = None if time_budget_sec is None else started + time_budget_sec - FINISH_RESERVE_SEC
-    budget_left = None if time_budget_sec is None else time_budget_sec - (time.monotonic() - started)
-    perception = _perceive_within(video_path, info, deadline, budget_left, report)
+    perception = _perceive(video_path, info, time_budget_sec, started, report)
 
     report(PROGRESS_DETECT_END, "rules")
-    candidates = _find_candidates(perception)
+    candidates = _judge(perception)
 
     report(PROGRESS_RULES_END, "evidence")
-    result = assemble(candidates, partial(render_candidate, video_path))
+    result = assemble(candidates, lambda c: _render(video_path, c), types=types)
     report(1.0, "evidence")
     log.info("pipeline: %s -> %s, %d candidates, %d violations, %.1fs total", Path(video_path).name,
              result["verdict"], len(candidates), len(result["violations"]), time.monotonic() - started)

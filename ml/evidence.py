@@ -13,7 +13,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .candidates import Candidate
 from .detect import Box
 from .video import frame_at, probe
 
@@ -120,7 +119,3 @@ def render_evidence(video_path: Path | str, times: Sequence[float], boxes: Seque
         at, image = found
         frames.append({"timestamp_sec": at, "image_base64": encode_jpeg_b64(draw_boxes(image, boxes))})
     return frames
-
-
-def render_candidate(video_path: Path | str, candidate: Candidate) -> list[dict]:
-    return render_evidence(video_path, candidate.evidence_times, candidate.highlight_boxes)
