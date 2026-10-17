@@ -39,6 +39,11 @@ MAX_WINDOW_FRAMES = 12
 MAX_TYPES = 17
 MAX_FINDINGS = 6
 
+
+class BudgetExhausted(RuntimeError):
+    """A budget-aware backend could not claim its next underlying model call."""
+
+
 # Generic visual criteria only; never annotations, example IDs or legal excerpts.
 _VISUAL_CRITERIA = {
     "banknote_returned_after_check": "Banknotes visibly undergo checking/processing, then the cashier actually hands those banknotes back to the client. Both ordered actions must be visible; ordinary cash handover alone is insufficient. Never infer authenticity or a reason for return.",
@@ -393,11 +398,12 @@ def discover_types(video_path: str | Path, originals: Sequence[Candidate],
             or any(window.t_end > duration_sec for window in windows)):
         raise ValueError("discovery windows exceed the video/frame bounds")
     types, unavailable = _catalog_types(catalog, tuple(sorted(set(allowed_type_ids))))
-    decisions, added, calls = [], [], 0
+    decisions, added = [], []
+    initial_calls = budget.calls_used
 
     def finish(status):
         return DiscoveryReport(retained, tuple(added), tuple(decisions), unavailable,
-                               calls, budget.calls_used, status, requested)
+                               budget.calls_used - initial_calls, budget.calls_used, status, requested)
 
     if not windows:
         return finish("no_windows")
@@ -431,15 +437,27 @@ def discover_types(video_path: str | Path, originals: Sequence[Candidate],
                 return finish("prompt_too_long")
             request = InferenceRequest(prompt, selected, "checklist", None, tuple(types),
                                        response_schema(types, window.timestamps))
-            if not budget.claim():
-                return finish(budget.unavailable() or "budget_exhausted")
-            calls += 1
             try:
-                raw = _bounded_call(lambda: backend.infer(request, budget.remaining()), budget.remaining())
+                budgeted_infer = getattr(backend, "infer_with_budget", None)
+                if callable(budgeted_infer):
+                    # A multi-stage backend claims immediately before EACH raw
+                    # inference. The owner must not pre-charge the window too.
+                    def operation(request=request, budgeted_infer=budgeted_infer):
+                        return budgeted_infer(request, budget)
+                else:
+                    if not budget.claim():
+                        return finish(budget.unavailable() or "budget_exhausted")
+                    def operation(request=request):
+                        return backend.infer(request, budget.remaining())
+                raw = _bounded_call(operation, budget.remaining())
                 if budget.remaining() <= 0:
                     raise TimeoutError("inference_timeout")
                 findings = _parse(raw, types, selected, window)
             except Exception as exc:
+                if isinstance(exc, BudgetExhausted):
+                    reason = "video_timeout" if budget.remaining() <= 0 else "budget_exhausted"
+                    decisions.append(DiscoveryDecision(index, "uncertain", reason))
+                    return finish(reason)
                 reason = ("invalid_response" if isinstance(exc, InvalidResponse) else
                           "video_timeout" if isinstance(exc, TimeoutError) else "backend_error")
                 code = str(exc) if isinstance(exc, InvalidResponse) and re.fullmatch(r"[a-z_]{1,80}", str(exc)) else None
