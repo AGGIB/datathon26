@@ -51,6 +51,7 @@ class InferenceRequest:
     mode: Literal["candidate", "checklist"]
     candidate_id: str | None
     allowed_rule_ids: tuple[str, ...]
+    response_schema: Mapping[str, Any] | None = None
 
 
 class Backend(Protocol):
