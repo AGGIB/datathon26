@@ -74,6 +74,7 @@ from .scene_signals import (
     ramp,
     screen_features,
 )
+from .video import frames_at
 
 SAMPLE_FPS = 2.0
 MAX_BACKGROUND_FRAMES = 30
@@ -159,29 +160,12 @@ class SceneAnalysis:
 
 
 def read_frames(video_path: Path | str, times: Sequence[float]) -> list[np.ndarray]:
-    """Frames nearest to the requested times, decoded in one sequential pass (seeking is unreliable here)."""
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise ValueError(f"cannot open video: {video_path}")
-    try:
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        wanted = sorted((max(0, int(round(t * fps))), i) for i, t in enumerate(times))
-        out: dict[int, np.ndarray] = {}
-        idx, last = 0, None
-        while wanted and cap.grab():
-            if wanted[0][0] <= idx:
-                ok, frame = cap.retrieve()
-                last = frame if ok else last
-                while wanted and wanted[0][0] <= idx:
-                    out[wanted.pop(0)[1]] = last
-            idx += 1
-        for _, i in wanted:  # requested past the end: repeat the last decoded frame
-            out[i] = last
-    finally:
-        cap.release()
-    if any(v is None for v in out.values()):
+    """Frames for the requested times (exact, one sequential pass via ml.video.frames_at)."""
+    found = frames_at(video_path, list(times))
+    if not found:
         raise ValueError(f"no frames decoded from {video_path}")
-    return [out[i] for i in range(len(times))]
+    have = sorted(found)
+    return [found[t] if t in found else found[min(have, key=lambda h: abs(h - t))] for t in times]
 
 
 def detections_at(perception: Perception, t: float, max_dt: float = PERSON_MATCH_SEC) -> list[Detection]:
