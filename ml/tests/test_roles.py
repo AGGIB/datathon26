@@ -77,9 +77,9 @@ def test_handoff_needs_same_place_and_moment():
 
 
 def test_near_span_trims_the_walk_outside_the_room():
-    walk = Track(5, trk(5, 0, 3, BEHIND_GLASS).points + trk(5, 3.5, 10, DESK_FAR_SIDE).points)
+    walk = Track(5, trk(5, 2, 5, BEHIND_GLASS).points + trk(5, 5.5, 12, DESK_FAR_SIDE).points)
     span = near_span(walk, WP)
-    assert span.t_start == 3.5 and span.t_end == 10.0
+    assert span.t_start == 5.5 and span.t_end == 12.0
     assert near_span(trk(6, 0, 3, BEHIND_GLASS), WP) is None
 
 
@@ -138,7 +138,13 @@ def test_desk_is_where_objects_stay_put_near_the_seat():
 
 
 def test_near_span_starts_when_the_visitor_is_clearly_inside():
-    through_glass = trk(5, 0, 2, DESK_FAR_SIDE, score=0.62)  # behind the glass door, already close in the image
-    inside = trk(5, 2.5, 10, DESK_FAR_SIDE, score=0.9)
+    through_glass = trk(5, 3, 5, DESK_FAR_SIDE, score=0.62)  # behind the glass door, already close in the image
+    inside = trk(5, 5.5, 13, DESK_FAR_SIDE, score=0.9)
     span = near_span(Track(5, through_glass.points + inside.points), WP)
-    assert 2.0 <= span.t_start <= 3.0 and span.t_end == 10.0
+    assert 5.0 <= span.t_start <= 6.0 and span.t_end == 13.0
+
+
+def test_visitor_present_from_the_video_start_keeps_the_start():
+    weak_start = Track(5, trk(5, 0, 2, DESK_FAR_SIDE, score=0.62).points + trk(5, 2.5, 10, DESK_FAR_SIDE).points)
+    span = near_span(weak_start, WP, duration=10.0)
+    assert span.t_start == 0.0 and span.t_end == 10.0

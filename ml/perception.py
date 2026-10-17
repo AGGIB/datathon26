@@ -95,7 +95,7 @@ def track_people(frames: Sequence[FrameObjects], tol: Tolerances) -> list[Track]
 def analyze_frames(frames: Sequence[FrameObjects], duration: float, sample_fps: float = SAMPLE_FPS) -> Scene:
     tol = tolerances(sample_fps)
     tracks = track_people(frames, tol)
-    roles = assign_roles(tracks)
+    roles = assign_roles(tracks, duration)
     if roles.workplace is not None:
         desk = desk_point([f.detections for f in frames], roles.workplace)
         roles = dataclasses.replace(roles, workplace=dataclasses.replace(roles.workplace, desk=desk))

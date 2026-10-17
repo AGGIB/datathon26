@@ -31,6 +31,7 @@ MIN_INROOM_SCORE = 0.8
 # a visit (visitor inside the room) starts/ends where the visitor is near and clearly seen, not through the glass
 VISIT_MIN_SCORE = 0.8
 VISIT_SCORE_WINDOW_SEC = 1.0
+VISIT_EDGE_SEC = 1.0  # a track touching the video start/end was already/still inside: keep that end untrimmed
 
 # mirrors / duplicates: weaker track with the same look that lives at the same time as a real one
 MIRROR_SHARE = 0.6
@@ -210,13 +211,15 @@ def _window_score(points: Sequence[TrackPoint], i: int) -> float:
     return sum(window) / len(window)
 
 
-def near_span(track: Track, wp: Workplace) -> Track | None:
+def near_span(track: Track, wp: Workplace, duration: float | None = None) -> Track | None:
     """The part of a visitor track between its first and last moment clearly inside, near the workplace."""
     pts = track.points
     near = [i for i, p in enumerate(pts) if wp.distance(p.box) <= NEAR_DIST and _window_score(pts, i) >= VISIT_MIN_SCORE]
     if not near:
         return None
-    return Track(track.track_id, track.points[near[0]:near[-1] + 1])
+    first = 0 if track.t_start <= VISIT_EDGE_SEC else near[0]
+    last = len(pts) - 1 if duration is not None and track.t_end >= duration - VISIT_EDGE_SEC else near[-1]
+    return Track(track.track_id, pts[first:last + 1])
 
 
 def _classify(track: Track, real: Sequence[Track], cashier: list[Track], wp: Workplace) -> str:
@@ -275,7 +278,7 @@ def _chain_cashier(cashier: Sequence[Track], wp: Workplace) -> list[Track]:
     return chained
 
 
-def assign_roles(tracks: Sequence[Track]) -> Roles:
+def assign_roles(tracks: Sequence[Track], duration: float | None = None) -> Roles:
     long_enough = [tr for tr in tracks if tr.duration >= MIN_TRACK_SEC]
     short = [(tr.track_id, "short") for tr in tracks if tr.duration < MIN_TRACK_SEC]
     anchor = pick_anchor(long_enough)
@@ -290,7 +293,7 @@ def assign_roles(tracks: Sequence[Track]) -> Roles:
     remaining = {t.track_id for t in _absorb_cashier_handoffs(cashier, undecided, wp)}
     visitors = [v for v in visitors if v.track_id in remaining]
     rejected = short + [(tid, k) for tid, k in kinds.items() if k == "mirror" or (k == "outside" and tid in remaining)]
-    spans = [near_span(v, wp) for v in merge_visitor_handoffs(visitors, wp)]
+    spans = [near_span(v, wp, duration) for v in merge_visitor_handoffs(visitors, wp)]
     roles = Roles(
         workplace=wp,
         cashier=tuple(_chain_cashier(cashier, wp)),
