@@ -166,8 +166,13 @@ def _validated_result(result):
     for event in events:
         if not isinstance(event, dict):
             raise ValueError()
-        kind = event.get('type')
-        if kind not in (None, '') and (not isinstance(kind, str) or not kind.strip()):
+        for field in ('type', 'type_id'):
+            kind = event.get(field)
+            if kind not in (None, '') and (not isinstance(kind, str) or not kind.strip()):
+                raise ValueError()
+        confidence = event.get('confidence')
+        if confidence is not None and (isinstance(confidence, bool) or not isinstance(confidence, (int, float))
+                                       or not math.isfinite(confidence) or not 0 <= confidence <= 1):
             raise ValueError()
         for key in ('timecode_sec', 't_start', 't_peak', 't_end'):
             value = event.get(key)
@@ -182,7 +187,7 @@ def _validated_result(result):
     json.dumps(result, allow_nan=False)
     return {'status': 'done', 'verdict': verdict,
             'violations': [{key: event[key] for key in
-                            ('type', 'timecode_sec', 't_start', 't_peak', 't_end') if key in event}
+                            ('type', 'type_id', 'confidence', 'timecode_sec', 't_start', 't_peak', 't_end') if key in event}
                            for event in events]}
 
 

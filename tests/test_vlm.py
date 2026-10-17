@@ -327,7 +327,7 @@ class VLMTests(unittest.TestCase):
                 self.assertEqual(runtime.infer(request), response())
             for event in events:
                 if event[0].startswith("load_"):
-                    self.assertEqual(event[1], str(root))
+                    self.assertEqual(event[1], str(root.resolve()))
                     self.assertIs(event[2]["local_files_only"], True)
                     self.assertIs(event[2]["trust_remote_code"], False)
                     if event[0] != "load_processor":

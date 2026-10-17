@@ -17,8 +17,8 @@
 Из корня проекта (bash/MSYS; замените `<ТОЧНОЕ_ИМЯ>.MOV` буквальным именем существующего файла):
 
 ```bash
-py -3.10 -m ml.baseline extract \
-  --video 'C:/Users/esenb/Downloads/open/open/videos/<ТОЧНОЕ_ИМЯ>.MOV' \
+python -m ml.baseline extract \
+  --video 'data/open/videos/<ТОЧНОЕ_ИМЯ>.MOV' \
   --weights models/siglip-base-patch16-224 \
   --output artifacts/baseline/smoke.npz \
   --fps 1 --max-frames 2 --batch-size 1 --cpu-threads 2 --device cpu

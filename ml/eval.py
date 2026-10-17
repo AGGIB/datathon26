@@ -11,6 +11,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 from xml.etree import ElementTree as ET
 import zipfile
 
@@ -432,14 +433,28 @@ def _validate_content_consistency(rows, hashes):
     for members in groups.values():
         if len({row['truth_positive'] for row in members}) != 1:
             raise ValueError('conflicting binary labels for exact duplicate content')
-        successful = [row for row in members if row['status'] == 'ok']
-        if len({json.dumps([row['predicted_positive'], row['predicted_events']], sort_keys=True)
-                for row in successful}) > 1:
-            raise ValueError('conflicting successful predictions for exact duplicate content')
         inventories = [row['truth_events'] if not row['label_only_localization'] else [] for row in members]
         if (len({json.dumps(_canonical_events(events), sort_keys=True)
                  for events in inventories}) > 1 and _primary_anchor_type(members) is None):
             raise ValueError('conflicting explicit annotations for exact duplicate content')
+
+
+def _group_prediction(members):
+    """Union successful inventories without multiplying identical events across duplicate runs.
+
+    Keep the maximum multiplicity seen in one member, so an actual repeated prediction is still
+    counted. Differences stay visible in metadata; they do not invalidate an entire dataset report.
+    """
+    successful = [row for row in members if row['status'] == 'ok']
+    counts, events = Counter(), {}
+    for row in successful:
+        inventory = Counter(json.dumps(event, sort_keys=True) for event in row['predicted_events'])
+        counts |= inventory
+        events.update({json.dumps(event, sort_keys=True): event for event in row['predicted_events']})
+    combined = _canonical_events(events[key] for key, count in counts.items() for _ in range(count))
+    differ = len({json.dumps([row['predicted_positive'], row['predicted_events']], sort_keys=True)
+                  for row in successful}) > 1
+    return any(row['predicted_positive'] for row in successful), combined, differ
 
 
 def score(labels, predictions, annotations=None, split=None, subset=None, tolerance_sec=2.0,
@@ -475,11 +490,12 @@ def score(labels, predictions, annotations=None, split=None, subset=None, tolera
     for digest, members in groups.items():
         first = members[0]
         video = first['video']
+        positive, events, predictions_differ = _group_prediction(members)
         anchors = sorted({row['truth_timestamp'] for row in members
                           if row['truth_positive'] and row['truth_timestamp'] is not None})
         anchor = None
         if anchors:
-            peaks = [event['t_peak'] for event in first['predicted_events'] if event['t_peak'] is not None]
+            peaks = [event['t_peak'] for event in events if event['t_peak'] is not None]
             anchor = min(anchors, key=lambda t: (min((abs(t - peak) for peak in peaks), default=math.inf), t))
         group_labels.append({'video': video, 'positive': first['truth_positive'], 'timestamp': anchor})
         status = min((row['status'] for row in members),
@@ -488,8 +504,8 @@ def score(labels, predictions, annotations=None, split=None, subset=None, tolera
         elapsed = max(elapsed) if all(value is not None for value in elapsed) else None
         if status != 'missing':
             group_predictions.append({'video': video, 'status': status,
-                                      'verdict': 'violation' if first['predicted_positive'] else 'no_violation',
-                                      'violations': first['predicted_events'] if status == 'ok' else [],
+                                      'verdict': 'violation' if positive else 'no_violation',
+                                      'violations': events if status == 'ok' else [],
                                       'elapsed_sec': elapsed})
         angle_ids = sorted({row['angle_id'] for row in members})
         angle = angle_ids[0] if len(angle_ids) == 1 else 'multiple'
@@ -502,6 +518,8 @@ def score(labels, predictions, annotations=None, split=None, subset=None, tolera
         else:
             group_annotations.append({'video': video, 'angle_id': angle})
         metadata[video] = {'content_sha256': digest, 'videos': [row['video'] for row in members],
+                           'member_predictions_differ': predictions_differ,
+                           'prediction_aggregation': 'successful_inventory_union',
                            'angle_ids': angle_ids, 'alternative_anchors_sec': anchors,
                            'member_status_counts': dict(Counter(row['status'] for row in members))}
     grouped = _score_videos(group_labels, group_predictions, annotations=group_annotations,
@@ -560,6 +578,13 @@ def _audit_directory(value):
     path = Path(text)
     if not path.is_absolute():
         path = Path.cwd() / path
+    # macOS exposes its own temporary roots through these immutable system aliases.
+    # Canonicalize only the verified OS alias; retain no-follow checks for every user link.
+    if sys.platform == 'darwin' and len(path.parts) > 1 and path.parts[1] in ('var', 'tmp'):
+        alias = Path('/') / path.parts[1]
+        target = Path('/private') / path.parts[1]
+        if alias.is_symlink() and alias.parent / alias.readlink() == target:
+            path = target.joinpath(*path.parts[2:])
     if os.name == 'nt':
         import ctypes
         if ctypes.windll.kernel32.GetDriveTypeW(str(path.anchor)) == 4:

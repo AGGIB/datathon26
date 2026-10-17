@@ -325,17 +325,13 @@ def test_duplicate_groups_never_cherry_pick_success_over_missing_or_failed_membe
     assert report['overall']['sla']['within_300_sec'] == 0
 
 
-@pytest.mark.parametrize('conflict', ['label', 'verdict', 'events', 'annotation'])
+@pytest.mark.parametrize('conflict', ['label', 'annotation'])
 def test_exact_duplicate_label_and_successful_prediction_conflicts_are_rejected(conflict):
     labels = [label('first'), label('second')]
     predictions = [prediction(row['video']) for row in labels]
     annotations = None
     if conflict == 'label':
         labels[1] = label('second', positive=False, timestamp=None)
-    elif conflict == 'verdict':
-        predictions[1] = prediction('second', (), False)
-    elif conflict == 'events':
-        predictions[1] = prediction('second', (20,))
     else:
         annotations = [{'video': row['video'], 't_peak': 10 + i, 'type_id': 'fixture'}
                        for i, row in enumerate(labels)]
@@ -594,8 +590,8 @@ def test_hash_consistency_checks_unselected_duplicate_members_too():
             for i, row in enumerate(labels)]
     labels[0]['content_sha256'] = hashes['train-a']  # Actual hashes may complete partial label provenance.
     predictions = [prediction('train-a'), prediction('train-b', (20,)), prediction('test')]
-    with pytest.raises(ValueError, match='conflicting successful predictions'):
-        score(labels, predictions, split=rows, content_hashes=hashes)
+    report = score(labels, predictions, split=rows, content_hashes=hashes)
+    assert report['overall']['total'] == 1  # differences outside the test set do not abort its report
 
 
 def test_consistent_explicit_duplicate_event_inventory_is_counted_once():
@@ -660,9 +656,10 @@ def test_permuted_successful_duplicate_predictions_are_the_same_inventory(events
 
 def test_duplicate_prediction_inventory_multiplicity_still_matters():
     labels = [label('first'), label('second')]
-    with pytest.raises(ValueError, match='conflicting successful predictions'):
-        score(labels, [prediction('first', (10,)), prediction('second', (10, 10))],
-              content_hashes={row['video']: digest(b'same') for row in labels})
+    report = score(labels, [prediction('first', (10,)), prediction('second', (10, 10))],
+                   content_hashes={row['video']: digest(b'same') for row in labels})
+    assert report['per_content_group'][0]['member_predictions_differ']
+    assert report['overall']['localization']['predicted_events'] == 2
 
 
 @pytest.mark.parametrize('command', ['score', 'run'])
@@ -693,7 +690,7 @@ def test_incomplete_actual_files_preserve_failures_without_claiming_content_qual
 
 
 @pytest.mark.parametrize('command', ['score', 'run'])
-@pytest.mark.parametrize('conflict', ['labels', 'annotations', 'predictions'])
+@pytest.mark.parametrize('conflict', ['labels', 'annotations'])
 def test_incomplete_audit_keeps_known_duplicate_integrity(tmp_path, monkeypatch, capsys, command, conflict):
     import ml.eval as evaluator
     labels, videos, predictions = cli_fixture(tmp_path)
@@ -778,7 +775,7 @@ def test_console_and_written_report_do_not_hide_unavailable_content_aggregation(
     assert 'video_diagnostic' in markdown
 
 
-@pytest.mark.parametrize('conflict', ['labels', 'predictions'])
+@pytest.mark.parametrize('conflict', ['labels'])
 def test_self_reported_split_hashes_reject_known_conflicts_without_enabling_quality(conflict):
     labels = [label('train-a'), label('train-b'), label('test')]
     rows = [dict(video=row['video'], subset='train' if i < 2 else 'test',
