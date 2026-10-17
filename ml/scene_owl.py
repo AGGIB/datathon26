@@ -9,9 +9,13 @@ import hashlib
 import json
 import logging
 import threading
+import time
 from collections.abc import Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 import cv2
 import numpy as np
@@ -59,6 +63,20 @@ def decode_hits(
     return nms_per_query(hits)
 
 
+def check_deadline(deadline: float | None) -> None:
+    """Raise when a caller's absolute monotonic deadline has expired."""
+    if deadline is not None and time.monotonic() >= deadline:
+        raise TimeoutError("scene analysis deadline exceeded")
+
+
+@dataclass
+class OwlStats:
+    """Forward passes attributed to one analysis, even when analyses share the detector."""
+
+    calls: int = 0
+    images: int = 0
+
+
 class OwlDetector:
     """Lazy OWLv2 wrapper. `detect` / `detect_batch` take BGR frames and optional regions to zoom into.
 
@@ -84,10 +102,39 @@ class OwlDetector:
         self.cache_dir = cache_dir
         self.calls = 0  # forward passes (updated under the lock)
         self.images = 0  # images scored
+        self._stats: ContextVar[OwlStats | None] = ContextVar("owl_analysis_stats", default=None)
 
-    def load(self) -> None:
-        """Load weights now (otherwise on the first detect call). Safe to call from several threads."""
-        with self._lock:
+    @contextmanager
+    def measure_calls(self):
+        """Count only forwards in this thread/context, excluding concurrent video analyses."""
+        stats = OwlStats()
+        token = self._stats.set(stats)
+        try:
+            yield stats
+        finally:
+            self._stats.reset(token)
+
+    @contextmanager
+    def _locked(self, deadline: float | None):
+        check_deadline(deadline)
+        acquired = self._lock.acquire() if deadline is None else self._lock.acquire(
+            timeout=max(0.0, deadline - time.monotonic())
+        )
+        if not acquired:
+            raise TimeoutError("scene deadline exceeded waiting for OWLv2")
+        try:
+            check_deadline(deadline)
+            yield
+        finally:
+            self._lock.release()
+
+    def load(self, deadline: float | None = None) -> None:
+        """Load the pinned local snapshot; no network requests. Safe to call from several threads.
+
+        Populate the model cache during setup and prewarm outside timed jobs. A native model load already
+        in progress cannot be interrupted, so `deadline` is cooperative and checked after each load step.
+        """
+        with self._locked(deadline):
             if self._model is not None:
                 return
             import torch
@@ -97,10 +144,14 @@ class OwlDetector:
 
             self._torch = torch
             self._device = self._device or _pick_device()
-            self._processor = Owlv2Processor.from_pretrained(self.model_id, revision=self.revision)
+            check_deadline(deadline)
+            self._processor = Owlv2Processor.from_pretrained(self.model_id, revision=self.revision,
+                                                                  local_files_only=True)
+            check_deadline(deadline)
             model = Owlv2ForObjectDetection.from_pretrained(self.model_id, revision=self.revision,
-                                                            use_safetensors=True)
+                                                            use_safetensors=True, local_files_only=True)
             self._model = model.to(self._device).eval()
+            check_deadline(deadline)
 
     def detect(
         self,
@@ -109,8 +160,9 @@ class OwlDetector:
         region: Box | None = None,
         threshold: float = DEFAULT_THRESHOLD,
         cache_key: str | None = None,
+        deadline: float | None = None,
     ) -> list[OwlHit]:
-        return self.detect_batch([(frame_bgr, region)], queries, threshold, [cache_key])[0]
+        return self.detect_batch([(frame_bgr, region)], queries, threshold, [cache_key], deadline=deadline)[0]
 
     def detect_batch(
         self,
@@ -118,11 +170,16 @@ class OwlDetector:
         queries: Sequence[str],
         threshold: float = DEFAULT_THRESHOLD,
         cache_keys: Sequence[str | None] | None = None,
+        deadline: float | None = None,
     ) -> list[list[OwlHit]]:
         """Run several (frame, region) views with the same queries in one forward pass."""
+        check_deadline(deadline)
         keys = list(cache_keys) if cache_keys is not None else [None] * len(views)
+        if len(keys) != len(views):
+            raise ValueError("cache_keys must match views")
         crops, todo, results = [], [], [None] * len(views)
         for i, ((frame, region), key) in enumerate(zip(views, keys)):
+            check_deadline(deadline)
             h, w = frame.shape[:2]
             rect = to_int_box(clip_box(region, w, h)) if region else (0, 0, w, h)
             crop = frame[rect[1]:rect[3], rect[0]:rect[2]]
@@ -135,23 +192,32 @@ class OwlDetector:
                 crops.append(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
         for start in range(0, len(todo), MAX_BATCH):  # 960x960 ViT attention: ~0.6 GB per image in flight
             chunk = todo[start:start + MAX_BATCH]
-            hits_list = self._forward(crops[start:start + MAX_BATCH], queries, [r for _, r in chunk], threshold)
+            hits_list = self._forward(crops[start:start + MAX_BATCH], queries, [r for _, r in chunk], threshold,
+                                      deadline=deadline)
             for (i, rect), hits in zip(chunk, hits_list):
                 results[i] = hits
                 self._cache_put(keys[i], queries, rect, threshold, hits)
+        check_deadline(deadline)
         return results
 
-    def _forward(self, crops: list[np.ndarray], queries: Sequence[str], rects: list[tuple], threshold: float):
-        with self._lock:
-            self.load()
+    def _forward(self, crops: list[np.ndarray], queries: Sequence[str], rects: list[tuple], threshold: float,
+                 deadline: float | None = None):
+        with self._locked(deadline):
+            self.load(deadline=deadline)
             texts = [list(queries)] * len(crops)
             inputs = self._processor(text=texts, images=crops, return_tensors="pt").to(self._device)
+            check_deadline(deadline)
             with self._torch.no_grad():
                 out = self._model(**inputs)
             self.calls += 1
             self.images += len(crops)
+            stats = self._stats.get()
+            if stats is not None:
+                stats.calls += 1
+                stats.images += len(crops)
             probs = out.logits.sigmoid().cpu().numpy()  # (B, P, Q)
             boxes = out.pred_boxes.cpu().numpy()  # (B, P, 4)
+            check_deadline(deadline)
         return [
             decode_hits(probs[j], boxes[j], queries, float(max(r[2] - r[0], r[3] - r[1])), (r[0], r[1]), threshold)
             for j, r in enumerate(rects)
@@ -161,7 +227,7 @@ class OwlDetector:
     def _cache_file(self, key: str, queries: Sequence[str], region: tuple, threshold: float) -> Path | None:
         if self.cache_dir is None or key is None:
             return None
-        digest = hashlib.sha1(json.dumps([self.model_id, list(queries), region, threshold]).encode()).hexdigest()
+        digest = hashlib.sha1(json.dumps([self.model_id, self.revision, list(queries), region, threshold]).encode()).hexdigest()
         return self.cache_dir / f"{key}_{digest[:16]}.json"
 
     def _cache_get(self, key, queries, region, threshold) -> list[OwlHit] | None:
@@ -179,7 +245,16 @@ class OwlDetector:
         if file is None:
             return
         file.parent.mkdir(parents=True, exist_ok=True)
-        file.write_text(json.dumps([asdict(h) for h in hits]))
+        temporary = None
+        try:
+            with NamedTemporaryFile(mode="w", encoding="utf-8", dir=file.parent, prefix=f".{file.name}.",
+                                    suffix=".tmp", delete=False) as fh:
+                temporary = Path(fh.name)
+                fh.write(json.dumps([asdict(h) for h in hits]))
+            temporary.replace(file)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
 
 _SHARED: OwlDetector | None = None

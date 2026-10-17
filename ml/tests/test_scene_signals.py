@@ -198,8 +198,9 @@ def _gray(v):
 def test_region_reference_trusts_a_clean_start():
     grays = [_gray(10), _gray(200), _gray(200)]
     visible = [np.ones((8, 8), bool)] * 3
-    ref, how = region_reference(grays, visible, [0.0, 1.0, 2.0], (0, 0, 8, 8), 0.8, 2.0)
+    ref, ref_visible, how = region_reference(grays, visible, [0.0, 1.0, 2.0], (0, 0, 8, 8), 0.8, 2.0)
     assert how == "start" and ref[0, 0] == 10
+    assert ref_visible.all()
 
 
 def test_region_reference_uses_the_usual_state_when_hidden_at_start():
@@ -207,13 +208,14 @@ def test_region_reference_uses_the_usual_state_when_hidden_at_start():
     shown = np.ones((8, 8), bool)
     grays = [_gray(0), _gray(250), _gray(10), _gray(10), _gray(10)]  # opened at 3 s, closed after
     visible = [hidden, shown, shown, shown, shown]
-    ref, how = region_reference(grays, visible, [0.0, 3.0, 4.0, 5.0, 6.0], (0, 0, 8, 8), 0.8, 2.0)
+    ref, ref_visible, how = region_reference(grays, visible, [0.0, 3.0, 4.0, 5.0, 6.0], (0, 0, 8, 8), 0.8, 2.0)
     assert how == "median" and ref[0, 0] == 10
+    assert ref_visible.all()
 
 
 def test_region_reference_none_when_never_clean():
-    ref, how = region_reference([_gray(1)], [np.zeros((8, 8), bool)], [0.0], (0, 0, 8, 8), 0.8, 2.0)
-    assert ref is None and how == "none"
+    ref, ref_visible, how = region_reference([_gray(1)], [np.zeros((8, 8), bool)], [0.0], (0, 0, 8, 8), 0.8, 2.0)
+    assert ref is None and ref_visible is None and how == "none"
 
 
 def test_hold_forward_keeps_leading_gap_unknown():

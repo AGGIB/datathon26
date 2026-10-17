@@ -55,3 +55,102 @@ def test_scene_analysis_lookups():
     assert scene.series("safe_open") == [(0.0, 0.0), (0.5, 1.0), (1.0, 0.0)]
     assert states[2].has_item("cup") and not states[2].has_item("cup", min_score=0.9)
     assert states[0].item_labels == ("phone",)
+
+
+def test_key_signal_abstains_for_static_or_unreliable_lock():
+    from ml.scene import key_trusted
+
+    assert not key_trusted([20.0] * 20, lock_confidence=0.9)  # dark screw mistaken for a key
+    assert not key_trusted([0.0] * 5 + [20.0] * 5, lock_confidence=0.05)
+    assert key_trusted([0.0] * 5 + [20.0] * 5, lock_confidence=0.9)
+
+
+def test_scene_expired_deadline_stops_before_decoding(monkeypatch):
+    import time
+
+    import pytest
+
+    import ml.scene as scene_module
+
+    def unexpected_read(*args):
+        raise AssertionError("must not decode after the deadline")
+
+    monkeypatch.setattr(scene_module, "read_frames", unexpected_read)
+    with pytest.raises(TimeoutError, match="deadline"):
+        scene_module.analyze_scene("unused.mov", None, deadline=time.monotonic() - 1)
+
+
+def test_scene_stops_after_decode_overruns_deadline(monkeypatch):
+    from types import SimpleNamespace
+
+    import pytest
+
+    import ml.scene as scene_module
+
+    clock = [0.0]
+    monkeypatch.setattr(scene_module.time, "monotonic", lambda: clock[0])
+
+    def decode(*args):
+        clock[0] = 11.0
+        return []
+
+    def unexpected_layout(*args, **kwargs):
+        raise AssertionError("must not start layout after decoding exceeds the budget")
+
+    monkeypatch.setattr(scene_module, "read_frames", decode)
+    monkeypatch.setattr(scene_module, "locate_layout", unexpected_layout)
+    perception = SimpleNamespace(info=SimpleNamespace(duration=1.0))
+    with pytest.raises(TimeoutError, match="deadline"):
+        scene_module.analyze_scene("unused.mov", perception, deadline=10.0)
+
+
+def test_safe_region_normalizes_its_own_light_and_skips_lights_off():
+    import numpy as np
+
+    from ml.scene import _region_series
+
+    rng = np.random.default_rng(7)
+    reference = rng.integers(80, 180, (32, 32)).astype(np.uint8)
+    shadow = (reference * 0.65).astype(np.uint8)
+    dark = rng.integers(0, 10, (32, 32)).astype(np.uint8)  # structure lost in low light
+    frames = [reference, shadow, dark]
+    visible = [np.ones((32, 32), dtype=bool)] * 3
+    raw, chosen = _region_series(frames, visible, [0.0, 1.0, 2.0], (0, 0, 32, 32),
+                                gains=[1.0] * 3, skip=[False, False, True], structural=True)
+    assert chosen == "start"
+    assert raw == [0.0, 0.0, None]
+
+
+def test_reference_change_cannot_calibrate_an_already_open_door():
+    """Document the polarity limitation: static appearance alone gives no closed-state evidence."""
+    import numpy as np
+
+    from ml.scene import _region_series
+
+    closed = np.full((32, 32), 150, dtype=np.uint8)
+    opened = closed.copy()
+    opened[:, ::4] = 40
+    visible = [np.ones((32, 32), dtype=bool)] * 3
+    raw, chosen = _region_series([opened, opened, closed], visible, [0.0, 1.0, 2.0], (0, 0, 32, 32),
+                                gains=[1.0] * 3, skip=[False] * 3)
+    assert chosen == "start"
+    assert raw == [0.0, 0.0, 1.0]  # relative change, not proof that the last frame is open
+
+
+def test_person_pixels_in_start_reference_do_not_open_an_unchanged_safe():
+    import numpy as np
+
+    from ml.scene import _finish, _region_series
+
+    face = np.full((64, 64), 150, dtype=np.uint8)
+    hidden_start = face.copy()
+    hidden_start[::2, :12] = 20  # striped clothing in 18.75% of the start reference
+    partially_visible = np.ones((64, 64), dtype=bool)
+    partially_visible[:, :12] = False
+    frames = [hidden_start] * 2 + [face] * 4
+    visible = [partially_visible] * 2 + [np.ones_like(partially_visible)] * 4
+    raw, chosen = _region_series(frames, visible, list(range(6)), (0, 0, 64, 64),
+                                gains=[1.0] * 6, skip=[False] * 6, structural=True)
+    assert chosen == "start"
+    assert raw == [0.0] * 6
+    assert _finish(raw, (0.07, 0.17)) == [0.0] * 6

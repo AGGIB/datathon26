@@ -37,6 +37,7 @@ import logging
 import math
 import time
 from collections.abc import Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -68,7 +69,7 @@ from .scene_layout import (
     pick_safe,
     pick_screen,
 )
-from .scene_owl import OwlDetector, OwlHit
+from .scene_owl import OwlDetector, OwlHit, OwlStats, check_deadline
 from .scene_signals import (
     change_score,
     global_gain,
@@ -212,12 +213,14 @@ def locate_layout(
     detections: Sequence[Sequence[Detection]],
     owl: OwlDetector | None = None,
     cache_key: str | None = None,
+    deadline: float | None = None,
 ) -> tuple[Layout, np.ndarray]:
     """Find the static layout from time-ordered sampled frames and their detections.
 
     Returns (layout, start_background): the room as it was at the start of the video with people removed.
     The start is used (not the median) because doors and the safe are closed before the cashier acts.
     """
+    check_deadline(deadline)
     h, w = frames[0].shape[:2]
     masks = [person_mask((h, w), [d.box for d in dets if d.label == "person"]) for dets in detections]
     idx = _even_subset(len(frames), MAX_BACKGROUND_FRAMES)
@@ -225,7 +228,8 @@ def locate_layout(
     background = initial_background(frames, masks, fallback)
     coco_laptops = [d.box for dets in detections for d in dets if d.label == "laptop"]
     laptop, c_laptop = pick_laptop(coco_laptops, [])
-    hits, screen_hits = _layout_hits(background, laptop, owl, cache_key)
+    check_deadline(deadline)
+    hits, screen_hits = _layout_hits(background, laptop, owl, cache_key, deadline=deadline)
     if laptop is None:
         laptop, c_laptop = pick_laptop(coco_laptops, hits)
     desk, c_desk = pick_desk(hits, laptop, w, h)
@@ -235,17 +239,19 @@ def locate_layout(
     if owl is not None and safe is not None:
         region = expand_box(safe, 0.3, 0.1, width=w, height=h)
         lock_hits = owl.detect(background, LOCK_QUERIES, region=region,
-                               cache_key=f"{cache_key}_lock" if cache_key else None)
+                               cache_key=f"{cache_key}_lock" if cache_key else None, deadline=deadline)
         lock, c_lock = pick_lock(lock_hits, safe)
     screen, c_screen = pick_screen(screen_hits, laptop)
     conf = {"desk": c_desk, "safe": c_safe, "door": c_door, "laptop": c_laptop, "lock": c_lock, "screen": c_screen}
     layout = Layout(w, h, desk, safe, door, laptop, lock, screen, {k: round(v, 3) for k, v in conf.items()})
     log.info("layout %s", layout)
+    check_deadline(deadline)
     return layout, background
 
 
 def _layout_hits(
-    background: np.ndarray, laptop: Box | None, owl: OwlDetector | None, cache_key: str | None
+    background: np.ndarray, laptop: Box | None, owl: OwlDetector | None, cache_key: str | None,
+    deadline: float | None = None,
 ) -> tuple[list[OwlHit], list[OwlHit]]:
     """Whole-room layout queries and the zoomed laptop crop (screen) in one OWLv2 forward pass."""
     if owl is None:
@@ -255,7 +261,7 @@ def _layout_hits(
     if laptop is not None:
         views.append((background, expand_box(laptop, 0.4, width=w, height=h)))
     keys = [f"{cache_key}_layout", f"{cache_key}_screen"][: len(views)] if cache_key else None
-    results = owl.detect_batch(views, LAYOUT_QUERIES + SCREEN_QUERIES, cache_keys=keys)
+    results = owl.detect_batch(views, LAYOUT_QUERIES + SCREEN_QUERIES, cache_keys=keys, deadline=deadline)
     hits = [x for x in results[0] if x.query in LAYOUT_QUERIES]
     screen_hits = results[1] if len(results) > 1 else []
     return hits, screen_hits
@@ -281,7 +287,7 @@ def _region_series(
     """
     if roi is None:
         return [None] * len(grays), "none"
-    ref, how = region_reference(grays, visible, times, roi, MIN_ROI_VISIBLE, TRUST_START_SEC)
+    ref, ref_visible, how = region_reference(grays, visible, times, roi, MIN_ROI_VISIBLE, TRUST_START_SEC)
     if ref is None:
         return [None] * len(grays), how
     x0, y0, x1, y1 = roi
@@ -291,7 +297,9 @@ def _region_series(
         if skipped or v.mean() < MIN_ROI_VISIBLE:
             out.append(None)
             continue
-        valid = v if ignore is None else v & ~ignore[y0:y1, x0:x1]
+        valid = v & ref_visible
+        if ignore is not None:
+            valid &= ~ignore[y0:y1, x0:x1]
         cur = gray[y0:y1, x0:x1]
         local = global_gain(cur, ref, valid) if structural else gain
         out.append(change_score(cur, ref, valid, gain=local, structural_only=structural))
@@ -444,8 +452,10 @@ def _scan_keyframes(
     owl: OwlDetector | None,
     keyframes: Sequence[float],
     cache_key: str | None,
+    deadline: float | None = None,
 ) -> dict[float, list[DeskItem]]:
     """OWLv2 desk scan at keyframes, keyed by the sampled time each keyframe snaps to."""
+    check_deadline(deadline)
     if owl is None or layout.desk is None:
         return {}
     zone = desk_zone(layout.desk, layout.width, layout.height)
@@ -453,7 +463,7 @@ def _scan_keyframes(
     snapped = sorted({int(np.argmin([abs(t - kt) for t in times])) for kt in keyframes})
     views = [(frames[i], region) for i in snapped]
     keys = [f"{cache_key}_desk_{times[i]:.2f}" for i in snapped] if cache_key else None
-    batches = owl.detect_batch(views, ITEM_SCAN_QUERIES, cache_keys=keys) if views else []
+    batches = owl.detect_batch(views, ITEM_SCAN_QUERIES, cache_keys=keys, deadline=deadline) if views else []
     out: dict[float, list[DeskItem]] = {}
     for i, hits in zip(snapped, batches):
         persons = [d.box for d in persons_at(perception, times[i])]
@@ -470,8 +480,11 @@ def _build_states(
     keyframes: Sequence[float],
     cache_key: str | None,
     background: np.ndarray,
+    deadline: float | None = None,
 ) -> tuple[list[SceneState], tuple[float, ...], dict[str, str]]:
-    keyframe_items = _scan_keyframes(times, frames, perception, layout, owl, keyframes, cache_key)
+    check_deadline(deadline)
+    keyframe_items = _scan_keyframes(times, frames, perception, layout, owl, keyframes, cache_key, deadline=deadline)
+    check_deadline(deadline)
     raw = _measure(times, frames, perception, layout, keyframe_items, background)
     safe, door = _finish(raw.safe, SAFE_CHANGE), _finish(raw.door, DOOR_CHANGE)
     on, work = _finish_unit(raw.screen_on), _finish_unit(raw.screen_work)
@@ -483,6 +496,7 @@ def _build_states(
                    keyframe=t in keyframe_items, people=raw.people[i])
         for i, t in enumerate(times)
     ]
+    check_deadline(deadline)
     return states, tuple(sorted(keyframe_items)), raw.references
 
 
@@ -523,19 +537,30 @@ def analyze_scene(
     owl: OwlDetector | None = None,
     sample_fps: float = SAMPLE_FPS,
     cache_key: str | None = None,
+    deadline: float | None = None,
 ) -> SceneAnalysis:
-    """One-call entry for the pipeline: layout + states at `sample_fps` (at most MAX_SAMPLES) over the video."""
+    """Layout + states over the video, stopping cooperatively at an absolute monotonic `deadline`.
+
+    Expiration raises TimeoutError before another expensive stage/OWL batch starts. Decoding, model loading
+    and an in-flight native forward cannot be interrupted; the deadline is checked immediately afterward.
+    Prewarm the shared detector outside timed video jobs when a strict wall-clock budget is needed.
+    """
     started = time.monotonic()
-    calls_before = owl.calls if owl else 0
+    check_deadline(deadline)
     duration = perception.info.duration
     times = sample_times(duration, min(sample_fps, MAX_SAMPLES / max(duration, 1e-6)))
     frames = read_frames(video_path, times)
-    layout, background = locate_layout(frames, [detections_at(perception, t) for t in times], owl, cache_key)
-    keyframes = pick_keyframes(perception.events, perception.info.duration)
-    states, used, refs = _build_states(times, frames, perception, layout, owl, keyframes, cache_key, background)
-    calls = (owl.calls - calls_before) if owl else 0
+    check_deadline(deadline)
+    with owl.measure_calls() if owl is not None else nullcontext(OwlStats()) as stats:
+        layout, background = locate_layout(frames, [detections_at(perception, t) for t in times], owl, cache_key,
+                                           deadline=deadline)
+        check_deadline(deadline)
+        keyframes = pick_keyframes(perception.events, perception.info.duration)
+        states, used, refs = _build_states(times, frames, perception, layout, owl, keyframes, cache_key, background,
+                                          deadline=deadline)
+    check_deadline(deadline)
     log.info("scene %s: layout confidence %s, references %s", video_path, layout.confidence, refs)
-    return SceneAnalysis(layout, tuple(states), used, time.monotonic() - started, calls, refs)
+    return SceneAnalysis(layout, tuple(states), used, time.monotonic() - started, stats.calls, refs)
 
 
 __all__ = [

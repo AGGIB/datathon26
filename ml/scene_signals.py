@@ -204,8 +204,8 @@ def key_protrusion(gray: np.ndarray, lock: Box, scale: int) -> float | None:
 def region_reference(
     grays: Sequence[np.ndarray], visible: Sequence[np.ndarray], times: Sequence[float], roi: tuple[int, int, int, int],
     min_visible: float, trust_start_sec: float,
-) -> tuple[np.ndarray | None, str]:
-    """Reference appearance of one region (safe, door) and how it was chosen.
+) -> tuple[np.ndarray | None, np.ndarray | None, str]:
+    """Reference appearance, its visible-pixel mask, and how it was chosen for one region (safe, door).
 
     "start": the first sample where people hide < (1 - min_visible) of the region, if that happens within
     trust_start_sec — the state before anyone touched it. Otherwise "median": per-pixel median over all clean
@@ -215,9 +215,10 @@ def region_reference(
     x0, y0, x1, y1 = roi
     clean = [i for i, v in enumerate(visible) if v[y0:y1, x0:x1].size and v[y0:y1, x0:x1].mean() >= min_visible]
     if not clean:
-        return None, "none"
+        return None, None, "none"
     if times[clean[0]] <= trust_start_sec:
-        return grays[clean[0]][y0:y1, x0:x1], "start"
+        first = clean[0]
+        return grays[first][y0:y1, x0:x1], visible[first][y0:y1, x0:x1], "start"
     stack = np.stack([grays[i][y0:y1, x0:x1] for i in clean]).astype(np.float32)
     hidden = np.stack([~visible[i][y0:y1, x0:x1] for i in clean])
     stack[hidden] = np.nan
@@ -225,7 +226,9 @@ def region_reference(
         warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN columns are handled below
         med = np.nanmedian(stack, axis=0)
     fallback = np.median(np.stack([grays[i][y0:y1, x0:x1] for i in clean]), axis=0)
-    return np.clip(np.rint(np.where(np.isnan(med), fallback, med)), 0, 255).astype(np.uint8), "median"
+    ref_valid = ~np.isnan(med)
+    reference = np.clip(np.rint(np.where(ref_valid, med, fallback)), 0, 255).astype(np.uint8)
+    return reference, ref_valid, "median"
 
 
 def hold_forward(values: Sequence[float | None]) -> list[float | None]:
