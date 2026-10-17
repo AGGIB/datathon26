@@ -339,3 +339,38 @@ def test_cli_errors_never_echo_private_values(monkeypatch, capsys):
     assert probe_module.main() == 1
     captured = capsys.readouterr()
     assert 'ERROR:' in captured.err and 'SYNTHETIC_PRIVATE_INPUT' not in captured.err
+
+
+def test_action_contrast_is_optional_fingerprinted_and_lifecycle_owned_by_probe(local_probe, monkeypatch):
+    import json
+    from ml.vlm import action_backend
+
+    case = local_probe
+    wrapped = []
+    class Wrapper:
+        def __init__(self, inner, *, catalog):
+            self.inner = inner
+            self.last_actions = ()
+            wrapped.append(self)
+        def validate(self, timeout_s):
+            self.inner.validate(timeout_s)
+        def close(self):
+            self.inner.close()
+    monkeypatch.setattr(action_backend, 'ActionContrastBackend', Wrapper)
+    case.module.run(case.args)  # legacy SimpleNamespace has no action_contrast field.
+    first = json.loads(case.args.out.with_suffix('.audit.json').read_text())
+    assert first['config']['decoder_policy'] == 'direct_discovery' and not wrapped
+    case.args.out = case.root/'var/contrast.json'
+    case.args.action_contrast = True
+    original = case.discovery.discover_types
+    def discover(*args, **kwargs):
+        assert isinstance(kwargs['backend'], Wrapper)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(case.discovery, 'discover_types', discover)
+    case.module.run(case.args)
+    second = json.loads(case.args.out.with_suffix('.audit.json').read_text())
+    assert second['config']['decoder_policy'] == action_backend.DECODER_POLICY
+    assert first['config_sha256'] != second['config_sha256']
+    assert len(wrapped) == 1 and len(case.prepared) == len(case.closed) == 2
+    assert second['videos']['X-1']['decoder_last_call_actions'] == []
+    assert 'decoder_last_call_actions' not in second['videos']['X-3']  # reuse links its source.

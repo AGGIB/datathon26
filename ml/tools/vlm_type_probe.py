@@ -216,6 +216,11 @@ def run(args):
         raise ValueError("local_python_required")
     artifacts = {path.name: _sha(path) for path in sorted(directory.iterdir())
                  if path.is_file() and (path.suffix in {".json", ".jinja", ".txt", ".model", ".safetensors"})}
+    action_contrast = getattr(args, "action_contrast", False)
+    if type(action_contrast) is not bool:
+        raise ValueError("action_contrast_must_be_boolean")
+    from ml.vlm.action_backend import DECODER_POLICY
+
     config = {"model_directory": str(directory), "model_artifact_sha256": artifacts,
               "model_weights_sha256": artifacts.get("model.safetensors"),
               "python": str(args.python.absolute()), "runtime": _runtime_versions(args.python),
@@ -224,6 +229,7 @@ def run(args):
               "kb_path": str(Path(KB_PATH).absolute()), "kb_sha256": _sha(Path(KB_PATH)),
               "max_tokens": args.max_tokens, "frame_side": args.frame_side,
               "budget_sec": args.budget, "allowlist": TYPE_IDS, "sampling_policy": POLICY_ID,
+              "decoder_policy": DECODER_POLICY if action_contrast else "direct_discovery",
               "baseline_sha256": _sha(args.baseline) if args.baseline else None,
               "source_sha256": _source_hashes(), "selected_video_ids": sorted(videos),
               "evaluation_scope": "development_only_not_new_angle",
@@ -231,8 +237,13 @@ def run(args):
     fingerprint = hashlib.sha256(json.dumps(config, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     audit = {"config": config, "config_sha256": fingerprint, "videos": {}}
     results, completed = {}, {}
+    types = catalog()
     backend = LocalMLXBackend(directory, python_executable=args.python,
                               max_new_tokens=args.max_tokens, max_image_side=args.frame_side)
+    if action_contrast:
+        from ml.vlm.action_backend import ActionContrastBackend
+
+        backend = ActionContrastBackend(backend, catalog=types)
     with _output_lease(args.out):
         try:
             started = time.monotonic()
@@ -246,7 +257,6 @@ def run(args):
                 _save(audit_path, audit)
                 return results
             audit["startup"] = {"status": "ready", "elapsed_sec": round(time.monotonic() - started, 3)}
-            types = catalog()
             for key, path in videos.items():
                 started = time.monotonic()
                 base = baseline.get(key, {}).get("violations", [])
@@ -276,6 +286,8 @@ def run(args):
                                              "report": asdict(report), "vlm_only": additions,
                                              "inference_reused": reused, "inference_source_video": owner,
                                              "actual_calls_used": 0 if reused else report.calls_used}
+                    if action_contrast and not reused:
+                        audit["videos"][key]["decoder_last_call_actions"] = list(backend.last_actions)
                     logging.info("%s status=%s calls=%d added=%d reused=%s elapsed=%.1fs", key, report.status,
                                  0 if reused else report.calls_used, len(additions), reused, time.monotonic() - started)
                 except Exception as exc:
@@ -303,6 +315,7 @@ def main():
     parser.add_argument("--budget", type=float, default=180)
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--frame-side", type=int, default=640)
+    parser.add_argument("--action-contrast", action="store_true", help="experimental balanced physical-action decoder")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     try:
         args = parser.parse_args()
