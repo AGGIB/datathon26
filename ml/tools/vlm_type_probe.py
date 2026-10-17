@@ -201,7 +201,24 @@ def _coded_verifications(values):
                 or not isinstance(value.get("reason"), str)
                 or re.fullmatch(r"[a-z][a-z0-9_]{0,79}", value["reason"]) is None):
             continue
-        result.append({key: value[key] for key in ("episode_id", "accepted", "reason")})
+        copied = {key: value[key] for key in ("episode_id", "accepted", "reason")}
+        if "status" in value or "witness_frame_indices" in value:
+            status, indices = value.get("status"), value.get("witness_frame_indices")
+            expected = {
+                "supported": (True, "visible_temporal_witness_supported"),
+                "no_witness": (False, "primitive_evidence_not_supported"),
+                "scope_abstention": (False, "multiple_proposals_not_supported"),
+            }
+            if (not isinstance(status, str) or status not in expected
+                    or (value["accepted"], value["reason"]) != expected[status]
+                    or not isinstance(indices, (tuple, list))
+                    or any(type(index) is not int or not 1 <= index <= 12 for index in indices)
+                    or (status == "supported" and (len(indices) != 3 or not (
+                        indices[0] == indices[1] == indices[2] or indices[0] < indices[1] < indices[2])))
+                    or (status != "supported" and indices)):
+                continue
+            copied.update(status=status, witness_frame_indices=list(indices))
+        result.append(copied)
     return result
 
 
@@ -238,16 +255,23 @@ def run(args):
     action_contrast = getattr(args, "action_contrast", False)
     verify_actions = getattr(args, "verify_actions", False)
     compact_verify_actions = getattr(args, "compact_verify_actions", False)
+    temporal_witness_actions = getattr(args, "temporal_witness_actions", False)
     if type(action_contrast) is not bool:
         raise ValueError("action_contrast_must_be_boolean")
     if type(verify_actions) is not bool:
         raise ValueError("verify_actions_must_be_boolean")
     if type(compact_verify_actions) is not bool:
         raise ValueError("compact_verify_actions_must_be_boolean")
+    if type(temporal_witness_actions) is not bool:
+        raise ValueError("temporal_witness_actions_must_be_boolean")
     from ml.vlm.action_backend import DECODER_POLICY
 
     decoder_policy = DECODER_POLICY if action_contrast else "direct_discovery"
-    if compact_verify_actions:
+    if temporal_witness_actions:
+        from ml.vlm.temporal_witness_backend import DECODER_POLICY as VERIFIER_POLICY
+
+        decoder_policy = VERIFIER_POLICY
+    elif compact_verify_actions:
         from ml.vlm.compact_verified_action_backend import DECODER_POLICY as VERIFIER_POLICY
 
         decoder_policy = VERIFIER_POLICY
@@ -255,7 +279,7 @@ def run(args):
         from ml.vlm.verified_action_backend import DECODER_POLICY as VERIFIER_POLICY
 
         decoder_policy = VERIFIER_POLICY
-    max_model_calls = 4 if (compact_verify_actions or verify_actions) else 2
+    max_model_calls = 4 if (temporal_witness_actions or compact_verify_actions or verify_actions) else 2
     config = {"model_directory": str(directory), "model_artifact_sha256": artifacts,
               "model_weights_sha256": artifacts.get("model.safetensors"),
               "python": str(args.python.absolute()), "runtime": _runtime_versions(args.python),
@@ -276,7 +300,11 @@ def run(args):
     backend = LocalMLXBackend(directory, python_executable=args.python,
                               max_new_tokens=args.max_tokens, max_image_side=args.frame_side)
     try:
-        if compact_verify_actions:
+        if temporal_witness_actions:
+            from ml.vlm.temporal_witness_backend import TemporalWitnessBackend
+
+            backend = TemporalWitnessBackend(backend, catalog=types)
+        elif compact_verify_actions:
             from ml.vlm.compact_verified_action_backend import CompactVerifiedActionBackend
 
             backend = CompactVerifiedActionBackend(backend, catalog=types)
@@ -371,6 +399,8 @@ def main():
     parser.add_argument("--verify-actions", action="store_true", help="experimental blind primitive verification; overrides --action-contrast")
     parser.add_argument("--compact-verify-actions", action="store_true",
                         help="experimental compact blind verification; overrides --verify-actions and --action-contrast")
+    parser.add_argument("--temporal-witness-actions", action="store_true",
+                        help="experimental blind full-window witnesses; overrides all other action decoder flags")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     try:
         args = parser.parse_args()
