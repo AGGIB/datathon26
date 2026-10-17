@@ -180,6 +180,7 @@ def check_reference(entry, indexed, label):
     introductions = {
         ("NBRK-231", "z444"): "19. Кассовый работник банка осуществляет следующие действия:",
         ("NBRK-231", "z445"): "19. Кассовый работник банка осуществляет следующие действия:",
+        ("NBRK-231", "z446"): "19. Кассовый работник банка осуществляет следующие действия:",
         ("NBRK-231", "z454"): "31. Кассовый работник банка осуществляет следующие действия:",
         ("NBRK-14", "z121"): "16. Устройство помещения кассы (касс) соответствуют следующим параметрам:",
     }
@@ -333,7 +334,11 @@ def validate_catalog(path, indexed, mapping):
                 f"{tid}: запись каталога не должна утверждать реализацию детектора")
         template = entry["description_template"]
         require("это может указывать" in template.casefold(), f"{tid}: нужен условный description_template")
-        require(not forbidden.search(template), f"{tid}: категоричное / невидимое утверждение в description_template")
+        # The approved T01 condition states the norm; it does not label the observed money.
+        assertions = template.replace(
+            "требования не возвращать клиенту банкноты и монеты с признаками подделки, если их статус подтверждён",
+            "требования невозврата при подтверждённом статусе") if tid == "Т01" else template
+        require(not forbidden.search(assertions), f"{tid}: категоричное / невидимое утверждение в description_template")
         try:
             placeholders = list(string.Formatter().parse(template))
         except ValueError as error:
@@ -346,7 +351,7 @@ def validate_catalog(path, indexed, mapping):
                         f"{tid}: недопустимый placeholder / формат в description_template")
                 names.add(name)
         require({"t", "observation"} <= names, f"{tid}: description_template требует {{t}} и {{observation}}")
-        suffix = "Нормативное основание уточняется." if tid == "Т04" else "Основание: {rule_document}, {rule_clause}."
+        suffix = "Нормативное основание уточняется." if tid == "Т04" else "Основание: {rule_number_date}, {rule_clause}."
         require(template.endswith(suffix), f"{tid}: неверное окончание description_template")
         if tid == "Т04":
             require(not names & {"rule_document", "rule_clause", "rule_number_date"},
@@ -370,7 +375,7 @@ def validate_catalog(path, indexed, mapping):
                 require(string_field(reference, "document", tid) == source.get("title")
                         and string_field(reference, "number_date", tid) == source.get("number_date"),
                         f"{tid}: нужны официальное название документа и number_date из manifest")
-                require(re.fullmatch(r"(?:п\.[0-9–-]+(?: подп\.[0-9–-]+)?|ст\.[0-9–-]+(?: п\.[0-9–-]+)?)", reference.get("clause", "")),
+                require(re.fullmatch(r"(?:п\. [0-9–-]+(?: подп\. [0-9–-]+)?|ст\. [0-9–-]+(?: п\. [0-9–-]+)?)", reference.get("clause", "")),
                         f"{tid}: clause содержит только номер; оговорки перенесите в clause_note")
                 if 'clause_note' in reference:
                     string_field(reference, 'clause_note', tid)
@@ -477,6 +482,11 @@ def validate(base):
         require(sid not in indexed, f"Повторяющийся source_id: {sid}")
         for key in ("title", "act_date", "checked_on", "status", "status_basis", "revision"):
             string_field(source, key, sid)
+        if "number_date" in source:
+            number_date = string_field(source, "number_date", sid)
+            require(re.fullmatch(r"(?:Постановление|Закон) [^()\n]+ от [0-9]{2}\.[0-9]{2}\.[0-9]{4} № [0-9A-ZIV-]+ \([^()\n]+\)", number_date)
+                    and not re.search(r"\(рег\.", number_date, re.I),
+                    f"{sid}: number_date требует вид акта, дату, номер и краткое название в скобках")
         canonical = official_url(string_field(source, "canonical_url", sid), sid)
         require(not canonical.fragment, f"{sid}: canonical_url не должен содержать якорь")
         official_url(string_field(source, "download_url", sid), sid)
