@@ -66,6 +66,16 @@ class JobStore:
             self._write(job_id, updated)
         return updated
 
+    def update_progress(self, job_id: str, progress: float, stage: str) -> bool:
+        """Atomically update progress and stage only if job is still in 'processing' status."""
+        with self._lock:
+            current = self.get(job_id)
+            if current is None or current.get("status") != "processing":
+                return False
+            updated = {**current, "progress": progress, "stage": stage, "updated_at": time.time()}
+            self._write(job_id, updated)
+            return True
+
     def unfinished(self) -> list[dict[str, Any]]:
         records = (self.get(p.name) for p in self._root.iterdir() if p.is_dir())
         return [r for r in records if r is not None and r["status"] == "processing"]

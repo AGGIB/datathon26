@@ -64,17 +64,30 @@ class JobRunner:
 
     def _run(self, job_id: str, video_path: Path) -> None:
         def on_progress(progress: float, stage: str) -> None:
-            # Guard against lingering threads mutating jobs that already finished or timed out
-            current = self._store.get(job_id)
-            if not current or current.get("status") != "processing":
-                return
-            self._store.update(job_id, progress=round(max(0.0, min(1.0, progress)), 3), stage=stage)
+            # Atomically updates progress only while job status is still 'processing'
+            self._store.update_progress(
+                job_id,
+                progress=round(max(0.0, min(1.0, progress)), 3),
+                stage=stage,
+            )
 
         record = self._store.get(job_id) or {}
         created_at = record.get("created_at")
         if created_at is not None:
             elapsed = time.time() - float(created_at)
-            effective_budget = max(5.0, self._budget - elapsed)
+            if elapsed >= self._budget:
+                log.warning("job %s: queue wait (%.1fs) exceeded budget %.1fs, returning fast fallback", job_id, elapsed, self._budget)
+                raw = mock_pipeline.fast_fallback(str(video_path))
+                result = AnalysisResult.model_validate(raw)
+                self._store.update(
+                    job_id,
+                    status="done",
+                    stage="done",
+                    progress=1.0,
+                    result=result.model_dump(mode="json", exclude_none=True),
+                )
+                return
+            effective_budget = max(0.001, min(self._budget, self._budget - elapsed))
         else:
             effective_budget = self._budget
 
