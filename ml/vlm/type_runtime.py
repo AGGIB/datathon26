@@ -30,7 +30,8 @@ def configure_discovery(*, model_path: str | Path | None = None,
     """Call once at startup, before accepting jobs; no network or implicit installs.
 
     Injected backends own their lifecycle. Owned MLX workers are closed on
-    explicit reconfiguration. A failed load stays unavailable for later jobs.
+    explicit reconfiguration and use the same action decoder as the measured
+    experimental probe. A failed load stays unavailable for later jobs.
     """
     global _configuration
     if (isinstance(startup_timeout_s, bool) or not isinstance(startup_timeout_s, (float, int))
@@ -48,6 +49,12 @@ def configure_discovery(*, model_path: str | Path | None = None,
             from .mlx_backend import LocalMLXBackend
             backend = LocalMLXBackend(model_path, python_executable=python_executable,
                                       max_new_tokens=512, max_image_side=640)
+            # Keep the raw worker in `backend` until wrapper creation succeeds,
+            # so catalog/import/constructor failures still close its resources.
+            from ml.kb import catalog
+            from .action_backend import ActionContrastBackend
+
+            backend = ActionContrastBackend(backend, catalog=catalog())
         if backend is None:
             return False
         validate = getattr(backend, "validate", None)
