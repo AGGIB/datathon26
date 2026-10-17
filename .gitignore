@@ -77,3 +77,18 @@ tmp/
 *.[fF][lL][vV]
 *.[mM][pP][gG]
 *.[mM][pP][eE][gG]
+
+# Additional local ML artifacts
+# ML-only additions; keep the team's protections above intact.
+/models/
+/artifacts/
+/reports/
+/evidence/
+open_labels.xlsx
+venv/
+*.log
+dist/
+build/
+.vscode/
+.idea/
+!backend/app/fixtures/placeholder.jpg
