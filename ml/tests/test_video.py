@@ -49,3 +49,28 @@ def test_probe_rejects_playlist_disguised_as_mov(tmp_path):
     fake.write_bytes(b"#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\nfile:///etc/passwd\n")
     with pytest.raises(ValueError, match="container"):
         probe(fake)
+
+
+def test_frames_at_returns_exact_frames_in_any_order(synthetic_video):
+    from ml.video import frames_at
+
+    got = frames_at(synthetic_video, [2.0, 0.5, 1.0])
+    # brightness encodes the source frame index (i * 8) at 10 fps
+    assert abs(int(got[0.5].mean()) - 40) < 12
+    assert abs(int(got[1.0].mean()) - 80) < 12
+    assert abs(int(got[2.0].mean()) - 160) < 12
+
+
+def test_frames_at_clamps_times_outside_the_video(synthetic_video):
+    from ml.video import frames_at
+
+    got = frames_at(synthetic_video, [-1.0, 99.0])
+    assert abs(int(got[-1.0].mean()) - 0) < 12
+    assert abs(int(got[99.0].mean()) - 29 * 8) < 12
+
+
+def test_frame_at_matches_sample_frames_timebase(synthetic_video):
+    from ml.video import frame_at
+
+    sampled = dict(sample_frames(synthetic_video, fps_out=2))
+    assert np.array_equal(frame_at(synthetic_video, 1.5), sampled[1.5])

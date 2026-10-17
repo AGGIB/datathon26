@@ -76,12 +76,46 @@ def sample_frames(path: Path | str, fps_out: float) -> Iterator[tuple[float, np.
         cap.release()
 
 
-def frame_at(path: Path | str, t_sec: float) -> np.ndarray | None:
-    """Single frame by timestamp (for evidence images)."""
+def frames_at(path: Path | str, times: list[float]) -> dict[float, np.ndarray]:
+    """Exact frames for the given timestamps in one sequential pass.
+
+    Seeking (CAP_PROP_POS_MSEC / POS_FRAMES) returns wrong or missing frames on some of these .mov files,
+    so we decode sequentially and use the same idx / fps timebase as sample_frames. Times outside the video
+    are clamped to the first/last frame. A time whose frame cannot be decoded is absent from the result.
+    """
+    info = probe(path)
+    wanted: dict[int, list[float]] = {}
+    for t in times:
+        idx = min(info.frame_count - 1, max(0, round(t * info.fps)))
+        wanted.setdefault(idx, []).append(t)
+    if not wanted:
+        return {}
+
+    found: dict[float, np.ndarray] = {}
+    last_frame: np.ndarray | None = None
     cap = _open(Path(path))
     try:
-        cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, t_sec) * 1000)
-        ok, frame = cap.read()
+        idx = 0
+        last_needed = max(wanted)
+        while idx <= last_needed and cap.grab():
+            if idx in wanted:
+                ok, frame = cap.retrieve()
+                if ok:
+                    last_frame = frame
+                    for t in wanted[idx]:
+                        found[t] = frame
+            idx += 1
     finally:
         cap.release()
-    return frame if ok else None
+    # frame_count can overstate decodable frames: give unreachable tail requests the last decoded wanted frame
+    if last_frame is not None:
+        for target, ts in wanted.items():
+            if target >= idx:
+                for t in ts:
+                    found.setdefault(t, last_frame)
+    return found
+
+
+def frame_at(path: Path | str, t_sec: float) -> np.ndarray | None:
+    """Single exact frame by timestamp (see frames_at)."""
+    return frames_at(path, [t_sec]).get(t_sec)

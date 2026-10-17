@@ -14,8 +14,8 @@ class Candidate:
     t_peak           — the most telling moment; becomes timecode_sec
     confidence       — 0..1, used for thresholding and ranking
     observation      — Russian, only what is visible ("кассир выходит, пачка остаётся на столе")
-    evidence_times   — 1–3 timestamps to extract evidence frames from (t_peak first)
-    highlight_boxes  — optional boxes (source-frame pixels) to draw on the evidence frames
+    evidence_times   — 1–3 timestamps to extract evidence frames from; the first one MUST be t_peak
+    highlight_boxes  — optional boxes (source-frame pixels) valid at t_peak; drawn on the first evidence frame only
     """
 
     type_id: str
@@ -34,3 +34,7 @@ class Candidate:
             raise ValueError("t_peak must lie within [t_start, t_end]")
         if not 1 <= len(self.evidence_times) <= 3:
             raise ValueError("evidence_times must have 1..3 timestamps")
+        if self.evidence_times[0] != self.t_peak:
+            raise ValueError("the first evidence time must be t_peak")
+        if not self.observation.strip():
+            raise ValueError("observation must describe what is visible")
