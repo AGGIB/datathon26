@@ -6,6 +6,7 @@ and asserts schema correctness and status for concurrent requests (N=6-10).
 """
 
 import argparse
+import base64
 import concurrent.futures
 import io
 import json
@@ -94,23 +95,24 @@ def upload_video(base_url: str, api_key: str, filename: str, content: bytes, tim
         return 0, {"detail": f"Upload network error: {type(exc).__name__}: {exc}"}, elapsed
 
 
-def poll_job(base_url: str, api_key: str, job_id: str, max_wait: float = 300.0) -> tuple[dict, float]:
+def poll_job(base_url: str, api_key: str, job_id: str, max_wait: float = 300.0) -> tuple[dict, float, int]:
     url = f"{base_url.rstrip('/')}/api/v1/jobs/{job_id}"
     req = urllib.request.Request(url, headers={"X-API-Key": api_key}, method="GET")
 
     t0 = time.time()
+    poll_errors = 0
     while time.time() - t0 < max_wait:
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 status = data.get("status")
                 if status in {"done", "failed"}:
-                    return data, time.time() - t0
+                    return data, time.time() - t0, poll_errors
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ConnectionError):
-            pass
+            poll_errors += 1
         time.sleep(0.5)
 
-    return {"status": "failed", "error": f"Job {job_id} exceeded poll timeout {max_wait}s"}, time.time() - t0
+    return {"status": "failed", "error": f"Job {job_id} exceeded poll timeout {max_wait}s"}, time.time() - t0, poll_errors
 
 
 def validate_job_result(data: dict) -> tuple[bool, str]:
@@ -138,16 +140,37 @@ def validate_job_result(data: dict) -> tuple[bool, str]:
         for idx, v in enumerate(violations):
             if not isinstance(v, dict):
                 return False, f"violation[{idx}] must be a dict"
-            if not v.get("type"):
-                return False, f"violation[{idx}] missing 'type'"
-            if "timecode_sec" not in v or not isinstance(v["timecode_sec"], (int, float)):
-                return False, f"violation[{idx}] missing valid 'timecode_sec'"
+            if not v.get("type") or not isinstance(v["type"], str):
+                return False, f"violation[{idx}] missing valid 'type'"
+            if "timecode_sec" not in v or not isinstance(v["timecode_sec"], (int, float)) or v["timecode_sec"] < 0:
+                return False, f"violation[{idx}] missing valid non-negative 'timecode_sec'"
+            if not v.get("description") or not isinstance(v["description"], str):
+                return False, f"violation[{idx}] missing valid 'description'"
+
+            rule = v.get("rule")
+            if rule is not None:
+                if not isinstance(rule, dict) or not rule.get("document") or not isinstance(rule["document"], str):
+                    return False, f"violation[{idx}].rule must be a dict with non-empty 'document'"
+
             frames = v.get("evidence_frames")
-            if not isinstance(frames, list) or len(frames) == 0:
-                return False, f"violation[{idx}] missing evidence_frames"
+            if not isinstance(frames, list) or len(frames) == 0 or len(frames) > 3:
+                return False, f"violation[{idx}] evidence_frames must be a list of 1 to 3 frames"
             for f_idx, frame in enumerate(frames):
-                if not isinstance(frame, dict) or not frame.get("image_base64"):
-                    return False, f"violation[{idx}].evidence_frames[{f_idx}] missing image_base64"
+                if not isinstance(frame, dict):
+                    return False, f"violation[{idx}].evidence_frames[{f_idx}] must be a dict"
+                if "timestamp_sec" not in frame or not isinstance(frame["timestamp_sec"], (int, float)) or frame["timestamp_sec"] < 0:
+                    return False, f"violation[{idx}].evidence_frames[{f_idx}] missing valid non-negative 'timestamp_sec'"
+                b64_str = frame.get("image_base64")
+                if not isinstance(b64_str, str) or not b64_str:
+                    return False, f"violation[{idx}].evidence_frames[{f_idx}] missing 'image_base64'"
+                if b64_str.startswith("data:"):
+                    return False, f"violation[{idx}].evidence_frames[{f_idx}] image_base64 has forbidden data: URI prefix"
+                try:
+                    raw_bytes = base64.b64decode(b64_str, validate=True)
+                except Exception:
+                    return False, f"violation[{idx}].evidence_frames[{f_idx}] invalid base64 encoding"
+                if not raw_bytes.startswith(b"\xff\xd8"):
+                    return False, f"violation[{idx}].evidence_frames[{f_idx}] image_base64 is not valid JPEG (missing 0xFFD8 magic header)"
     elif verdict == "no_violation":
         if len(violations) != 0:
             return False, f"Verdict is 'no_violation' but violations list is non-empty (got {len(violations)})"
@@ -211,15 +234,16 @@ def main() -> int:
         v_name = f"load_{idx}_{filename}"
         code, upload_res, upload_dur = upload_video(args.url, api_key, v_name, content)
         if code != 200:
-            return {"index": idx, "code": code, "error": upload_res, "upload_dur": upload_dur}
+            return {"index": idx, "code": code, "error": upload_res, "upload_dur": upload_dur, "poll_errors": 0}
         job_id = upload_res["job_id"]
-        job_res, poll_dur = poll_job(args.url, api_key, job_id)
+        job_res, poll_dur, poll_errors = poll_job(args.url, api_key, job_id)
         return {
             "index": idx,
             "code": 200,
             "job_id": job_id,
             "upload_dur": upload_dur,
             "poll_dur": poll_dur,
+            "poll_errors": poll_errors,
             "total_dur": upload_dur + poll_dur,
             "result": job_res,
         }
@@ -249,7 +273,9 @@ def main() -> int:
     wall_clock = time.time() - start_all
     success_count = sum(1 for r in results if r.get("code") == 200 and r.get("result", {}).get("status") == "done")
     failed_count = sum(1 for r in results if r.get("code") == 200 and r.get("result", {}).get("status") == "failed")
-    http_errors = sum(1 for r in results if r.get("code") != 200)
+    upload_http_errors = sum(1 for r in results if r.get("code") != 200)
+    polling_errors = sum(r.get("poll_errors", 0) for r in results)
+    http_errors = upload_http_errors + polling_errors
 
     print("\n--- Summary Statistics ---")
     print(f"Total Requests:       {args.requests}")
