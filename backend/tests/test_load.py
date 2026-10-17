@@ -12,8 +12,8 @@ from backend.app.config import Settings
 from backend.app.main import create_app
 
 API_KEY = "test-key"
-# Valid ISO-BMFF header (ftyp box)
-FAKE_MOV = b"\x00\x00\x00\x14ftypqt  \x00\x00\x02\x00qt  " + b"\x00" * 1024
+# Valid ISO-BMFF container (ftyp box + moov box)
+FAKE_MOV = b"\x00\x00\x00\x14ftypqt  \x00\x00\x02\x00qt  \x00\x00\x00\x08moov" + b"\x00" * 1024
 
 
 @pytest.fixture

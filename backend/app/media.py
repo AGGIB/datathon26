@@ -45,6 +45,7 @@ def looks_like_isobmff(path: Path) -> bool:
         # Extended-size ftyp box (box_size == 1) is at least 24 bytes (4 + 4 + 8 + 4 + 4)
         brand_offset = 16 if box_size == 1 else 8
         min_box_len = 24 if box_size == 1 else 16
+        first_box_len = extended_size if box_size == 1 else box_size
         if box_size == 1 and extended_size < min_box_len:
             return False
         if box_size not in (0, 1) and box_size < min_box_len:
@@ -54,5 +55,19 @@ def looks_like_isobmff(path: Path) -> bool:
         major_brand = head[brand_offset : brand_offset + 4]
         if not all(32 <= b <= 126 for b in major_brand):
             return False
+
+        # A valid video cannot consist solely of an ftyp box; it must have a subsequent
+        # atom (e.g. moov, mdat, wide, free) containing video metadata/streams.
+        if first_box_len > 0:
+            if file_size < first_box_len + 8:
+                return False
+            with path.open("rb") as fh2:
+                fh2.seek(first_box_len)
+                next_head = fh2.read(8)
+            if len(next_head) < 8:
+                return False
+            next_atom = next_head[4:8]
+            if next_atom not in _ISOBMFF_ATOMS:
+                return False
 
     return True

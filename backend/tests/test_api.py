@@ -33,8 +33,8 @@ def client(settings):
         yield c
 
 
-# Minimal ISO-BMFF header: size + 'ftyp' box, which is what real .mov/.mp4 files start with.
-FAKE_MOV = b"\x00\x00\x00\x14ftypqt  \x00\x00\x02\x00qt  " + b"\x00" * 64
+# Minimal ISO-BMFF container: 'ftyp' box followed by 'moov' atom.
+FAKE_MOV = b"\x00\x00\x00\x14ftypqt  \x00\x00\x02\x00qt  \x00\x00\x00\x08moov" + b"\x00" * 64
 
 
 def _upload(client, name="clip.mov", content=FAKE_MOV, key=API_KEY):
@@ -284,8 +284,8 @@ def test_upload_clean_file_returns_no_violation(client):
 
 def test_extended_64bit_ftyp_box_accepted(client):
     import struct
-    # 64-bit extended size box: size=1, atom='ftyp', extended_size=24, brand='qt  ', minor=0
-    hdr = struct.pack(">I4sQ4sI", 1, b"ftyp", 24, b"qt  ", 0) + b"\x00" * 32
+    # 64-bit extended size box: size=1, atom='ftyp', extended_size=24, brand='qt  ', minor=0, followed by moov
+    hdr = struct.pack(">I4sQ4sI", 1, b"ftyp", 24, b"qt  ", 0) + struct.pack(">I4s", 8, b"moov") + b"\x00" * 32
     resp = _upload(client, name="extended.mov", content=hdr)
     assert resp.status_code == 200
 
@@ -295,6 +295,14 @@ def test_extended_64bit_ftyp_box_too_short_rejected(client):
     # 64-bit extended size box claims size=16, but minimum for extended ftyp is 24
     hdr = struct.pack(">I4sQ4sI", 1, b"ftyp", 16, b"qt  ", 0) + b"\x00" * 32
     resp = _upload(client, name="extended_short.mov", content=hdr)
+    assert resp.status_code == 415
+    assert "не похож на видео" in resp.json()["detail"]
+
+
+def test_header_only_ftyp_without_media_rejected(client):
+    # A 20-byte file with only an ftyp atom and no subsequent media atoms (moov/mdat)
+    content = b"\x00\x00\x00\x14ftypqt  \x00\x00\x00\x00qt  "
+    resp = _upload(client, name="header-only.mov", content=content)
     assert resp.status_code == 415
     assert "не похож на видео" in resp.json()["detail"]
 

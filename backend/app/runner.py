@@ -94,14 +94,22 @@ class JobRunner:
 
         pipeline_result: list[dict[str, Any]] = []
         pipeline_exc: list[Exception] = []
+        stop_event = threading.Event()
 
         def target() -> None:
             try:
-                res = self._pipeline(
-                    str(video_path),
-                    on_progress=on_progress,
-                    time_budget_sec=effective_budget,
-                )
+                import inspect
+                kwargs: dict[str, Any] = {
+                    "on_progress": on_progress,
+                    "time_budget_sec": effective_budget,
+                }
+                try:
+                    sig = inspect.signature(self._pipeline)
+                    if "stop_event" in sig.parameters:
+                        kwargs["stop_event"] = stop_event
+                except (ValueError, TypeError):
+                    pass
+                res = self._pipeline(str(video_path), **kwargs)
                 pipeline_result.append(res)
             except Exception as exc:  # noqa: BLE001
                 pipeline_exc.append(exc)
@@ -118,7 +126,9 @@ class JobRunner:
                     self._budget,
                     effective_budget,
                 )
-                raw = mock_pipeline.fast_fallback(str(video_path))
+                stop_event.set()
+                fallback_fn = getattr(self._pipeline, "fast_fallback", None) or mock_pipeline.fast_fallback
+                raw = fallback_fn(str(video_path))
             elif pipeline_exc:
                 raise pipeline_exc[0]
             elif pipeline_result:

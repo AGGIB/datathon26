@@ -44,6 +44,10 @@ class Settings:
         if not keys:
             raise RuntimeError("API_KEYS is not set (comma-separated list, e.g. JURY_KEY,UI_KEY)")
         dist = os.environ.get("FRONTEND_DIST")
+        if not dist:
+            default_dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+            if default_dist.is_dir():
+                dist = str(default_dist)
         return cls(
             api_keys=keys,
             data_dir=Path(os.environ.get("DATA_DIR", "./var")).resolve(),

@@ -73,11 +73,24 @@ def analyze(
     on_progress: ProgressFn | None = None,
     time_budget_sec: float | None = None,
     delay_sec: float = 0.0,
+    stop_event: Any | None = None,
 ) -> dict[str, Any]:
+    step_delay = delay_sec / len(STAGES) if STAGES else 0.0
     for i, stage in enumerate(STAGES):
+        if stop_event is not None and stop_event.is_set():
+            return fast_fallback(video_path)
         if on_progress:
             on_progress(i / len(STAGES), stage)
-        time.sleep(delay_sec / len(STAGES))
+        sleep_done = 0.0
+        while sleep_done < step_delay:
+            if stop_event is not None and stop_event.is_set():
+                return fast_fallback(video_path)
+            chunk = min(0.05, step_delay - sleep_done)
+            time.sleep(chunk)
+            sleep_done += chunk
+
+    if stop_event is not None and stop_event.is_set():
+        return fast_fallback(video_path)
 
     if "clean" in Path(video_path).name.lower():
         return {"verdict": "no_violation", "violations": []}
