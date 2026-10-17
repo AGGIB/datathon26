@@ -7,7 +7,7 @@
 | Модель | Лицензия | Ссылка | Зачем |
 |---|---|---|---|
 | RT-DETRv2-R18 (`PekingU/rtdetr_v2_r18vd`) | Apache-2.0 | https://huggingface.co/PekingU/rtdetr_v2_r18vd | Детекция людей и COCO-объектов на каждом кадре (`ml/detect.py`) |
-| OWLv2 base ensemble (`google/owlv2-base-patch16-ensemble`) | Apache-2.0 | https://huggingface.co/google/owlv2-base-patch16-ensemble | Zero-shot: стол, сейф, стеклянная дверь с ручкой, экран ноутбука, предметы на столе — на 6–8 ключевых кадрах видео (`ml/scene_owl.py`). Веса ~620 МБ, только `model.safetensors` |
+| OWLv2 base ensemble (`google/owlv2-base-patch16-ensemble`) | Apache-2.0 | https://huggingface.co/google/owlv2-base-patch16-ensemble | Zero-shot: стол, сейф, стеклянная дверь с ручкой, экран ноутбука, предметы на столе — на 2–3 видах фона (раскладка) и до 4 ключевых кадров видео (`ml/scene_owl.py`). Веса ~620 МБ, только `model.safetensors`, ревизия `cfd3195ba4ea9592eec887ded089f4c08eff231d` |
 
 ## Пакеты
 

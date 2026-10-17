@@ -17,14 +17,20 @@ How it works (no hard-coded pixel coordinates; everything is located per video):
 * the start background (each pixel from the first frame where no person hides it) is the room as it was when
   the clip began. OWLv2 finds desk, safe (+ lock), glass door with handle and laptop screen on it; the COCO
   laptop box from perception takes precedence over OWLv2 for the laptop;
-* safe_open / door_open = share of the safe / door region that differs from the start background, measured only
-  while people hide < 20 % of it. Assumes the safe and the door are closed when the clip starts, which holds for
-  every clip of the open set (the cashier opens them on camera);
+* safe_open / door_open = share of the safe / door region that differs from that region's reference, measured
+  only while people hide < 20 % of it and the whole frame did not change (lights). Reference per region
+  (SceneAnalysis.references): "start" = the first clean view if it comes within TRUST_START_SEC (state before
+  anyone touched it), else "median" = the state the region is in most of the clip. The safe counts only
+  structural change (edges, local gain), so shadows of a seated cashier do not open it.
+  KNOWN LIMITATION: a door or safe that is already open when the clip starts becomes the reference, and the
+  signal is inverted (closing it reads as "open"). Rules must not treat "0 all clip" as a confident "closed".
 * laptop_screen_on / _work = brightness, saturation and texture of the inner screen area vs. its surroundings;
-* key_in_lock (experimental) = darkening right under the lock cylinder;
+* key_in_lock (experimental) = darkening right under the lock cylinder; None unless the lock was found with
+  confidence >= LOCK_MIN_CONF and the darkening changes on camera (key inserted / removed);
 * desk items = COCO detections at every sample + OWLv2 on a zoomed desk crop at up to MAX_KEYFRAMES keyframes
-  (after exits, while the room is empty, start/middle/end), filtered by novelty against the start background.
-Occluded samples hold the last measured value (the leading gap takes the first measured one).
+  (one inside every cashier_left / room_empty span, after exits latest first, then start/middle/end), filtered
+  by novelty against the start background; a mostly yellow "cash bundle" is relabelled food (banana).
+Occluded samples hold the last measured value; before the first measurement a signal stays None (unknown).
 """
 
 import logging
@@ -173,6 +179,9 @@ def read_frames(video_path: Path | str, times: Sequence[float]) -> list[np.ndarr
     found = frames_at(video_path, list(times))
     if not found:
         raise ValueError(f"no frames decoded from {video_path}")
+    missing = [t for t in times if t not in found]
+    if missing:
+        log.warning("%s: %d sample(s) not decodable, using the nearest decoded frame", video_path, len(missing))
     have = sorted(found)
     return [found[t] if t in found else found[min(have, key=lambda h: abs(h - t))] for t in times]
 

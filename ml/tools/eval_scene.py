@@ -121,6 +121,34 @@ def _f(v: float | None) -> str:
     return "  -  " if v is None else f"{v:5.2f}"
 
 
+FULL_CLIP_VIDEOS = ("X-20", "X-21", "X-22", "X-23", "X-24", "X-25", "X-26", "X-27", "X-28", "X-29", "X-11", "X-12",
+                    "X-30", "X-31", "X-32", "X-33", "X-40", "X-46")
+FULL_CLIP_ON = 0.6
+
+
+def _full_share(scene: SceneAnalysis, field: str) -> str:
+    vals = [getattr(s, field) for s in scene.states]
+    if all(v is None for v in vals):
+        return "None"
+    return f"{sum(v is not None and v >= FULL_CLIP_ON for v in vals) / len(vals):.2f}"
+
+
+def print_full_clip(scenes: dict[str, SceneAnalysis]) -> None:
+    """Whole clip, not only the labelled window: how often each state reads 'on' (catches false alarms)."""
+    with ANNOTATIONS.open(encoding="utf-8") as fh:
+        notes = {r["video"]: r["type_id"] for r in csv.DictReader(fh)}
+    print(f"\n| video | annotated type | safe_open≥{FULL_CLIP_ON} | door_open≥{FULL_CLIP_ON} | "
+          f"key_in_lock≥{FULL_CLIP_ON} | screen_work≥{FULL_CLIP_ON} | ref safe/door | item labels (samples) |")
+    print("|---|---|---|---|---|---|---|---|")
+    for name in FULL_CLIP_VIDEOS:
+        sc = scenes[name]
+        labels = Counter(i.label for s in sc.states for i in s.desk_items)
+        items = ", ".join(f"{k}×{v}" for k, v in labels.most_common()) or "—"
+        refs = f"{sc.references.get('safe', '?')}/{sc.references.get('door', '?')}"
+        print(f"| {name} | {notes.get(name, '?')} | {_full_share(sc, 'safe_open')} | {_full_share(sc, 'door_open')} | "
+              f"{_full_share(sc, 'key_in_lock')} | {_full_share(sc, 'laptop_screen_work')} | {refs} | {items} |")
+
+
 def print_table(results: list[tuple[Check, float | None]], timings: dict[str, float]) -> None:
     print("\n| video | signal | window, s | expected | measured | ok | note |")
     print("|---|---|---|---|---|---|---|")
@@ -145,7 +173,8 @@ def _share(scene: SceneAnalysis, field: str) -> str:
 
 def print_sweep(names: list[str], paths: dict[str, Path], owl: OwlDetector | None) -> None:
     """Every video: share of time each state is on, item labels seen, next to the annotated type."""
-    notes = {r["video"]: r["type_id"] for r in csv.DictReader(open(ANNOTATIONS, encoding="utf-8"))}
+    with ANNOTATIONS.open(encoding="utf-8") as fh:
+        notes = {r["video"]: r["type_id"] for r in csv.DictReader(fh)}
     print("\n| video | annotated type | safe_open | door_open | screen_on | screen_work | key | items | time, s |")
     print("|---|---|---|---|---|---|---|---|---|")
     for name in names:
@@ -185,7 +214,11 @@ def main() -> None:
         if c.video not in scenes:
             scenes[c.video] = run_scene(c.video, paths[c.video], owl)
         results.append((c, c.measure(scenes[c.video], c.t0, c.t1)))
+    for name in FULL_CLIP_VIDEOS:
+        if name not in scenes:
+            scenes[name] = run_scene(name, paths[name], owl)
     print_table(results, {k: v.elapsed_sec for k, v in scenes.items()})
+    print_full_clip(scenes)
     sys.stdout.flush()
 
 
