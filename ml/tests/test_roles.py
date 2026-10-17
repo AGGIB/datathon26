@@ -6,7 +6,6 @@ from ml.roles import (
     assign_roles,
     desk_point,
     is_handoff,
-    is_mirror,
     near_span,
     pick_anchor,
     workplace_of,
@@ -61,14 +60,6 @@ def test_workplace_distance_is_in_cashier_widths():
     assert WP.occupied_by(SEAT) and not WP.occupied_by(DESK_FAR_SIDE) and not WP.occupied_by(SEAT, score=0.5)
 
 
-def test_weaker_look_alike_living_alongside_is_a_mirror():
-    real = trk(1, 0, 20, SEAT, score=0.9)
-    reflection = trk(2, 2, 18, BEHIND_GLASS, score=0.7)
-    assert is_mirror(reflection, real)
-    assert not is_mirror(trk(3, 2, 18, BEHIND_GLASS, score=0.7, sig=DARK), real)
-    assert not is_mirror(trk(4, 2, 18, BEHIND_GLASS, score=0.95), real)
-
-
 def test_handoff_needs_same_place_and_moment():
     old = trk(1, 0, 5, SEAT)
     assert is_handoff(old, trk(2, 4.5, 10, SEAT), WP)
@@ -87,7 +78,7 @@ def test_roles_split_cashier_visitor_and_people_behind_the_glass():
     cashier = trk(1, 0, 30, SEAT)
     visitor = trk(2, 5, 20, DESK_FAR_SIDE, score=0.88, sig=DARK)
     corridor = trk(3, 0, 30, BEHIND_GLASS, score=0.85, sig=DARK)
-    weak_near = trk(4, 8, 20, DESK_FAR_SIDE, score=0.6, sig=GREY)
+    weak_near = trk(4, 8, 20, DESK_FAR_SIDE, score=0.5, sig=GREY)
     roles = assign_roles([cashier, visitor, corridor, weak_near])
     assert roles.cashier_ids == (1,)
     assert roles.visitor_ids == (2,)
@@ -100,10 +91,25 @@ def test_cashier_coming_back_on_a_new_track_is_recognised_by_look():
     assert roles.visitor_ids == (3,)
 
 
-def test_cashier_reflection_is_rejected_as_mirror():
+def test_look_alike_living_alongside_the_cashier_is_still_a_visitor():
+    # no reflection rule: colour barely separates people, and dropping a real visitor would hide a violation
     roles = assign_roles([trk(1, 0, 30, SEAT), trk(2, 0, 30, DESK_FAR_SIDE, score=0.82)])
-    assert roles.visitor_ids == ()
-    assert dict(roles.rejected) == {2: "mirror"}
+    assert roles.visitor_ids == (2,)
+
+
+def test_short_entry_at_the_end_of_the_clip_is_a_visitor():
+    roles = assign_roles([trk(1, 0, 20, SEAT), trk(2, 18, 20, DESK_FAR_SIDE, score=0.7, sig=DARK)], duration=20.0)
+    assert roles.visitor_ids == (2,)
+
+
+def test_bigger_visitor_present_longer_does_not_take_the_cashier_role():
+    seated = trk(1, 2, 30, SEAT, score=0.86)
+    big = (90.0, 0.0, 230.0, 300.0)  # 1.4x the cashier's box, across the desk
+    shifted = (240.0, 0.0, 380.0, 300.0)  # the visitor moves along the desk half-way through
+    visitor = Track(2, trk(2, 0, 16, big, score=0.92, sig=DARK).points + trk(2, 16.5, 32, shifted, score=0.92,
+                                                                          sig=DARK).points)
+    roles = assign_roles([visitor, seated], duration=32.0)
+    assert roles.cashier_ids == (1,) and roles.visitor_ids == (2,)
 
 
 def test_cashier_walking_in_on_a_separate_track_is_absorbed():
@@ -138,7 +144,7 @@ def test_desk_is_where_objects_stay_put_near_the_seat():
 
 
 def test_near_span_starts_when_the_visitor_is_clearly_inside():
-    through_glass = trk(5, 3, 5, DESK_FAR_SIDE, score=0.62)  # behind the glass door, already close in the image
+    through_glass = trk(5, 3, 5, DESK_FAR_SIDE, score=0.5)  # behind the glass door, already close in the image
     inside = trk(5, 5.5, 13, DESK_FAR_SIDE, score=0.9)
     span = near_span(Track(5, through_glass.points + inside.points), WP)
     assert 5.0 <= span.t_start <= 6.0 and span.t_end == 13.0

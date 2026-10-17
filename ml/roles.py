@@ -19,24 +19,23 @@ log = logging.getLogger(__name__)
 
 MIN_TRACK_SEC = 1.0
 ANCHOR_MIN_SCORE = 0.7
+ANCHOR_STILL_RADIUS = 0.5  # own box widths: foot points this close count as sitting still at one spot
+ANCHOR_START_SEC = 2.0  # the cashier is usually already at work when the clip starts ...
+ANCHOR_START_BONUS = 1.2  # ... which breaks near-ties with a visitor who also sits still for long
+ANCHOR_MAX_POINTS = 400  # subsample long tracks for the O(n^2) stillness count
 HOME_RADIUS = 0.25  # in box heights: foot points this close are "the same place" when finding the seat
 AT_WORK_DIST = 0.6  # cashier widths from the seat: standing up, reaching the safe next to it is still "at work"
 AT_WORK_MIN_SCORE = 0.7  # a weak box over the seat is someone behind the glass, not the cashier
 
 # in-room test for non-cashier tracks
 NEAR_DIST = 2.5  # cashier widths from the seat
-MIN_NEAR_SEC = 3.0
-MIN_INROOM_SCORE = 0.8
+MIN_NEAR_SEC = 1.5  # recall first: a short entry at the end of a clip must still count
+MIN_INROOM_SCORE = 0.6
 
 # a visit (visitor inside the room) starts/ends where the visitor is near and clearly seen, not through the glass
-VISIT_MIN_SCORE = 0.8
+VISIT_MIN_SCORE = 0.6
 VISIT_SCORE_WINDOW_SEC = 1.0
 VISIT_EDGE_SEC = 1.0  # a track touching the video start/end was already/still inside: keep that end untrimmed
-
-# mirrors / duplicates: weaker track with the same look that lives at the same time as a real one
-MIRROR_SHARE = 0.6
-MIRROR_APPEARANCE = 0.35
-MIRROR_SCORE_MARGIN = 0.03
 
 # re-identification of the cashier after a break in tracking
 REID_APPEARANCE = 0.35
@@ -107,12 +106,38 @@ def _height(b: Box) -> float:
     return b[3] - b[1]
 
 
+def still_seconds(track: Track) -> float:
+    """Longest time the person spends at one spot (the seat), independent of how big the box is."""
+    pts = track.points
+    idx = np.linspace(0, len(pts) - 1, min(len(pts), ANCHOR_MAX_POINTS)).round().astype(int)
+    feet = np.array([foot(pts[i].box) for i in idx])
+    radius = ANCHOR_STILL_RADIUS * float(np.median([pts[i].box[2] - pts[i].box[0] for i in idx]))
+    dists = np.linalg.norm(feet[:, None, :] - feet[None, :, :], axis=2)
+    share = float((dists <= radius).sum(axis=1).max()) / len(idx)
+    return share * track.duration
+
+
+def _median_height(track: Track) -> float:
+    return float(np.median([_height(p.box) for p in track.points]))
+
+
 def pick_anchor(tracks: Sequence[Track]) -> Track | None:
-    """The cashier: the clearly visible track with the largest time-integrated box height."""
+    """The cashier: the clearly visible track that sits still at one spot the longest.
+
+    Presence at the start breaks near-ties. Box size only enters as a square root, so a visitor with a 1.4x bigger
+    box (another camera angle) needs to sit still ~1.2x longer to win, while a small, far person sitting still
+    behind the glass the whole clip (a 0.35x box) loses clearly.
+    """
     if not tracks:
         return None
     clear = [tr for tr in tracks if tr.mean_score >= ANCHOR_MIN_SCORE] or list(tracks)
-    return max(clear, key=lambda tr: sum(_height(p.box) for p in tr.points))
+    tallest = max(_median_height(tr) for tr in clear) or 1.0
+
+    def score(tr: Track) -> float:
+        bonus = ANCHOR_START_BONUS if tr.t_start <= ANCHOR_START_SEC else 1.0
+        return still_seconds(tr) * bonus * (_median_height(tr) / tallest) ** 0.5
+
+    return max(clear, key=score)
 
 
 def workplace_of(anchor: Track) -> Workplace:
@@ -132,20 +157,6 @@ def workplace_of(anchor: Track) -> Workplace:
         height=float(np.median(boxes[:, 3] - boxes[:, 1])),
         signature=mean_signature([p.signature for p in seated if p.signature]),
     )
-
-
-def _common(a: Track, b: Track) -> list[tuple[TrackPoint, TrackPoint]]:
-    by_t = {round(p.t, 3): p for p in b.points}
-    return [(p, by_t[round(p.t, 3)]) for p in a.points if round(p.t, 3) in by_t]
-
-
-def is_mirror(candidate: Track, real: Track) -> bool:
-    """A glass reflection or a duplicate box: same look, same time, weaker than the real track."""
-    if candidate.mean_score > real.mean_score - MIRROR_SCORE_MARGIN:
-        return False
-    if len(_common(candidate, real)) < MIRROR_SHARE * len(candidate.points):
-        return False
-    return signature_distance(candidate.signature(), real.signature()) <= MIRROR_APPEARANCE
 
 
 def _overlap_sec(a: Track, b: Track) -> float:
@@ -222,9 +233,7 @@ def near_span(track: Track, wp: Workplace, duration: float | None = None) -> Tra
     return Track(track.track_id, pts[first:last + 1])
 
 
-def _classify(track: Track, real: Sequence[Track], cashier: list[Track], wp: Workplace) -> str:
-    if any(is_mirror(track, r) for r in real):
-        return "mirror"
+def _classify(track: Track, cashier: list[Track], wp: Workplace) -> str:
     if _is_cashier_again(track, cashier, wp):
         return "cashier"
     return "visitor" if _is_visitor(track, wp) else "outside"
@@ -287,12 +296,12 @@ def assign_roles(tracks: Sequence[Track], duration: float | None = None) -> Role
     wp = workplace_of(anchor)
     cashier, visitors, kinds = [anchor], [], {}
     for tr in sorted((t for t in long_enough if t is not anchor), key=lambda t: t.mean_score, reverse=True):
-        kinds[tr.track_id] = _classify(tr, cashier + visitors, cashier, wp)
+        kinds[tr.track_id] = _classify(tr, cashier, wp)
         {"cashier": cashier, "visitor": visitors}.get(kinds[tr.track_id], []).append(tr)
     undecided = [t for t in long_enough if kinds.get(t.track_id) in ("visitor", "outside")]
     remaining = {t.track_id for t in _absorb_cashier_handoffs(cashier, undecided, wp)}
     visitors = [v for v in visitors if v.track_id in remaining]
-    rejected = short + [(tid, k) for tid, k in kinds.items() if k == "mirror" or (k == "outside" and tid in remaining)]
+    rejected = short + [(tid, k) for tid, k in kinds.items() if k == "outside" and tid in remaining]
     spans = [near_span(v, wp, duration) for v in merge_visitor_handoffs(visitors, wp)]
     roles = Roles(
         workplace=wp,
