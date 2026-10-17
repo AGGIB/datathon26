@@ -176,6 +176,29 @@ def test_pipeline_timeout_returns_fast_fallback_not_failed(settings):
         assert body["verdict"] in {"violation", "no_violation"}
 
 
+def test_late_progress_callback_does_not_overwrite_completed_job(settings):
+    callback_holder = []
+
+    def pipeline_saving_callback(video_path, on_progress=None, time_budget_sec=None):
+        callback_holder.append(on_progress)
+        return {"verdict": "no_violation", "violations": []}
+
+    app = create_app(settings, pipeline_fn=pipeline_saving_callback)
+    with TestClient(app) as c:
+        job_id = _upload(c).json()["job_id"]
+        _wait_done(c, job_id)
+        done_record = c.get(f"/api/v1/jobs/{job_id}", headers={"X-API-Key": API_KEY}).json()
+        assert done_record["status"] == "done"
+
+        # Simulate late callback from lingering thread
+        if callback_holder and callback_holder[0]:
+            callback_holder[0](0.25, "late_stage")
+
+        after_record = c.get(f"/api/v1/jobs/{job_id}", headers={"X-API-Key": API_KEY}).json()
+        assert after_record["status"] == "done"
+        assert after_record.get("stage") != "late_stage"
+
+
 def test_unfinished_job_resumes_and_completes_after_restart(settings, monkeypatch):
     """If service crashes (kill -9) while job is processing, restart resumes it to done."""
     import time
@@ -190,6 +213,11 @@ def test_unfinished_job_resumes_and_completes_after_restart(settings, monkeypatc
     fake_video.write_bytes(b"dummy")
     store.create(job_id, fake_video, "input.mov")
 
+    DUMMY_JPEG_B64 = (
+        "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP/////////////////////////////////////////////////////////////////"
+        "/////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA="
+    )
+
     def mock_pipeline_slow(video_path, on_progress=None, time_budget_sec=None):
         return {
             "verdict": "violation",
@@ -198,7 +226,7 @@ def test_unfinished_job_resumes_and_completes_after_restart(settings, monkeypatc
                     "type": "Оставление денег без присмотра",
                     "timecode_sec": 12.0,
                     "description": "Деньги на стойке",
-                    "evidence_frames": [{"timestamp_sec": 12.0, "image_base64": "AAAA"}],
+                    "evidence_frames": [{"timestamp_sec": 12.0, "image_base64": DUMMY_JPEG_B64}],
                 }
             ],
         }
@@ -209,6 +237,13 @@ def test_unfinished_job_resumes_and_completes_after_restart(settings, monkeypatc
         assert resp.status_code == 200
         assert resp.json()["status"] == "done"
         assert resp.json()["verdict"] == "violation"
+
+
+def test_rejects_corrupted_short_isobmff_header(client):
+    short_header = b"\x00\x00\x00\x08ftyp"
+    resp = _upload(client, name="corrupt.mov", content=short_header)
+    assert resp.status_code == 415
+    assert "не похож на видео" in resp.json()["detail"]
 
 
 def test_frontend_dist_mounted_and_serves_ui(settings, tmp_path):

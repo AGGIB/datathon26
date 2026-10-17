@@ -2,6 +2,7 @@
 
 import logging
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
@@ -63,7 +64,19 @@ class JobRunner:
 
     def _run(self, job_id: str, video_path: Path) -> None:
         def on_progress(progress: float, stage: str) -> None:
+            # Guard against lingering threads mutating jobs that already finished or timed out
+            current = self._store.get(job_id)
+            if not current or current.get("status") != "processing":
+                return
             self._store.update(job_id, progress=round(max(0.0, min(1.0, progress)), 3), stage=stage)
+
+        record = self._store.get(job_id) or {}
+        created_at = record.get("created_at")
+        if created_at is not None:
+            elapsed = time.time() - float(created_at)
+            effective_budget = max(5.0, self._budget - elapsed)
+        else:
+            effective_budget = self._budget
 
         pipeline_result: list[dict[str, Any]] = []
         pipeline_exc: list[Exception] = []
@@ -73,7 +86,7 @@ class JobRunner:
                 res = self._pipeline(
                     str(video_path),
                     on_progress=on_progress,
-                    time_budget_sec=self._budget,
+                    time_budget_sec=effective_budget,
                 )
                 pipeline_result.append(res)
             except Exception as exc:  # noqa: BLE001
@@ -81,14 +94,15 @@ class JobRunner:
 
         thread = threading.Thread(target=target, name=f"pipe-{job_id}", daemon=True)
         thread.start()
-        thread.join(timeout=self._budget)
+        thread.join(timeout=effective_budget)
 
         try:
             if thread.is_alive():
                 log.warning(
-                    "job %s: pipeline exceeded time budget %.1fs, returning fast fallback stage",
+                    "job %s: pipeline exceeded time budget %.1fs (effective %.1fs), returning fast fallback stage",
                     job_id,
                     self._budget,
+                    effective_budget,
                 )
                 raw = mock_pipeline.fast_fallback(str(video_path))
             elif pipeline_exc:

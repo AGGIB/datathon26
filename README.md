@@ -41,6 +41,9 @@
 
 ### 1. Установка окружения и запуск
 ```bash
+# Системная зависимость для извлечения кадров-доказательств:
+brew install ffmpeg  # macOS (или sudo apt install -y ffmpeg на Linux)
+
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env
@@ -117,6 +120,7 @@ docker run --rm \
   --network offline_net \
   -p 8000:8000 \
   --env-file .env \
+  -e DATA_DIR=/data \
   -v $(pwd)/var:/data \
   datathon26-api:latest
 ```
@@ -125,16 +129,16 @@ docker run --rm \
 
 ## Предотвращение засыпания и мониторинг (`scripts/keepalive.sh`)
 
-Скрипт предотвращает переход macOS в режим сна (через `caffeinate`) и выполняет мониторинг `/health` каждые 5 минут:
+Скрипт предотвращает переход macOS в режим сна (через `caffeinate`) и выполняет сквозной мониторинг публичного Cloudflare туннеля и локального сервиса `/health` каждые 5 минут:
 ```bash
-./scripts/keepalive.sh http://127.0.0.1:8000/health 300
+./scripts/keepalive.sh https://usgs-transcripts-tactics-scott.trycloudflare.com/health 300
 ```
 
 ---
 
 ## Тестирование
 
-Полный набор тестов API (К1), валидации схемы, многопоточной очереди, сторожа времени и нагрузочных тестов:
+Полный набор тестов API (К1), валидации схемы JPEG/base64, многопоточной очереди, сторожа времени и нагрузочных тестов (50 тестов):
 ```bash
 pytest -v
 ```

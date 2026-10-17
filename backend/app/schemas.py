@@ -1,9 +1,10 @@
 """К1 — response contract. Required fields follow the ТЗ schema exactly;
 fields marked "extension" are ours and optional (UI uses them, the jury may ignore them)."""
 
+import base64
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Verdict = Literal["violation", "no_violation"]
 JobStatus = Literal["processing", "done", "failed"]
@@ -14,6 +15,19 @@ class EvidenceFrame(BaseModel):
 
     timestamp_sec: float = Field(ge=0)
     image_base64: str = Field(min_length=1, description="JPEG, base64, no data: prefix")
+
+    @field_validator("image_base64")
+    @classmethod
+    def _validate_jpeg_base64(cls, v: str) -> str:
+        if v.startswith("data:"):
+            raise ValueError("image_base64 must not have data: URI prefix")
+        try:
+            raw = base64.b64decode(v, validate=True)
+        except Exception as exc:
+            raise ValueError("image_base64 must be valid base64 data") from exc
+        if not raw.startswith(b"\xff\xd8"):
+            raise ValueError("image_base64 must be JPEG format (missing 0xFFD8 magic header)")
+        return v
 
 
 class RuleRef(BaseModel):

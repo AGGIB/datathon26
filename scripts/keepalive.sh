@@ -4,7 +4,8 @@
 
 set -euo pipefail
 
-URL="${1:-http://127.0.0.1:8000/health}"
+URL="${1:-https://usgs-transcripts-tactics-scott.trycloudflare.com/health}"
+LOCAL_URL="http://127.0.0.1:8000/health"
 INTERVAL_SEC="${2:-300}"
 LOG_FILE="${3:-var/keepalive_health.log}"
 RESP_TMP="var/.health_response.tmp"
@@ -14,6 +15,7 @@ mkdir -p "$(dirname "$RESP_TMP")"
 
 echo "=== Datathon26 Keepalive & Healthcheck Monitor ==="
 echo "Target URL: $URL"
+echo "Local fallback URL: $LOCAL_URL"
 echo "Interval: ${INTERVAL_SEC}s"
 echo "Log file: $LOG_FILE"
 
@@ -33,9 +35,11 @@ while true; do
 
     if [ "$HTTP_CODE" = "200" ]; then
         STATUS=$(grep -o '"status":"[^"]*"' "$RESP_TMP" 2>/dev/null || echo "status: ok")
-        echo "[$TIMESTAMP] OK ($HTTP_CODE): $STATUS" | tee -a "$LOG_FILE"
+        echo "[$TIMESTAMP] OK ($HTTP_CODE, public tunnel): $STATUS" | tee -a "$LOG_FILE"
     else
-        echo "[$TIMESTAMP] WARNING: Healthcheck returned HTTP $HTTP_CODE!" | tee -a "$LOG_FILE"
+        # Try local fallback to distinguish tunnel vs server issue
+        LOCAL_CODE=$(curl -s --connect-timeout 3 --max-time 5 -w "%{http_code}" "$LOCAL_URL" 2>/dev/null || echo "000")
+        echo "[$TIMESTAMP] WARNING: Public healthcheck returned HTTP $HTTP_CODE (local: $LOCAL_CODE)!" | tee -a "$LOG_FILE"
     fi
 
     sleep "$INTERVAL_SEC"
