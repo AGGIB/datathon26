@@ -146,6 +146,46 @@ MLX-подготовка и worker разрешают только `qwen3_vl` и
 на M4 16 GB, качество на train/validation или перенос на новый ракурс.
 Приватные видео, кадры, промпты и ответы остаются локальными.
 
+## Qwen3.5-9B: отдельный локальный кандидат
+
+Подготовлен один snapshot
+[mlx-community/Qwen3.5-9B-4bit](https://huggingface.co/mlx-community/Qwen3.5-9B-4bit/blob/8b2b98c00a6b4d291155e4890773ca8f769aee53/README.md),
+ревизия `8b2b98c00a6b4d291155e4890773ca8f769aee53`, с явной Apache-2.0.
+В карточке есть расхождение происхождения: поле `base_model` называет
+`Qwen/Qwen3.5-9B-Base`, а текст конвертации — `Qwen/Qwen3.5-9B` и mlx-vlm 0.3.12.
+Лицензии обоих названных исходников проверены отдельно:
+[9B, ревизия c202236](https://huggingface.co/Qwen/Qwen3.5-9B/blob/c202236235762e1c871ad0ccb60c8ee5ba337b9a/LICENSE) и
+[9B-Base, ревизия 68c46c4](https://huggingface.co/Qwen/Qwen3.5-9B-Base/blob/68c46c4b3498877f3ef123c856ecfde50c39f404/LICENSE)
+содержат Apache-2.0. Эти ревизии фиксируют источники лицензий; исторический
+вход конвертации не установлен, `conversion_input_revision` остаётся `null`.
+
+Закреплённые [HF metadata](https://huggingface.co/api/models/mlx-community/Qwen3.5-9B-4bit/revision/8b2b98c00a6b4d291155e4890773ca8f769aee53?blobs=true)
+указывают два файла весов:
+
+| Файл | Байты | SHA256 |
+|---|---:|---|
+| `model-00001-of-00002.safetensors` | 5 349 771 222 | `a68b87558c6ef43f74c2bd63ce7e9092ceddc3101f3def0030774bae5f42aadd` |
+| `model-00002-of-00002.safetensors` | 600 449 850 | `b0a770bf8469c7f3f18756a0e0283f1c1174344a83e059a4e483f6af4907352d` |
+
+Веса занимают **5 950 221 072 байта**, все 13 файлов snapshot —
+5 977 073 303 байта. Канонический хеш списка весов записан в
+[checkpoints-ml.json](checkpoints-ml.json). Локальный каталог —
+`models/Qwen3.5-9B-4bit`, передаваемый явно через `--model` или `ML_VLM_MODEL`.
+Подготовка проверяет потоковый SHA256 каждого shard; независимый аудит сверяет
+receipt с закреплёнными LFS SHA, фактическими размерами и локальными metadata.
+Все 1 260 записей `weight_map` ссылаются на два ожидаемых shard; лицензия
+исходника сохраняется локально. Отдельное повторное чтение 5.95 GB аудитором
+для вычисления второго SHA во время параллельного timed-прогона не выполнялось.
+
+[Конфигурация](https://huggingface.co/mlx-community/Qwen3.5-9B-4bit/blob/8b2b98c00a6b4d291155e4890773ca8f769aee53/config.json)
+указывает штатный `qwen3_5`, affine 4 bit, group size 64. [Metadata процессора](https://huggingface.co/mlx-community/Qwen3.5-9B-4bit/blob/8b2b98c00a6b4d291155e4890773ca8f769aee53/processor_config.json)
+указывают `Qwen3VLProcessor`, patch size 16, merge size 2 и temporal patch size 2.
+Используется отдельное закреплённое окружение mlx-vlm 0.7.8 с
+`enable_thinking=False`, офлайн-режимом и `trust_remote_code=False`.
+Проверка структуры выполнена без импорта ML, загрузки модели или inference.
+В рамках этого аудита расход unified memory на M4 16 GB, латентность и качество 9B не измерялись.
+Следующий шаг — отдельный локальный smoke; приватные данные остаются локальными.
+
 ## Зависимости
 
 Лицензии библиотек не заменяют проверку лицензий весов. Итоговый образ должен содержать необходимые тексты лицензий и уведомления поставщиков. Данные и веса в Git не входят.
