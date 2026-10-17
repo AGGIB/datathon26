@@ -1,2 +1,2 @@
-# Optional Apple Silicon environment; core intake needs only stdlib + ffmpeg/ffprobe.
+# HISTORICAL DISABLED environment; not an approved workflow or installation recommendation.
 mlx-vlm==0.7.8

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sys
 from urllib.parse import quote
+from external23_policy import source_usable
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +28,7 @@ def private_path(value, base=ROOT):
     path = Path(value)
     path = (path if path.is_absolute() else base / path).resolve()
     require(path.is_relative_to(PRIVATE), "review_path_outside_private")
+    require(not {'excluded', 'quarantine'} & set(path.relative_to(PRIVATE).parts), "review_excluded_path")
     return path
 
 
@@ -58,6 +60,8 @@ def render(index, annotations, model_document, output):
         require(isinstance(record, dict) and isinstance(record.get("clip_id"), str)
                 and bool(record["clip_id"]) and record["clip_id"] not in records,
                 "review_record_invalid")
+        source_usable(record)
+        require(record['clip_id'].startswith('ext23-'), 'review_legacy_id_excluded')
         records[record["clip_id"]] = record
     for draft in annotations["clips"]:
         require(isinstance(draft, dict) and isinstance(draft.get("clip_id"), str)
@@ -107,7 +111,9 @@ local_model — предложение локальной модели; reviewed
 Ни просмотр страницы, ни скачивание JSON не подтверждают проверку человеком.</p>
 <p>Действия и proxy-сцены не доказывают банковское нарушение. legal_gold по умолчанию null.
 Изменения JSON требуют внешней проверки инструментом check-annotations; страница её не заменяет.</p>
-<button id="download" type="button">Скачать отредактированный annotations.json</button>
+<p>JSON содержит только показанные клипы. Сохраните поднабор отдельно и объедините по clip_id
+с общим annotations.json; затем проверьте полный файл командой check-annotations.</p>
+<button id="download" type="button">Скачать review-subset.annotations.json</button>
 <p id="download-status" role="status"></p></div>
 __CARDS__
 <script type="application/json" id="annotations-data">__ANNOTATIONS__</script>
@@ -138,9 +144,9 @@ document.getElementById("download").addEventListener("click", () => {
     });
     edited.status = "pending_review";
     const url = URL.createObjectURL(new Blob([JSON.stringify(edited, null, 2) + "\\n"], {type: "application/json"}));
-    const link = document.createElement("a"); link.href = url; link.download = "annotations.json";
+    const link = document.createElement("a"); link.href = url; link.download = "review-subset.annotations.json";
     document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-    status.textContent = "JSON скачан как pending_review. Сохраните его локально в data/external23 и выполните check-annotations.";
+    status.textContent = "Поднабор скачан как pending_review. Сохраните отдельно, объедините по clip_id с общим annotations.json и проверьте полный файл.";
   } catch (_) { status.textContent = "Проверьте JSON и неизменность clip_id. Файл не создан."; }
 });
 </script></html>'''
@@ -166,7 +172,11 @@ def main():
         page, clips, items = render(read_json(index_path), read_json(annotation_path), model, output)
         output.parent.mkdir(parents=True, exist_ok=True)
         private_path(output)
-        output.write_text(page, encoding="utf-8")
+        import tempfile
+        with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=output.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(page)
+        temporary.replace(output)
     except (OSError, ValueError, TypeError, KeyError):
         print("ERROR: review_input_or_output_invalid", file=sys.stderr)
         return 1

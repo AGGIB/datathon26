@@ -2,6 +2,8 @@
 
 from datetime import date
 import math
+from external23_catalog import active_type_ids
+from external23_policy import selected_record
 
 
 PROVENANCE = {"source_human", "local_model", "reviewed_human"}
@@ -121,9 +123,10 @@ def _validate_event(event, record):
                  "annotation_review_origin_invalid")
 
 
-def validate_annotations(document, records):
+def validate_annotations(document, records, type_ids=None):
     """Raise ValueError with a fixed safe code; never print private values."""
     record_map = _record_map(records)
+    allowed_types = active_type_ids() if type_ids is None else set(type_ids)
     _require(isinstance(document, dict), "annotation_document_invalid")
     _require(type(document.get("schema_version")) is int
              and document["schema_version"] == 1, "annotation_schema_invalid")
@@ -161,19 +164,37 @@ def validate_annotations(document, records):
         _require("legal_gold" in clip, "annotation_gold_missing")
         gold = clip["legal_gold"]
         if gold is not None:
-            context = record_map[clip_id].get("source_context")
+            record = record_map[clip_id]
+            selected_record(record)
             refs = applicability.get("evidence_references")
-            observed = (isinstance(context, dict) and context.get('scene_type') == 'bank_cashdesk')
-            _require(status == "reviewed_human" and applicability["jurisdiction"] == "KZ"
+            scenario = clip.get('normative_scenario')
+            _require(isinstance(scenario, dict) and scenario.get('jurisdiction') == 'KZ'
+                     and scenario.get('basis') == 'indicator_benchmark'
+                     and _text(scenario.get('decision_reference')), 'annotation_scenario_required')
+            _require(status == "reviewed_human" and clip.get('full_clip_reviewed') is True
                      and applicability["scene_type"] == "bank_cashdesk"
                      and applicability["roles_established"]
                      and applicability["normative_conditions_established"]
-                     and observed
                      and isinstance(refs, list) and bool(refs) and all(_text(ref) for ref in refs),
                      "annotation_gold_review_required")
             _require(isinstance(gold, dict), "annotation_gold_invalid")
             verdict, types = gold.get("verdict"), gold.get("type_ids")
             _require(verdict in ("violation", "no_violation") and isinstance(types, list)
-                     and all(_text(value) for value in types), "annotation_gold_invalid")
+                     and all(_text(value) and value in allowed_types for value in types)
+                     and len(set(types)) == len(types), "annotation_gold_invalid")
             _require((verdict == "violation") == bool(types), "annotation_gold_inconsistent")
+            if verdict == 'no_violation':
+                _require(not events, 'annotation_negative_has_events')
+            else:
+                seen_events = set()
+                for event in events:
+                    kind, peak = event.get('type_id'), event.get('t_peak')
+                    _require(event['provenance'] == 'reviewed_human' and kind in allowed_types
+                             and _number(peak) and event['t_start'] <= peak <= event['t_end']
+                             and _text(event.get('observations')), 'annotation_gold_event_invalid')
+                    _require(event.get('angle_id', record['angle_id']) == record['angle_id'],
+                             'annotation_mixed_angles')
+                    _require((kind, peak) not in seen_events, 'annotation_duplicate_type_peak')
+                    seen_events.add((kind, peak))
+                _require({kind for kind, _ in seen_events} == set(types), 'annotation_gold_event_types_mismatch')
     _require(seen == set(record_map), "annotation_clip_set_mismatch")
