@@ -101,6 +101,11 @@ def test_prompt_contains_only_generic_criteria_and_one_based_image_time_map():
     assert payload["images_in_supplied_order"] == [
         {"image_index": i, "timestamp_s": frame.timestamp_s} for i, frame in enumerate(request.frames, 1)]
     assert "money-counting machine is not evidence" in request.prompt
+    schema = request.response_schema
+    assert schema["additionalProperties"] is False
+    finding_schema = schema["properties"]["findings"]["items"]
+    assert finding_schema["properties"]["type_id"]["enum"] == [TYPE]
+    assert finding_schema["properties"]["t_peak"]["enum"] == list(WINDOW.timestamps)
     assert "complete unobscured handling cycle with no gaps" in request.prompt
 
 

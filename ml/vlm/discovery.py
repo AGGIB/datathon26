@@ -70,7 +70,7 @@ _INSTRUCTIONS = (
     "Output JSON only: {\"findings\":[{\"type_id\":string,\"t_start\":number,\"t_peak\":number,"
     "\"t_end\":number,\"confidence\":number,\"insufficient_evidence\":boolean,"
     "\"observations\":[{\"timestamp_s\":number,\"text\":string}]}]}. "
-    "At most 6 findings. Times satisfy start<=peak<=end and each must occur in observations, "
+    "At most 2 findings. Times satisfy start<=peak<=end and each must occur in observations, "
     "which describe visible actions only in Russian. Do not invent intervals or timestamps. "
 )
 
@@ -338,6 +338,28 @@ def _candidate(finding):
                      finding["confidence"], text, evidence)
 
 
+def response_schema(type_ids, timestamps):
+    """Constrain syntax/IDs/source anchors, never a claim about visual truth.
+
+    Two concise findings fit the local worker's 512-token generation budget.
+    Post-validation still checks ordering, observations and uncertainty.
+    Backends without constrained decoding can ignore this optional contract.
+    """
+    anchor = {"type": "number", "enum": list(timestamps)}
+    observation = {"type": "object", "additionalProperties": False,
+        "properties": {"timestamp_s": anchor, "text": {"type": "string", "minLength": 3, "maxLength": 120}},
+        "required": ["timestamp_s", "text"]}
+    properties = {"type_id": {"type": "string", "enum": list(type_ids)},
+                  "t_start": anchor, "t_peak": anchor, "t_end": anchor,
+                  "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                  "insufficient_evidence": {"type": "boolean"},
+                  "observations": {"type": "array", "minItems": 1, "maxItems": 3, "items": observation}}
+    finding = {"type": "object", "additionalProperties": False,
+               "properties": properties, "required": list(properties)}
+    return {"type": "object", "additionalProperties": False, "required": ["findings"],
+            "properties": {"findings": {"type": "array", "maxItems": 2, "items": finding}}}
+
+
 def discover_types(video_path: str | Path, originals: Sequence[Candidate],
                    catalog: Mapping[str, ViolationType], *, duration_sec: float,
                    windows: Sequence[DiscoveryWindow], allowed_type_ids: Sequence[str],
@@ -401,7 +423,8 @@ def discover_types(video_path: str | Path, originals: Sequence[Candidate],
             prompt = _prompt(types, window)
             if len(prompt) > 6000:
                 return finish("prompt_too_long")
-            request = InferenceRequest(prompt, selected, "checklist", None, tuple(types))
+            request = InferenceRequest(prompt, selected, "checklist", None, tuple(types),
+                                       response_schema(types, window.timestamps))
             if not budget.claim():
                 return finish(budget.unavailable() or "budget_exhausted")
             calls += 1
