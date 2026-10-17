@@ -14,7 +14,7 @@ import unittest
 from unittest import mock
 from types import SimpleNamespace
 
-SCRATCH = Path(tempfile.gettempdir())
+SCRATCH = Path(os.environ.get("TMPDIR") or tempfile.gettempdir())
 
 
 def baseline_module(name):

@@ -4,12 +4,16 @@ from pathlib import Path
 from typing import Any, Literal, Mapping, Protocol, Sequence, TypedDict
 
 
-class Candidate(TypedDict):
+class VerifierCandidate(TypedDict):
     candidate_id: str
     violation_type: str
     start_s: float
     end_s: float
     rule_id: str | None
+
+
+# Preserve the original public import while using the unambiguous name in new code.
+Candidate = VerifierCandidate
 
 
 class Rule(TypedDict):
