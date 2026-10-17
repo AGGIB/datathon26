@@ -527,3 +527,47 @@ def test_compact_probe_wrapper_construction_failure_closes_raw_worker(local_prob
     with pytest.raises(RuntimeError,match='scripted compact construction failure'):
         case.module.run(case.args)
     assert case.closed==[True] and not case.prepared and not case.calls
+
+
+@pytest.mark.parametrize('invalid',[True,False,None,'0.95',float('nan'),float('inf'),float('-inf'),-.01,1.01,10**1000])
+def test_probe_owner_confidence_rejects_invalid_values_before_startup(local_probe,invalid):
+    case=local_probe
+    case.args.min_confidence=invalid
+    with pytest.raises(ValueError,match='min_confidence_must_be_finite_between_zero_and_one'):
+        case.module.run(case.args)
+    assert not case.prepared and not case.calls and not case.closed
+
+
+def test_probe_owner_confidence_default_and_explicit_gate_are_fingerprinted_and_forwarded(local_probe,monkeypatch):
+    import json
+
+    case=local_probe
+    seen=[]
+    original=case.discovery.discover_types
+    def discover(*args,**kwargs):
+        seen.append(kwargs['min_confidence'])
+        return original(*args,**kwargs)
+    monkeypatch.setattr(case.discovery,'discover_types',discover)
+    case.module.run(case.args)
+    first=json.loads(case.args.out.with_suffix('.audit.json').read_text())
+    assert first['config']['min_confidence']==.7 and seen==[.7]
+    case.args.out=case.root/'var/explicit-gate.json'
+    case.args.min_confidence=.95
+    results=case.module.run(case.args)
+    second=json.loads(case.args.out.with_suffix('.audit.json').read_text())
+    assert second['config']['min_confidence']==.95 and seen==[.7,.95]
+    assert first['config_sha256']!=second['config_sha256']
+    assert all(all(event in results[key]['violations'] for event in case.baseline[key]['violations']) for key in results)
+
+
+def test_cli_owner_confidence_is_explicit_with_unchanged_default(monkeypatch):
+    import sys
+    from ml.tools import vlm_type_probe as module
+
+    seen=[]
+    monkeypatch.setattr(module,'run',lambda args: seen.append(args.min_confidence) or {})
+    argv=['probe','--model','scripted','--python','scripted','--out','var/scripted.json']
+    monkeypatch.setattr(sys,'argv',argv)
+    assert module.main()==0 and seen==[.7]
+    monkeypatch.setattr(sys,'argv',argv+['--min-confidence','.95'])
+    assert module.main()==0 and seen==[.7,.95]

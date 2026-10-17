@@ -19,6 +19,7 @@ class _Configuration:
     frame_source: object | None = None
     owned: bool = False
     max_calls: int = 2
+    min_confidence: float = .7
 
 
 _configuration: _Configuration | None = None
@@ -28,7 +29,7 @@ def configure_discovery(*, model_path: str | Path | None = None,
                         python_executable: str | Path | None = None,
                         backend: Backend | None = None, frame_source=None,
                         startup_timeout_s: float = 180, verify_actions: bool = False,
-                        compact_verify_actions: bool = False) -> bool:
+                        compact_verify_actions: bool = False, min_confidence: float = .7) -> bool:
     """Call once at startup, before accepting jobs; no network or implicit installs.
 
     Injected backends own their lifecycle. Owned MLX workers are closed on
@@ -38,12 +39,17 @@ def configure_discovery(*, model_path: str | Path | None = None,
     default-off; neither changes sampling or starts a model inside a job.
     For an injected backend, either verifier flag declares the four-call cap;
     the caller supplies its own verifier wrapper and still owns its lifecycle.
+    min_confidence is an uncalibrated owner gate for additions after inference;
+    it does not change the backend proposal cutoff or shared physical-call cap.
     """
     global _configuration
     if type(verify_actions) is not bool:
         raise ValueError("verify_actions must be boolean")
     if type(compact_verify_actions) is not bool:
         raise ValueError("compact_verify_actions must be boolean")
+    if (type(min_confidence) not in (float, int) or not 0 <= min_confidence <= 1
+            or not math.isfinite(min_confidence)):
+        raise ValueError("min_confidence must be finite between zero and one")
     if (isinstance(startup_timeout_s, bool) or not isinstance(startup_timeout_s, (float, int))
             or not math.isfinite(startup_timeout_s) or startup_timeout_s <= 0):
         raise ValueError("positive finite startup timeout required")
@@ -88,7 +94,8 @@ def configure_discovery(*, model_path: str | Path | None = None,
                 log.warning("vlm discovery: unavailable worker could not close")
         log.warning("vlm discovery: local runtime unavailable")
         return False
-    _configuration = _Configuration(backend, frame_source, owned, 4 if (compact_verify_actions or verify_actions) else 2)
+    _configuration = _Configuration(backend, frame_source, owned,
+                                    4 if (compact_verify_actions or verify_actions) else 2, min_confidence)
     return True
 
 
@@ -115,7 +122,8 @@ def augment_types(video_path, originals, types, *, duration_sec: float, deadline
             return originals
         report = discover_types(video_path, originals, types, duration_sec=duration_sec,
             windows=plan_windows(duration_sec), allowed_type_ids=TYPE_IDS,
-            budget=DiscoveryBudget(end, max_calls=config.max_calls), backend=config.backend, frame_source=config.frame_source)
+            budget=DiscoveryBudget(end, max_calls=config.max_calls), backend=config.backend, frame_source=config.frame_source,
+            min_confidence=config.min_confidence)
         # Final assembly merges near same-type episodes. Even non-overlapping
         # additions must stay outside that gap or they can rewrite a CV episode.
         separate = [addition for addition in report.added_candidates if not any(

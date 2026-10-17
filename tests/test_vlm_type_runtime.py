@@ -504,6 +504,7 @@ def test_pipeline_preload_verification_flag_requires_explicit_discovery_opt_in(
     monkeypatch.setenv('ML_VLM_DISCOVERY',discovery_flag)
     monkeypatch.setenv('ML_VLM_VERIFY_ACTIONS',verify_flag)
     monkeypatch.delenv('ML_VLM_COMPACT_VERIFY_ACTIONS',raising=False)
+    monkeypatch.delenv('ML_VLM_MIN_CONFIDENCE',raising=False)
     monkeypatch.setenv('ML_VLM_MODEL','scripted-model')
     monkeypatch.setenv('ML_VLM_PYTHON','scripted-python')
     monkeypatch.setattr(runtime,'configure_discovery',lambda **kwargs: seen.append(kwargs) or True)
@@ -511,7 +512,7 @@ def test_pipeline_preload_verification_flag_requires_explicit_discovery_opt_in(
     if expected is None:
         assert not seen
     else:
-        assert seen==[{'model_path':'scripted-model','python_executable':'scripted-python','verify_actions':expected,'compact_verify_actions':False}]
+        assert seen==[{'model_path':'scripted-model','python_executable':'scripted-python','verify_actions':expected,'compact_verify_actions':False,'min_confidence':.7}]
 
 
 @pytest.mark.parametrize('proposal_action,object_kind,expected_calls,expected_addition',[
@@ -774,3 +775,100 @@ def test_actual_owned_compact_adapter_uses_source_anchors_four_call_budget_and_c
     assert len(raw.requests)==expected_calls and raw.validated==[180] and constructed==[True]
     runtime.configure_discovery()
     assert raw.closed==1
+
+
+@pytest.mark.parametrize('invalid',[True,False,None,'0.95',float('nan'),float('inf'),float('-inf'),-.001,1.001,10**1000])
+def test_owner_gate_invalid_input_preserves_live_configuration_and_never_constructs_worker(monkeypatch,invalid):
+    from ml.vlm import mlx_backend
+
+    raw=OwnedScriptedActions('{"findings":[]}')
+    assert runtime.configure_discovery(backend=raw)
+    original=runtime._configuration
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: pytest.fail('invalid gate cannot construct'))
+    with pytest.raises(ValueError,match='min_confidence must be finite between zero and one'):
+        runtime.configure_discovery(model_path='scripted',python_executable='scripted',min_confidence=invalid)
+    assert runtime._configuration is original and raw.closed==0
+
+
+@pytest.mark.parametrize('threshold',[0,.7,.95,1])
+def test_runtime_owner_gate_stores_and_forwards_exact_global_value(monkeypatch,threshold):
+    raw=OwnedScriptedActions('{"findings":[]}')
+    assert runtime.configure_discovery(backend=raw,min_confidence=threshold)
+    assert runtime._configuration.min_confidence==threshold
+    seen=[]
+    def discover(*args,**kwargs):
+        seen.append(kwargs['min_confidence'])
+        return SimpleNamespace(added_candidates=(),status='completed',calls_used=0)
+    monkeypatch.setattr(runtime,'discover_types',discover)
+    original=candidate(confidence=.51)
+    assert runtime.augment_types('scripted.mp4',[original],catalog(),duration_sec=20.,deadline=None)[0] is original
+    assert seen==[threshold] and original.confidence==.51
+
+
+@pytest.mark.parametrize('confidence,accepted',[(.949,False),(.95,True)])
+def test_actual_compact_verification_still_runs_before_owner_gate_boundary(monkeypatch,confidence,accepted):
+    from ml.vlm import mlx_backend
+    from ml.vlm.compact_verified_action_backend import CompactVerifiedActionBackend
+
+    actions={'actions':[{'action':'cashier_places_removed_outerwear_on_cashdesk','insufficient_evidence':False,
+                         'confidence':confidence,'start_frame':10,'peak_frame':11,'end_frame':12}]}
+    facts={'episodes':[{'id':1,'rows':[
+        [1,'cashier_holds_identifiable_outerwear','unknown'],
+        [2,'cashier_places_outerwear_on_own_workdesk','unknown'],
+        [3,'outerwear_resting_on_own_workdesk','unknown']], 'same_actor':'yes','same_object':'yes'}]}
+    class Raw(OwnedScriptedActions):
+        def __init__(self):
+            super().__init__('')
+            self.replies=[json.dumps(actions),json.dumps(facts)]
+        def infer(self,request,timeout_s):
+            self.requests.append((request,timeout_s))
+            return self.replies.pop(0)
+    raw=Raw()
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: raw)
+    actual_discover=runtime.discover_types
+    reports=[]
+    def observe(*args,**kwargs):
+        assert kwargs['min_confidence']==.95 and kwargs['budget'].max_calls==4
+        report=actual_discover(*args,**kwargs)
+        reports.append(report)
+        return report
+    monkeypatch.setattr(runtime,'discover_types',observe)
+    assert runtime.configure_discovery(model_path='scripted',python_executable='scripted',compact_verify_actions=True,
+                                       min_confidence=.95,frame_source=ScriptedFrames())
+    wrapper=runtime._configuration.backend
+    assert isinstance(wrapper,CompactVerifiedActionBackend)
+    original=candidate(confidence=.51)
+    result=runtime.augment_types('scripted.mp4',[original],catalog(),duration_sec=20.,deadline=None)
+    assert result[0] is original and original.confidence==.51 and len(result)==1+accepted
+    assert len(raw.requests)==wrapper.calls_used==reports[0].calls_used==2
+    assert wrapper.last_verifications[0]['accepted'] is True
+    assert reports[0].decisions[0].reason==('visible_evidence' if accepted else 'insufficient_evidence')
+
+
+@pytest.mark.parametrize('value',[None,'.95','0','1'])
+def test_pipeline_preload_owner_gate_valid_or_missing_value(monkeypatch,value):
+    from ml import pipeline
+
+    observed=[]
+    monkeypatch.setenv('ML_VLM_DISCOVERY','1')
+    if value is None:
+        monkeypatch.delenv('ML_VLM_MIN_CONFIDENCE',raising=False)
+    else:
+        monkeypatch.setenv('ML_VLM_MIN_CONFIDENCE',value)
+    monkeypatch.setattr(runtime,'configure_discovery',lambda **kwargs: observed.append(kwargs) or True)
+    pipeline.preload()
+    assert len(observed)==1 and observed[0]['min_confidence']==(.7 if value is None else float(value))
+
+
+@pytest.mark.parametrize('invalid',['not-a-number','nan','inf','-inf','-.1','1.1','SYNTHETIC_PRIVATE_CONFIG'])
+def test_pipeline_malformed_owner_gate_disables_previous_optional_owner_without_breaking_cv(
+        monkeypatch,caplog,invalid):
+    from ml import pipeline
+
+    raw=OwnedScriptedActions('{"findings":[]}')
+    runtime._configuration=runtime._Configuration(raw,owned=True)
+    monkeypatch.setenv('ML_VLM_DISCOVERY','1')
+    monkeypatch.setenv('ML_VLM_MIN_CONFIDENCE',invalid)
+    pipeline.preload()
+    assert runtime._configuration is None and raw.closed==1
+    assert 'confidence configuration invalid' in caplog.text and invalid not in caplog.text

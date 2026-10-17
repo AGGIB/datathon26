@@ -212,6 +212,10 @@ def run(args):
     from ml.vlm.mlx_backend import LocalMLXBackend
     from ml.vlm.preflight import _validated_model_directory
 
+    min_confidence = getattr(args, "min_confidence", .7)
+    if (type(min_confidence) not in (float, int) or not 0 <= min_confidence <= 1
+            or not math.isfinite(min_confidence)):
+        raise ValueError("min_confidence_must_be_finite_between_zero_and_one")
     if not _number(args.budget) or args.budget <= 0:
         raise ValueError("positive_finite_budget_required")
     if type(args.max_tokens) is not int or not 32 <= args.max_tokens <= 1024:
@@ -259,7 +263,7 @@ def run(args):
               "parent_runtime": _runtime_versions(Path(sys.executable)),
               "kb_path": str(Path(KB_PATH).absolute()), "kb_sha256": _sha(Path(KB_PATH)),
               "max_tokens": args.max_tokens, "frame_side": args.frame_side,
-              "budget_sec": args.budget, "allowlist": TYPE_IDS, "sampling_policy": POLICY_ID,
+              "budget_sec": args.budget, "min_confidence": min_confidence, "allowlist": TYPE_IDS, "sampling_policy": POLICY_ID,
               "decoder_policy": decoder_policy, "max_model_calls_per_video": max_model_calls,
               "baseline_sha256": _sha(args.baseline) if args.baseline else None,
               "source_sha256": _source_hashes(), "selected_video_ids": sorted(videos),
@@ -315,7 +319,7 @@ def run(args):
                         owner = key
                         budget = DiscoveryBudget(started + args.budget, max_calls=max_model_calls)
                         report = discover_types(path, (), types, duration_sec=duration, windows=windows,
-                                                allowed_type_ids=TYPE_IDS, budget=budget, backend=backend)
+                                                allowed_type_ids=TYPE_IDS, budget=budget, backend=backend, min_confidence=min_confidence)
                         if report.status == "completed":
                             completed[identity] = (key, report)
                     additions = [{"type_id": event.type_id, "t": round(event.t_peak, 1), "conf": event.confidence}
@@ -359,6 +363,8 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--only", default="")
     parser.add_argument("--budget", type=float, default=180)
+    parser.add_argument("--min-confidence", type=float, default=.7,
+                        help="uncalibrated global owner gate for VLM additions; does not reduce model calls")
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--frame-side", type=int, default=640)
     parser.add_argument("--action-contrast", action="store_true", help="experimental balanced physical-action decoder")

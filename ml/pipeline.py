@@ -249,10 +249,18 @@ def preload() -> None:
     if os.environ.get("ML_VLM_DISCOVERY", "0") == "1":
         from .vlm.type_runtime import configure_discovery
 
-        ready = configure_discovery(model_path=os.environ.get("ML_VLM_MODEL"),
-                                    python_executable=os.environ.get("ML_VLM_PYTHON"),
-                                    verify_actions=os.environ.get("ML_VLM_VERIFY_ACTIONS", "0") == "1",
-                                    compact_verify_actions=os.environ.get("ML_VLM_COMPACT_VERIFY_ACTIONS", "0") == "1")
+        try:
+            ready = configure_discovery(model_path=os.environ.get("ML_VLM_MODEL"),
+                                        python_executable=os.environ.get("ML_VLM_PYTHON"),
+                                        verify_actions=os.environ.get("ML_VLM_VERIFY_ACTIONS", "0") == "1",
+                                        compact_verify_actions=os.environ.get("ML_VLM_COMPACT_VERIFY_ACTIONS", "0") == "1",
+                                        min_confidence=float(os.environ.get("ML_VLM_MIN_CONFIDENCE", "0.7")))
+        except ValueError:
+            # Disable a previous optional owner too; malformed configuration
+            # must neither break CV startup nor leave an old VLM profile live.
+            configure_discovery()
+            ready = False
+            log.warning("pipeline: optional VLM confidence configuration invalid")
         log.info("pipeline: optional local VLM discovery ready=%s", ready)
 
 
