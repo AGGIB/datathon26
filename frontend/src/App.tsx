@@ -1,5 +1,3 @@
-import { useEffect, useState } from 'react';
-import { getPipelineMode } from './api';
 import { ParticleBackground } from './components/ParticleBackground';
 import { ResultScreen } from './components/ResultScreen';
 import { UploadScreen } from './components/UploadScreen';
@@ -11,22 +9,11 @@ const STEPS = ['Загрузка записи', 'Обработка', 'Резу�
 
 export default function App() {
   const analysis = useAnalysis();
-  const [particlesEnabled, setParticlesEnabled] = useState(true);
-  const [pipelineMode, setPipelineMode] = useState<'mock' | 'real'>();
   const currentStep = analysis.phase === 'done' ? 2 : analysis.isBusy ? 1 : 0;
-
-  useEffect(() => {
-    if (IS_DEMO) return;
-    const controller = new AbortController();
-    void getPipelineMode(controller.signal).then((mode) => {
-      if (!controller.signal.aborted) setPipelineMode(mode);
-    });
-    return () => controller.abort();
-  }, []);
 
   return (
     <>
-      {particlesEnabled && <ParticleBackground />}
+      <ParticleBackground />
       <a className="skip-link" href="#workspace">
         Перейти к проверке
       </a>
@@ -37,15 +24,7 @@ export default function App() {
         </a>
         <div className="header-meta">
           <span className="project-label">Datathon 26 · Прототип</span>
-          <span className="environment">
-            {IS_DEMO
-              ? 'Локальное демо'
-              : pipelineMode === 'mock'
-                ? 'API · mock'
-                : pipelineMode === 'real'
-                  ? 'API · ML'
-                  : 'API настроен'}
-          </span>
+          <span className="environment">{IS_DEMO ? 'Локальное демо' : 'API настроен'}</span>
         </div>
       </header>
 
@@ -55,17 +34,6 @@ export default function App() {
             <h1>Проверка кассовой записи</h1>
             <p className="lead">Загрузите видео, чтобы проверить события и их основания.</p>
           </div>
-          <button
-            className="motion-toggle"
-            aria-pressed={particlesEnabled}
-            onClick={() => setParticlesEnabled((enabled) => !enabled)}
-          >
-            <span
-              className={`toggle-indicator ${particlesEnabled ? 'on' : ''}`}
-              aria-hidden="true"
-            />
-            Частицы {particlesEnabled ? 'включены' : 'выключены'}
-          </button>
         </div>
 
         <nav className="steps" aria-label="Этапы проверки">
@@ -91,13 +59,6 @@ export default function App() {
           <aside className="demo-banner">
             <strong>Демонстрация интерфейса.</strong> Видео остаётся на устройстве. Результаты
             вымышлены и показывают возможности просмотра.
-          </aside>
-        )}
-
-        {!IS_DEMO && pipelineMode === 'mock' && (
-          <aside className="demo-banner">
-            <strong>Сервер работает в mock-режиме.</strong> Результаты заглушки не являются
-            ML-анализом видео.
           </aside>
         )}
 
@@ -151,12 +112,7 @@ export default function App() {
         )}
 
         {analysis.phase === 'done' && analysis.result && analysis.file && (
-          <ResultScreen
-            file={analysis.file}
-            result={analysis.result}
-            isMock={pipelineMode === 'mock'}
-            onReset={analysis.reset}
-          />
+          <ResultScreen file={analysis.file} result={analysis.result} onReset={analysis.reset} />
         )}
 
         <footer>

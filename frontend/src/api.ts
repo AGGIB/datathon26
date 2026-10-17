@@ -1,6 +1,6 @@
 import { isRecord, parseJob } from './api-contract';
 import { API_BASE_URL } from './config';
-import type { AnalysisJob, PipelineMode } from './types';
+import type { AnalysisJob } from './types';
 
 function getHttpErrorMessage(status: number): string {
   switch (status) {
@@ -19,23 +19,6 @@ function getHttpErrorMessage(status: number): string {
       return 'Сервер не смог прочитать видео. Поддерживаются MOV и MP4.';
     default:
       return `Ошибка сервера (${status}). Попробуйте ещё раз.`;
-  }
-}
-
-export async function getPipelineMode(signal: AbortSignal): Promise<PipelineMode | undefined> {
-  try {
-    const response = await fetch(`${API_BASE_URL}/health`, {
-      signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]),
-    });
-    if (!response.ok) return undefined;
-
-    const body: unknown = await response.json();
-    if (!isRecord(body) || (body.pipeline !== 'mock' && body.pipeline !== 'real')) {
-      return undefined;
-    }
-    return body.pipeline;
-  } catch {
-    return undefined;
   }
 }
 

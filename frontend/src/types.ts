@@ -27,5 +27,3 @@ export type AnalysisJob =
   | { status: 'failed'; error: string };
 
 export type AnalysisPhase = 'upload' | 'sending' | 'processing' | 'done';
-
-export type PipelineMode = 'mock' | 'real';
