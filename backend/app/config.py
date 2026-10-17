@@ -1,10 +1,24 @@
 """Runtime settings, read once from environment variables."""
 
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
 PIPELINES = frozenset({"mock", "real"})
+
+
+def positive_budget(value: float, name: str) -> float:
+    """Validate configured budgets before a pool or timer receives them."""
+    try:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError
+        result = float(value)
+        if not math.isfinite(result) or result <= 0:
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{name} must be finite and > 0") from None
+    return result
 
 
 def _strip_inline_comment(line: str) -> str:
@@ -62,12 +76,9 @@ class Settings:
             raise ValueError(f"PIPELINE must be one of {sorted(PIPELINES)}, got {self.pipeline!r}")
         if self.workers < 1:
             raise ValueError("WORKERS must be >= 1")
-        if self.min_budget_sec <= 0:
-            raise ValueError("MIN_BUDGET_SEC must be > 0")
-        if self.pipeline_timeout_sec <= 0:
-            raise ValueError("PIPELINE_TIMEOUT_SEC must be > 0")
-        if self.job_timeout_sec <= 0:
-            raise ValueError("JOB_TIMEOUT_SEC must be > 0")
+        positive_budget(self.min_budget_sec, "MIN_BUDGET_SEC")
+        positive_budget(self.pipeline_timeout_sec, "PIPELINE_TIMEOUT_SEC")
+        positive_budget(self.job_timeout_sec, "JOB_TIMEOUT_SEC")
 
     @classmethod
     def from_env(cls, env_path: Path | None = None) -> "Settings":

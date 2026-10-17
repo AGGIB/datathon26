@@ -1,6 +1,7 @@
 """Background execution of the analysis pipeline (К2) with a fixed worker pool."""
 
 import logging
+import math
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -10,6 +11,7 @@ from typing import Any, Callable, Protocol
 
 from pydantic import ValidationError
 
+from .config import positive_budget
 from .schemas import AnalysisResult
 from .store import JobStore
 
@@ -40,9 +42,9 @@ class JobRunner:
     ) -> None:
         self._store = store
         self._pipeline = pipeline
-        self._hard_timeout = float(time_budget_sec)
-        self._soft_budget = float(soft_budget_sec) if soft_budget_sec is not None else min(200.0, self._hard_timeout * 0.75)
-        self._min_budget = float(min_budget_sec)
+        self._hard_timeout = positive_budget(time_budget_sec, "time_budget_sec")
+        self._soft_budget = positive_budget(soft_budget_sec, "soft_budget_sec") if soft_budget_sec is not None else min(200.0, self._hard_timeout * 0.75)
+        self._min_budget = positive_budget(min_budget_sec, "min_budget_sec")
         self._workers = workers
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="job")
         self._futures: dict[str, Future] = {}
@@ -116,7 +118,7 @@ class JobRunner:
             )
             return
 
-        if hard_remaining <= MIN_PIPELINE_BUDGET_FLOOR_SEC or hard_remaining < self._min_budget:
+        if not math.isfinite(hard_remaining) or hard_remaining <= MIN_PIPELINE_BUDGET_FLOOR_SEC or hard_remaining < self._min_budget:
             log.warning(
                 "job %s: remaining time before acquire (%.1fs) below minimum budget %.1fs",
                 job_id,
@@ -156,7 +158,7 @@ class JobRunner:
             )
             return
 
-        if hard_remaining <= MIN_PIPELINE_BUDGET_FLOOR_SEC or hard_remaining < self._min_budget:
+        if not math.isfinite(hard_remaining) or hard_remaining <= MIN_PIPELINE_BUDGET_FLOOR_SEC or hard_remaining < self._min_budget:
             self._sem.release()
             log.warning(
                 "job %s: remaining time after acquire (%.1fs) below minimum budget %.1fs",
@@ -177,7 +179,7 @@ class JobRunner:
         available = max(0.0, hard_remaining - grace_sec)
         pipeline_budget = min(self._soft_budget, available)
 
-        if pipeline_budget <= MIN_PIPELINE_BUDGET_FLOOR_SEC or pipeline_budget < self._min_budget:
+        if not math.isfinite(pipeline_budget) or pipeline_budget <= MIN_PIPELINE_BUDGET_FLOOR_SEC or pipeline_budget < self._min_budget:
             self._sem.release()
             log.warning(
                 "job %s: pipeline budget (%.3fs) below minimum budget %.1fs (floor %.3fs)",

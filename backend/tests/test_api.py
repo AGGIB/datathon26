@@ -549,8 +549,8 @@ def test_zero_or_sub_millisecond_budget_unconditionally_rejected(tmp_path):
         pipeline_called.append(time_budget_sec)
         return {"verdict": "no_violation", "violations": []}
 
-    # Runner instantiated with min_budget_sec=0 and soft_budget_sec=0
-    runner = JobRunner(store, dummy_pipeline, workers=1, time_budget_sec=30.0, soft_budget_sec=0.0, min_budget_sec=0.0)
+    # Valid positive configuration still cannot bypass the unconditional floor.
+    runner = JobRunner(store, dummy_pipeline, workers=1, time_budget_sec=30.0, soft_budget_sec=0.0001, min_budget_sec=0.00001)
     video = tmp_path / "v_floor.mov"
     video.write_bytes(b"dummy")
     job_id = "1122334455ff"
@@ -564,6 +564,41 @@ def test_zero_or_sub_millisecond_budget_unconditionally_rejected(tmp_path):
     assert "Недостаточно времени для обработки видео" in res["error"]
     assert len(pipeline_called) == 0
     runner.shutdown()
+
+
+@pytest.mark.parametrize("field", ["time_budget_sec", "soft_budget_sec", "min_budget_sec"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), 0, -1, True, 10**1000])
+def test_runner_invalid_budget_rejected_before_pool(tmp_path, monkeypatch, field, value):
+    import backend.app.runner as runner_module
+
+    def forbidden_pool(*args, **kwargs):
+        pytest.fail("invalid budget created a worker pool")
+
+    monkeypatch.setattr(runner_module, "ThreadPoolExecutor", forbidden_pool)
+    with pytest.raises(ValueError, match=field):
+        JobRunner(JobStore(tmp_path / "jobs"), lambda *args, **kwargs: None,
+                  workers=1, **{field: value})
+
+
+def test_final_nonfinite_pipeline_budget_rejected_and_slot_returned(tmp_path):
+    store = JobStore(tmp_path / "jobs")
+    calls = []
+    runner = JobRunner(store, lambda *args, **kwargs: calls.append(kwargs), workers=1)
+    # Defence in depth if an invalid value reaches the final budget calculation.
+    runner._soft_budget = float("nan")
+    video = tmp_path / "synthetic.mov"
+    video.write_bytes(b"synthetic")
+    job_id = "b0d6e7000001"
+    store.create(job_id, video, video.name)
+    try:
+        runner._run_internal(job_id, video)
+        assert store.get(job_id)["status"] == "failed"
+        assert not calls
+        assert runner.lost_slots == 0
+        assert runner._sem.acquire(blocking=False)
+        runner._sem.release()
+    finally:
+        runner.shutdown()
 
 
 

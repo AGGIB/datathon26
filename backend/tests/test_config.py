@@ -76,4 +76,20 @@ def test_min_budget_sec_setting(tmp_path):
         Settings(api_keys=frozenset({"test"}), data_dir=tmp_path, job_timeout_sec=0.0)
 
 
+@pytest.mark.parametrize("field", ["min_budget_sec", "pipeline_timeout_sec", "job_timeout_sec"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), True, False, 10**1000])
+def test_nonfinite_or_non_numeric_budget_rejected(tmp_path, field, value):
+    with pytest.raises(ValueError, match="finite and > 0"):
+        Settings(api_keys=frozenset({"test"}), data_dir=tmp_path, **{field: value})
+
+
+@pytest.mark.parametrize("field", ["MIN_BUDGET_SEC", "PIPELINE_TIMEOUT_SEC", "JOB_TIMEOUT_SEC"])
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_nonfinite_environment_budget_rejected(tmp_path, monkeypatch, field, value):
+    monkeypatch.setenv("API_KEYS", "test-key")
+    monkeypatch.setenv(field, value)
+    with pytest.raises(ValueError, match=field):
+        Settings.from_env(env_path=tmp_path / "absent.env")
+
+
 
