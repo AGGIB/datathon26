@@ -95,26 +95,18 @@ class JobRunner:
 
         record = self._store.get(job_id) or {}
         created_at = record.get("created_at")
-        if created_at is not None:
-            elapsed = time.time() - float(created_at)
-            hard_remaining = self._hard_timeout - elapsed
-            if hard_remaining <= 0:
-                log.warning("job %s: queue wait (%.1fs) exceeded hard timeout %.1fs", job_id, elapsed, self._hard_timeout)
-                self._store.update(
-                    job_id,
-                    status="failed",
-                    stage="failed",
-                    error="Время ожидания в очереди превысило лимит",
-                )
-                return
-        else:
-            hard_remaining = self._hard_timeout
-
-        # Dual budgets: soft budget passed to pipeline, hard timeout enforced by watchdog
-        # Pipeline budget must never exceed soft_budget or available remaining time
-        grace_sec = min(10.0, self._hard_timeout * 0.1) if self._hard_timeout < 60 else max(10.0, self._hard_timeout - self._soft_budget)
-        available = max(0.001, hard_remaining - grace_sec)
-        pipeline_budget = min(self._soft_budget, available)
+        start_time = float(created_at) if created_at is not None else time.time()
+        elapsed = time.time() - start_time
+        hard_remaining = self._hard_timeout - elapsed
+        if hard_remaining <= 0:
+            log.warning("job %s: queue wait (%.1fs) exceeded hard timeout %.1fs", job_id, elapsed, self._hard_timeout)
+            self._store.update(
+                job_id,
+                status="failed",
+                stage="failed",
+                error="Время ожидания в очереди превысило лимит",
+            )
+            return
 
         # Concurrency guard: ensure active ML executions do not exceed workers
         if not self._sem.acquire(timeout=max(0.001, hard_remaining)):
@@ -126,6 +118,25 @@ class JobRunner:
                 error="Не удалось выделить вычислительные ресурсы (очередь перегружена)",
             )
             return
+
+        # Recompute remaining budget AFTER acquiring the slot to account for wait time
+        elapsed_after_acquire = time.time() - start_time
+        hard_remaining = self._hard_timeout - elapsed_after_acquire
+        if hard_remaining <= 0:
+            self._sem.release()
+            log.warning("job %s: expired while waiting for compute slot (%.1fs)", job_id, elapsed_after_acquire)
+            self._store.update(
+                job_id,
+                status="failed",
+                stage="failed",
+                error="Время ожидания в очереди превысило лимит",
+            )
+            return
+
+        # Dual budgets: soft budget passed to pipeline, hard timeout enforced by watchdog
+        grace_sec = min(10.0, self._hard_timeout * 0.1) if self._hard_timeout < 60 else max(10.0, self._hard_timeout - self._soft_budget)
+        available = max(0.001, hard_remaining - grace_sec)
+        pipeline_budget = min(self._soft_budget, available)
 
         pipeline_result: list[dict[str, Any]] = []
         pipeline_exc: list[Exception] = []
@@ -149,9 +160,11 @@ class JobRunner:
             finally:
                 release_slot()
 
+        thread_started = False
         try:
             thread = threading.Thread(target=target, name=f"pipe-{job_id}", daemon=True)
             thread.start()
+            thread_started = True
             thread.join(timeout=hard_remaining)
 
             if thread.is_alive():
@@ -210,5 +223,6 @@ class JobRunner:
                 result=result.model_dump(mode="json", exclude_none=True),
             )
         except Exception:
-            release_slot()
+            if not thread_started:
+                release_slot()
             raise

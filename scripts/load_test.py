@@ -52,7 +52,7 @@ def get_default_api_key() -> str:
     return "test-key"
 
 
-def upload_video(base_url: str, api_key: str, filename: str, content: bytes) -> tuple[int, dict, float]:
+def upload_video(base_url: str, api_key: str, filename: str, content: bytes, timeout: float = 120.0) -> tuple[int, dict, float]:
     url = f"{base_url.rstrip('/')}/api/v1/analyze"
     boundary = "----WebKitFormBoundary" + hex(int(time.time() * 1000))[2:]
 
@@ -78,14 +78,20 @@ def upload_video(base_url: str, api_key: str, filename: str, content: bytes) -> 
 
     t0 = time.time()
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             elapsed = time.time() - t0
             payload = json.loads(resp.read().decode("utf-8"))
             return resp.status, payload, elapsed
     except urllib.error.HTTPError as exc:
         elapsed = time.time() - t0
-        payload = json.loads(exc.read().decode("utf-8")) if exc.fp else {"detail": str(exc)}
+        try:
+            payload = json.loads(exc.read().decode("utf-8")) if exc.fp else {"detail": str(exc)}
+        except Exception:
+            payload = {"detail": str(exc)}
         return exc.code, payload, elapsed
+    except (urllib.error.URLError, TimeoutError, OSError, ConnectionError) as exc:
+        elapsed = time.time() - t0
+        return 0, {"detail": f"Upload network error: {type(exc).__name__}: {exc}"}, elapsed
 
 
 def poll_job(base_url: str, api_key: str, job_id: str, max_wait: float = 300.0) -> tuple[dict, float]:
@@ -94,14 +100,59 @@ def poll_job(base_url: str, api_key: str, job_id: str, max_wait: float = 300.0) 
 
     t0 = time.time()
     while time.time() - t0 < max_wait:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            status = data.get("status")
-            if status in {"done", "failed"}:
-                return data, time.time() - t0
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                status = data.get("status")
+                if status in {"done", "failed"}:
+                    return data, time.time() - t0
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ConnectionError):
+            pass
         time.sleep(0.5)
 
-    raise TimeoutError(f"Job {job_id} exceeded poll timeout {max_wait}s")
+    return {"status": "failed", "error": f"Job {job_id} exceeded poll timeout {max_wait}s"}, time.time() - t0
+
+
+def validate_job_result(data: dict) -> tuple[bool, str]:
+    """Strictly validates K1 contract invariants and schema correctness."""
+    status = data.get("status")
+    if status not in {"done", "failed"}:
+        return False, f"Unknown status: {status!r}"
+    if status == "failed":
+        err = data.get("error", "")
+        if not err or not isinstance(err, str):
+            return False, "Failed status requires a descriptive string error message"
+        return True, ""
+
+    verdict = data.get("verdict")
+    if verdict not in {"violation", "no_violation"}:
+        return False, f"Invalid verdict: {verdict!r}"
+
+    violations = data.get("violations")
+    if not isinstance(violations, list):
+        return False, f"violations must be a list, got {type(violations)}"
+
+    if verdict == "violation":
+        if len(violations) == 0:
+            return False, "Verdict is 'violation' but violations list is empty"
+        for idx, v in enumerate(violations):
+            if not isinstance(v, dict):
+                return False, f"violation[{idx}] must be a dict"
+            if not v.get("type"):
+                return False, f"violation[{idx}] missing 'type'"
+            if "timecode_sec" not in v or not isinstance(v["timecode_sec"], (int, float)):
+                return False, f"violation[{idx}] missing valid 'timecode_sec'"
+            frames = v.get("evidence_frames")
+            if not isinstance(frames, list) or len(frames) == 0:
+                return False, f"violation[{idx}] missing evidence_frames"
+            for f_idx, frame in enumerate(frames):
+                if not isinstance(frame, dict) or not frame.get("image_base64"):
+                    return False, f"violation[{idx}].evidence_frames[{f_idx}] missing image_base64"
+    elif verdict == "no_violation":
+        if len(violations) != 0:
+            return False, f"Verdict is 'no_violation' but violations list is non-empty (got {len(violations)})"
+
+    return True, ""
 
 
 def percentile(values: list[float], p: float) -> float:
@@ -125,7 +176,7 @@ def main() -> int:
     args = parser.parse_args()
 
     api_key = args.api_key or get_default_api_key()
-    print(f"=== Datathon26 Live Load Test ===")
+    print("=== Datathon26 Live Load Test ===")
     print(f"Target URL:    {args.url}")
     print(f"Concurrency:   {args.concurrency}")
     print(f"Requests:      {args.requests}")
@@ -141,7 +192,7 @@ def main() -> int:
     # Health check probe before starting
     try:
         health_req = urllib.request.Request(f"{args.url.rstrip('/')}/health")
-        with urllib.request.urlopen(health_req, timeout=5) as r:
+        with urllib.request.urlopen(health_req, timeout=10) as r:
             health = json.loads(r.read().decode())
             print(f"Target health: OK (pipeline: {health.get('pipeline')})")
     except Exception as exc:
@@ -152,6 +203,7 @@ def main() -> int:
     processing_times: list[float] = []
     total_times: list[float] = []
     results: list[dict] = []
+    schema_failures: list[str] = []
 
     start_all = time.time()
 
@@ -181,9 +233,16 @@ def main() -> int:
                 upload_times.append(res["upload_dur"])
                 processing_times.append(res["poll_dur"])
                 total_times.append(res["total_dur"])
-                status = res["result"].get("status")
-                verdict = res["result"].get("verdict", "-")
-                print(f"  [+] Job {res['job_id']}: status={status}, verdict={verdict}, duration={res['total_dur']:.2f}s")
+                job_res = res["result"]
+                status = job_res.get("status")
+                verdict = job_res.get("verdict", "-")
+
+                valid, err_msg = validate_job_result(job_res)
+                if not valid:
+                    schema_failures.append(f"Job {res['job_id']}: {err_msg}")
+                    print(f"  [-] Job {res['job_id']}: INVALID SCHEMA: {err_msg}")
+                else:
+                    print(f"  [+] Job {res['job_id']}: status={status}, verdict={verdict}, duration={res['total_dur']:.2f}s")
             else:
                 print(f"  [-] Request {res['index']} failed: HTTP {res['code']} ({res.get('error')})")
 
@@ -196,7 +255,8 @@ def main() -> int:
     print(f"Total Requests:       {args.requests}")
     print(f"Completed (done):     {success_count}")
     print(f"Failed (timeout):     {failed_count}")
-    print(f"HTTP Errors:          {http_errors}")
+    print(f"HTTP/Network Errors:  {http_errors}")
+    print(f"Schema Errors:        {len(schema_failures)}")
     print(f"Wall Clock Time:      {wall_clock:.2f}s")
     if total_times:
         print(f"Throughput:           {len(total_times) / wall_clock:.2f} req/s")
@@ -211,8 +271,18 @@ def main() -> int:
         print(f"  p50:                {percentile(processing_times, 0.50):.2f}s")
         print(f"  p95:                {percentile(processing_times, 0.95):.2f}s")
 
-    if http_errors > 0 or success_count + failed_count != args.requests:
-        print("\n[-] Load test assertion failed: unhandled errors encountered")
+    # Strict assertion checks
+    if http_errors > 0:
+        print(f"\n[-] Load test assertion failed: {http_errors} HTTP/network errors encountered")
+        return 1
+    if schema_failures:
+        print(f"\n[-] Load test assertion failed: {len(schema_failures)} jobs failed schema validation")
+        return 1
+    if success_count == 0:
+        print("\n[-] Load test assertion failed: 0 jobs completed successfully (all failed)")
+        return 1
+    if success_count + failed_count != args.requests:
+        print(f"\n[-] Load test assertion failed: incomplete results ({success_count + failed_count}/{args.requests})")
         return 1
 
     print("\n[+] Load test completed successfully with all invariant assertions passed.")
