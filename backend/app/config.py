@@ -62,8 +62,12 @@ class Settings:
             raise ValueError(f"PIPELINE must be one of {sorted(PIPELINES)}, got {self.pipeline!r}")
         if self.workers < 1:
             raise ValueError("WORKERS must be >= 1")
-        if self.min_budget_sec < 0:
-            raise ValueError("MIN_BUDGET_SEC must be >= 0")
+        if self.min_budget_sec <= 0:
+            raise ValueError("MIN_BUDGET_SEC must be > 0")
+        if self.pipeline_timeout_sec <= 0:
+            raise ValueError("PIPELINE_TIMEOUT_SEC must be > 0")
+        if self.job_timeout_sec <= 0:
+            raise ValueError("JOB_TIMEOUT_SEC must be > 0")
 
     @classmethod
     def from_env(cls, env_path: Path | None = None) -> "Settings":

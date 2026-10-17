@@ -65,7 +65,15 @@ def test_min_budget_sec_setting(tmp_path):
     s = Settings(api_keys=frozenset({"test"}), data_dir=tmp_path, min_budget_sec=15.0)
     assert s.min_budget_sec == 15.0
 
-    with pytest.raises(ValueError, match="MIN_BUDGET_SEC"):
-        Settings(api_keys=frozenset({"test"}), data_dir=tmp_path, min_budget_sec=-1.0)
+    for invalid in [0.0, -1.0]:
+        with pytest.raises(ValueError, match="MIN_BUDGET_SEC"):
+            Settings(api_keys=frozenset({"test"}), data_dir=tmp_path, min_budget_sec=invalid)
+
+    with pytest.raises(ValueError, match="PIPELINE_TIMEOUT_SEC"):
+        Settings(api_keys=frozenset({"test"}), data_dir=tmp_path, pipeline_timeout_sec=0.0)
+
+    with pytest.raises(ValueError, match="JOB_TIMEOUT_SEC"):
+        Settings(api_keys=frozenset({"test"}), data_dir=tmp_path, job_timeout_sec=0.0)
+
 
 

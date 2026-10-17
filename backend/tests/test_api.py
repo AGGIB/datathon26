@@ -541,6 +541,32 @@ def test_watchdog_boundary_race_does_not_leak_lost_slots(tmp_path):
     runner.shutdown()
 
 
+def test_zero_or_sub_millisecond_budget_unconditionally_rejected(tmp_path):
+    store = JobStore(tmp_path / "jobs")
+    pipeline_called = []
+
+    def dummy_pipeline(video_path, on_progress=None, time_budget_sec=None):
+        pipeline_called.append(time_budget_sec)
+        return {"verdict": "no_violation", "violations": []}
+
+    # Runner instantiated with min_budget_sec=0 and soft_budget_sec=0
+    runner = JobRunner(store, dummy_pipeline, workers=1, time_budget_sec=30.0, soft_budget_sec=0.0, min_budget_sec=0.0)
+    video = tmp_path / "v_floor.mov"
+    video.write_bytes(b"dummy")
+    job_id = "1122334455ff"
+    store.create(job_id, video, "v_floor.mov")
+    runner.submit(job_id, video)
+    runner.wait(job_id, timeout=2.0)
+
+    res = store.get(job_id)
+    assert res is not None
+    assert res["status"] == "failed"
+    assert "Недостаточно времени для обработки видео" in res["error"]
+    assert len(pipeline_called) == 0
+    runner.shutdown()
+
+
+
 
 
 

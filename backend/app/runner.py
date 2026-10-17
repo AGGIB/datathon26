@@ -16,6 +16,7 @@ from .store import JobStore
 log = logging.getLogger(__name__)
 
 ProgressFn = Callable[[float, str], None]
+MIN_PIPELINE_BUDGET_FLOOR_SEC: float = 0.001
 
 
 class PipelineFn(Protocol):
@@ -115,7 +116,7 @@ class JobRunner:
             )
             return
 
-        if hard_remaining < self._min_budget:
+        if hard_remaining <= MIN_PIPELINE_BUDGET_FLOOR_SEC or hard_remaining < self._min_budget:
             log.warning(
                 "job %s: remaining time before acquire (%.1fs) below minimum budget %.1fs",
                 job_id,
@@ -155,7 +156,7 @@ class JobRunner:
             )
             return
 
-        if hard_remaining < self._min_budget:
+        if hard_remaining <= MIN_PIPELINE_BUDGET_FLOOR_SEC or hard_remaining < self._min_budget:
             self._sem.release()
             log.warning(
                 "job %s: remaining time after acquire (%.1fs) below minimum budget %.1fs",
@@ -176,13 +177,14 @@ class JobRunner:
         available = max(0.0, hard_remaining - grace_sec)
         pipeline_budget = min(self._soft_budget, available)
 
-        if pipeline_budget < self._min_budget:
+        if pipeline_budget <= MIN_PIPELINE_BUDGET_FLOOR_SEC or pipeline_budget < self._min_budget:
             self._sem.release()
             log.warning(
-                "job %s: pipeline budget (%.3fs) below minimum budget %.1fs",
+                "job %s: pipeline budget (%.3fs) below minimum budget %.1fs (floor %.3fs)",
                 job_id,
                 pipeline_budget,
                 self._min_budget,
+                MIN_PIPELINE_BUDGET_FLOOR_SEC,
             )
             self._store.update(
                 job_id,
