@@ -118,6 +118,7 @@ def create_app(settings: Settings, pipeline_fn: PipelineFn | None = None) -> Fas
         workers=settings.workers,
         time_budget_sec=settings.job_timeout_sec,
         soft_budget_sec=getattr(settings, "pipeline_timeout_sec", None),
+        min_budget_sec=settings.min_budget_sec,
     )
 
     @asynccontextmanager
@@ -158,7 +159,11 @@ def create_app(settings: Settings, pipeline_fn: PipelineFn | None = None) -> Fas
 
     @app.get("/health")
     def health() -> dict:
-        return {"status": "ok", "pipeline": settings.pipeline}
+        return {
+            "status": "ok",
+            "pipeline": settings.pipeline,
+            "lost_slots": runner.lost_slots,
+        }
 
     @app.post("/api/v1/analyze", response_model=JobAccepted, dependencies=[Depends(require_key)])
     async def analyze(file: UploadFile = File(...)) -> JobAccepted:

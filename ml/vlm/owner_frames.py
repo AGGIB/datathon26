@@ -1,4 +1,4 @@
-"""Lazy bridge to ml.video's sequential frame_at, on its CV index/FPS timeline.
+"""Lazy bridge to ml.video's one-pass frames_at, on its CV index/FPS timeline.
 
 These times are NOT container PTS. pts_s in the shared legacy frame contract is
 only a source coordinate here, equal to index/FPS, and never an actual PTS claim.
@@ -39,11 +39,14 @@ def _owner_video_worker(connection):
                 elif operation == "extract":
                     cv2 = importlib.import_module("cv2")
                     path, selected, directory = args
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError
+                    images = video.frames_at(path, [frame.timestamp_s for frame in selected])
                     result = []
                     for slot, selected_frame in enumerate(selected):
                         if time.monotonic() >= deadline:
                             raise TimeoutError
-                        image = video.frame_at(path, selected_frame.timestamp_s)
+                        image = images.get(selected_frame.timestamp_s)
                         if time.monotonic() >= deadline:
                             raise TimeoutError
                         target = Path(directory) / f"frame-{slot}.png"

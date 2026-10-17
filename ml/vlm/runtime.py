@@ -1,5 +1,6 @@
 """Startup-owned production seam; no CV or model imports during module import."""
 from dataclasses import dataclass
+import logging
 import time
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -20,6 +21,7 @@ class _Configuration:
 
 
 _configuration: _Configuration | None = None
+logger = logging.getLogger(__name__)
 
 
 def configure(model_path: str | Path | None = None, *,
@@ -41,12 +43,14 @@ def configure(model_path: str | Path | None = None, *,
     if _configuration is not None and _configuration.owned:
         _configuration.backend.close()
     _configuration = None
-    if catalog is None:
-        try:
+    try:
+        if catalog is None:
             from ml.kb import catalog as owner_catalog
             catalog = owner_catalog()
-        except (ImportError, ValueError, OSError):
-            catalog = {}
+        catalog_snapshot = dict(catalog)
+    except Exception as exc:
+        logger.warning("VLM catalogue unavailable: %s", type(exc).__name__)
+        return False
     owned = backend is None and model_path is not None
     if owned:
         from .transformers_backend import LocalTransformersBackend
@@ -62,7 +66,7 @@ def configure(model_path: str | Path | None = None, *,
                 close()
             backend = None
             owned = False
-    _configuration = _Configuration(backend, dict(catalog), frame_source, timebase_verified, owned)
+    _configuration = _Configuration(backend, catalog_snapshot, frame_source, timebase_verified, owned)
     return backend is not None
 
 
@@ -78,10 +82,12 @@ def verify(candidates: Sequence[T], video_path: str | Path, budget_sec: float) -
     config = _configuration
     if config is None or time.monotonic() >= deadline:
         return originals
-    from .owner_frames import OwnerFrames
     owned_source = config.frame_source is None
-    source = OwnerFrames() if owned_source else config.frame_source
+    source = None
+    retained = originals
     try:
+        from .owner_frames import OwnerFrames
+        source = OwnerFrames() if owned_source else config.frame_source
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return originals
@@ -89,7 +95,14 @@ def verify(candidates: Sequence[T], video_path: str | Path, budget_sec: float) -
             backend=config.backend, frame_source=source,
             timebase_verified=owned_source or config.timebase_verified, budget_sec=remaining,
             _deadline=deadline)
-        return list(report.retained_candidates)
+        retained = list(report.retained_candidates)
+    except Exception as exc:
+        logger.warning("VLM verification unavailable: %s", type(exc).__name__)
     finally:
-        if owned_source:
-            source.close()
+        if owned_source and source is not None:
+            try:
+                source.close()
+            except Exception as exc:
+                logger.warning("VLM verification unavailable: %s", type(exc).__name__)
+                retained = originals
+    return retained

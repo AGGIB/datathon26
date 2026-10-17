@@ -10,7 +10,7 @@ from ml.candidates import Candidate
 from ml.kb import catalog
 from ml.vlm.contracts import Frame
 from ml.vlm.discovery import (
-    BatchedOwnerFrames, DiscoveryBudget, DiscoveryWindow, _VISUAL_CRITERIA,
+    BatchedOwnerFrames, BudgetExhausted, DiscoveryBudget, DiscoveryWindow, _VISUAL_CRITERIA,
     _catalog_types, _decode_frames, _prompt, discover_types,
 )
 
@@ -227,6 +227,85 @@ def test_shared_call_budget_spans_windows_and_separate_adapter_invocations():
     assert len(first.added_candidates) == 1 and first.status == second.status == "budget_exhausted"
     assert first.calls_used == 1 and second.calls_used == 0 and budget.calls_used == 1
     assert len(source.calls) == len(backend.requests) == 1
+
+
+class BudgetedTwoStage:
+    """Two physical calls, one final reply; no proposal may escape on stage failure."""
+    def __init__(self, *, normal=False, fail_verify=False, delay=0):
+        self.calls = []
+        self.normal, self.fail_verify, self.delay = normal, fail_verify, delay
+
+    def infer(self, *args):
+        raise AssertionError("budget-aware backend must receive the owner budget")
+
+    def infer_with_budget(self, request, budget):
+        for stage in range(1 if self.normal else 2):
+            if not budget.claim():
+                raise BudgetExhausted()
+            self.calls.append((request, stage, budget.remaining()))
+            if stage == 0:
+                time.sleep(self.delay)
+            if stage == 1 and self.fail_verify:
+                raise RuntimeError("PRIVATE VERIFIER ERROR")
+        if self.normal:
+            return '{"findings":[]}'
+        times = [frame.timestamp_s for frame in request.frames][:3]
+        item = finding(t_start=times[0], t_peak=times[1], t_end=times[2],
+                       observations=[{"timestamp_s": t, "text": "Синтетическое действие"} for t in times])
+        return json.dumps({"findings": [item]})
+
+
+def test_two_stage_budget_counts_each_physical_call_without_precharging_window():
+    second_window = DiscoveryWindow(4., 7., (4., 5., 6., 7.))
+    backend, source = BudgetedTwoStage(), FixtureFrames()
+    budget = DiscoveryBudget(time.monotonic() + 3, max_calls=4)
+    report = run(backend=backend, source=source, windows=(WINDOW, second_window), budget=budget)
+    assert report.status == "completed" and len(report.added_candidates) == 2
+    assert report.calls_used == report.budget_calls_used == len(backend.calls) == 4
+    assert len(source.calls) == 1
+    assert backend.calls[0][0].frames is backend.calls[1][0].frames
+    assert backend.calls[2][0].frames is backend.calls[3][0].frames
+
+
+def test_two_stage_budget_shortage_drops_unverified_proposal_and_preserves_previous_window():
+    cv = original()
+    backend = BudgetedTwoStage()
+    second_window = DiscoveryWindow(4., 7., (4., 5., 6., 7.))
+    report = run(originals=[cv], backend=backend, source=FixtureFrames(),
+                 windows=(WINDOW, second_window), budget=DiscoveryBudget(time.monotonic() + 3, max_calls=3))
+    assert report.status == "budget_exhausted" and report.calls_used == len(backend.calls) == 3
+    assert len(report.added_candidates) == 1 and report.retained_candidates[0] is cv
+    assert report.decisions[-1].reason == "budget_exhausted"
+    one = run(backend=BudgetedTwoStage(), source=FixtureFrames(),
+              budget=DiscoveryBudget(time.monotonic() + 3, max_calls=1))
+    assert one.status == "budget_exhausted" and one.calls_used == 1 and not one.added_candidates
+
+
+def test_budget_aware_normal_skips_verify_and_failed_verification_still_counts():
+    normal = BudgetedTwoStage(normal=True)
+    report = run(backend=normal, source=FixtureFrames())
+    assert report.status == "completed" and report.calls_used == len(normal.calls) == 1
+    assert not report.added_candidates
+    failure = BudgetedTwoStage(fail_verify=True)
+    cv = original()
+    report = run(originals=[cv], backend=failure, source=FixtureFrames())
+    assert report.status == "backend_error" and report.calls_used == len(failure.calls) == 2
+    assert not report.added_candidates and report.retained_candidates[0] is cv
+    assert "PRIVATE VERIFIER ERROR" not in repr(report)
+
+
+def test_budget_aware_counts_delta_when_budget_already_used_and_forbids_late_verify():
+    budget = DiscoveryBudget(time.monotonic() + 3, max_calls=3, calls_used=1)
+    report = run(backend=BudgetedTwoStage(), source=FixtureFrames(), budget=budget)
+    assert report.calls_used == 2 and report.budget_calls_used == 3
+    slow = BudgetedTwoStage(delay=.1)
+    budget = DiscoveryBudget(time.monotonic() + .03, max_calls=2)
+    started = time.monotonic()
+    report = run(backend=slow, source=FixtureFrames(), budget=budget)
+    assert report.status == "video_timeout" and not report.added_candidates
+    assert report.calls_used == 1 and time.monotonic() - started < .2
+    time.sleep(.11)
+    assert len(slow.calls) == budget.calls_used == 1
 
 
 def test_shared_deadline_includes_decode_and_does_not_reset_per_window():

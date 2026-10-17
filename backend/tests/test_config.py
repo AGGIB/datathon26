@@ -53,3 +53,40 @@ def test_invalid_settings_rejected(tmp_path, field, value):
     kwargs = {"api_keys": frozenset({"k"}), "data_dir": tmp_path, field: value}
     with pytest.raises(ValueError):
         Settings(**kwargs)
+
+
+def test_placeholder_keys_rejected(tmp_path):
+    for bad_key in ["change-me-jury-key", "change-me-ui-key", "change-me-foo"]:
+        with pytest.raises(ValueError, match="Placeholder API key"):
+            Settings(api_keys=frozenset({bad_key}), data_dir=tmp_path)
+
+
+def test_min_budget_sec_setting(tmp_path):
+    s = Settings(api_keys=frozenset({"test"}), data_dir=tmp_path, min_budget_sec=15.0)
+    assert s.min_budget_sec == 15.0
+
+    for invalid in [0.0, -1.0]:
+        with pytest.raises(ValueError, match="MIN_BUDGET_SEC"):
+            Settings(api_keys=frozenset({"test"}), data_dir=tmp_path, min_budget_sec=invalid)
+
+    with pytest.raises(ValueError, match="PIPELINE_TIMEOUT_SEC"):
+        Settings(api_keys=frozenset({"test"}), data_dir=tmp_path, pipeline_timeout_sec=0.0)
+
+    with pytest.raises(ValueError, match="JOB_TIMEOUT_SEC"):
+        Settings(api_keys=frozenset({"test"}), data_dir=tmp_path, job_timeout_sec=0.0)
+
+
+@pytest.mark.parametrize("field", ["min_budget_sec", "pipeline_timeout_sec", "job_timeout_sec"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), True, False, 10**1000])
+def test_nonfinite_or_non_numeric_budget_rejected(tmp_path, field, value):
+    with pytest.raises(ValueError, match="finite and > 0"):
+        Settings(api_keys=frozenset({"test"}), data_dir=tmp_path, **{field: value})
+
+
+@pytest.mark.parametrize("field", ["MIN_BUDGET_SEC", "PIPELINE_TIMEOUT_SEC", "JOB_TIMEOUT_SEC"])
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_nonfinite_environment_budget_rejected(tmp_path, monkeypatch, field, value):
+    monkeypatch.setenv("API_KEYS", "test-key")
+    monkeypatch.setenv(field, value)
+    with pytest.raises(ValueError, match=field):
+        Settings.from_env(env_path=tmp_path / "absent.env")

@@ -20,6 +20,20 @@ from .preflight import ModelUnavailable, _validated_model_directory, enforce_off
 MAX_WIRE_BYTES = 65_536
 MAX_FRAME_FILE_BYTES = 64 * 1024 * 1024
 MAX_SOURCE_PIXELS = 20_000_000
+MLX_MODEL_TYPES = frozenset({"qwen3_vl", "qwen3_5"})
+
+
+def _validated_mlx_model_directory(model_path: str | Path) -> Path:
+    """Reject other architectures before worker startup or model-library imports."""
+    directory = _validated_model_directory(model_path)
+    try:
+        config = json.loads((directory / "config.json").read_text(encoding="utf-8"))
+        model_type = config.get("model_type")
+    except (OSError, ValueError, AttributeError) as error:
+        raise ModelUnavailable("model_artifacts_invalid") from error
+    if not isinstance(model_type, str) or model_type not in MLX_MODEL_TYPES:
+        raise ModelUnavailable("unsupported_checkpoint")
+    return directory
 
 
 def _decode_wire(data: bytes) -> dict:
@@ -86,7 +100,7 @@ class LocalMLXBackend:
                 return
             deadline = self._deadline(timeout_s)
             try:
-                directory = _validated_model_directory(self.model_path)
+                directory = _validated_mlx_model_directory(self.model_path)
                 if not self.python_executable.is_file():
                     raise ModelUnavailable("local_python_required")
                 enforce_offline()

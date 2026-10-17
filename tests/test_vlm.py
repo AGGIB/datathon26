@@ -75,6 +75,14 @@ class VLMTests(unittest.TestCase):
         except ModuleNotFoundError:
             self.fail("ml.vlm verification API has not been implemented")
 
+    def test_verifier_candidate_keeps_original_public_import(self):
+        api = self.api()
+        contracts = importlib.import_module("ml.vlm.contracts")
+        self.assertIs(api.Candidate, api.VerifierCandidate)
+        self.assertIs(contracts.Candidate, contracts.VerifierCandidate)
+        self.assertEqual(set(api.VerifierCandidate.__annotations__),
+                         {"candidate_id", "violation_type", "start_s", "end_s", "rule_id"})
+
     def test_missing_local_model_preserves_original_candidate_as_uncertain(self):
         api = self.api()
         candidate = {"candidate_id": "cv-1", "violation_type": "fixture_action",
@@ -318,7 +326,9 @@ class VLMTests(unittest.TestCase):
                 Qwen2_5_VLForConditionalGeneration=loader("load_qwen", Model()),
                 AutoModelForImageTextToText=loader("load_generic", Model()))}
         with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as directory:
-            root = Path(directory)
+            nested = Path(directory) / "nested"
+            nested.mkdir()
+            root = nested / ".."  # Lexical alias also exercises macOS /var vs /private/var.
             request = api.InferenceRequest("visible actions only", (api.Frame(0.5, root / "fixture.png", 0.5),),
                                            "candidate", "cv-1", ("r1",))
             structural_model_fixture(root)

@@ -238,3 +238,637 @@ def test_actual_pipeline_discovery_uses_original_deadline_after_perception(scrip
     monkeypatch.setenv("ML_VLM_DISCOVERY", "1")
     assert pipeline.analyze("scripted.mp4", time_budget_sec=pipeline.FINISH_RESERVE_SEC + .01) == baseline
     assert backend.calls == source.calls == 0
+
+
+class OwnedScriptedActions:
+    def __init__(self, raw):
+        self.raw = raw
+        self.requests = []
+        self.validated = []
+        self.closed = 0
+
+    def validate(self, timeout_s):
+        self.validated.append(timeout_s)
+
+    def close(self):
+        self.closed += 1
+
+    def infer(self, request, timeout_s):
+        self.requests.append((request, timeout_s))
+        return self.raw
+
+
+def test_owned_startup_uses_catalog_action_wrapper_and_forwards_lifecycle(monkeypatch):
+    from ml import kb
+    from ml.vlm import action_backend, mlx_backend
+
+    types = catalog()
+    raw = OwnedScriptedActions('{"actions":[]}')
+    constructed, catalog_calls = [], []
+    def create(*args, **kwargs):
+        constructed.append((args, kwargs))
+        return raw
+    monkeypatch.setattr(mlx_backend, "LocalMLXBackend", create)
+    monkeypatch.setattr(kb, "catalog", lambda: catalog_calls.append(True) or types)
+    assert runtime.configure_discovery(model_path="scripted-model", python_executable="scripted-python",
+                                       startup_timeout_s=7)
+    wrapper = runtime._configuration.backend
+    assert isinstance(wrapper, action_backend.ActionContrastBackend) and wrapper.inner is raw
+    assert runtime._configuration.owned and raw.validated == [7]
+    assert catalog_calls == [True]
+    assert constructed == [(("scripted-model",), {"python_executable": "scripted-python",
+                                                  "max_new_tokens": 512, "max_image_side": 640})]
+    runtime.configure_discovery()
+    assert raw.closed == 1
+
+
+@pytest.mark.parametrize('action,expected_addition', [
+    ('visitor_or_courier_bag_handled',False),
+    ('cashier_places_removed_outerwear_on_cashdesk',True),
+])
+def test_owned_action_decoder_normal_abstention_and_late_source_time_target(monkeypatch,action,expected_addition):
+    from ml import kb
+    from ml.vlm import mlx_backend
+    from ml.vlm.discovery_policy import plan_windows
+
+    types = catalog()
+    payload = {'actions':[{'action':action,'insufficient_evidence':False,'confidence':.91,
+                           'start_frame':10,'peak_frame':12,'end_frame':12}]}
+    raw = OwnedScriptedActions(json.dumps(payload))
+    constructed, loaded = [], []
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: constructed.append(True) or raw)
+    monkeypatch.setattr(kb,'catalog',lambda: loaded.append(True) or types)
+    source = ScriptedFrames()
+    assert runtime.configure_discovery(model_path='scripted-model',python_executable='scripted-python',
+                                       frame_source=source)
+    original = candidate(confidence=.51)
+    for _ in range(2):
+        result = runtime.augment_types('synthetic.mp4',[original],types,duration_sec=20.,deadline=time.monotonic()+2)
+        assert result[0] is original and result[0].confidence == .51
+        if expected_addition:
+            assert len(result)==2 and result[1].type_id=='personal_items_on_desk'
+            assert result[1].t_peak == plan_windows(20.)[0].timestamps[11]
+            assert result[1].t_start == plan_windows(20.)[0].timestamps[9]
+        else:
+            assert result == [original]
+    assert constructed == loaded == [True] and raw.validated == [180]
+    assert len(raw.requests)==source.calls==2
+    request = raw.requests[-1][0]
+    assert request.allowed_rule_ids == ()
+    assert list(request.response_schema['properties']['actions']['items']['properties'])[0] == 'action'
+    runtime.configure_discovery()
+    assert raw.closed == 1
+
+
+@pytest.mark.parametrize('stage',['catalog','wrapper','validate'])
+def test_owned_startup_failure_closes_raw_worker_and_never_restarts_during_jobs(monkeypatch,stage):
+    from ml import kb
+    from ml.vlm import action_backend, mlx_backend
+
+    types = catalog()
+    raw = OwnedScriptedActions('{"actions":[]}')
+    constructed = []
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: constructed.append(True) or raw)
+    def fail(*args,**kwargs):
+        raise RuntimeError('scripted startup failure')
+    if stage=='catalog':
+        monkeypatch.setattr(kb,'catalog',fail)
+    elif stage=='wrapper':
+        monkeypatch.setattr(action_backend,'ActionContrastBackend',fail)
+    else:
+        monkeypatch.setattr(raw,'validate',fail)
+    assert not runtime.configure_discovery(model_path='scripted-model',python_executable='scripted-python')
+    assert raw.closed == 1 and runtime._configuration is None
+    original = candidate()
+    for _ in range(2):
+        assert runtime.augment_types('synthetic.mp4',[original],types,duration_sec=20.,deadline=None)[0] is original
+    assert constructed == [True] and not raw.requests
+
+
+def test_injected_backend_identity_and_lifecycle_ownership_remain_unchanged(monkeypatch):
+    from ml import kb
+    from ml.vlm import action_backend, mlx_backend
+
+    types = catalog()
+    injected = OwnedScriptedActions('{"findings":[]}')
+    def unexpected(*args,**kwargs):
+        pytest.fail('injected backend must not construct owned worker/wrapper or load catalog')
+    monkeypatch.setattr(kb,'catalog',unexpected)
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',unexpected)
+    monkeypatch.setattr(action_backend,'ActionContrastBackend',unexpected)
+    assert runtime.configure_discovery(backend=injected,frame_source=ScriptedFrames())
+    assert runtime._configuration.backend is injected and not runtime._configuration.owned
+    original = candidate()
+    assert runtime.augment_types('synthetic.mp4',[original],types,duration_sec=20.,deadline=None)==[original]
+    assert injected.validated == [180] and len(injected.requests)==1
+    runtime.configure_discovery()
+    assert injected.closed == 0
+
+
+def test_owned_wrapper_honors_current_catalog_disable_gate(monkeypatch):
+    from ml import kb
+    from ml.vlm import mlx_backend
+
+    types = dict(catalog())
+    types['personal_items_on_desk'] = replace(types['personal_items_on_desk'],enabled=False)
+    raw = OwnedScriptedActions(json.dumps({'actions':[{
+        'action':'cashier_places_removed_outerwear_on_cashdesk','insufficient_evidence':False,
+        'confidence':.99,'start_frame':10,'peak_frame':12,'end_frame':12}]}))
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: raw)
+    monkeypatch.setattr(kb,'catalog',lambda: types)
+    assert runtime.configure_discovery(model_path='scripted-model',python_executable='scripted-python',
+                                       frame_source=ScriptedFrames())
+    original = candidate()
+    assert runtime.augment_types('synthetic.mp4',[original],types,duration_sec=20.,deadline=None)==[original]
+    allowed_actions = raw.requests[0][0].response_schema['properties']['actions']['items']['properties']['action']['enum']
+    assert 'cashier_places_removed_outerwear_on_cashdesk' not in allowed_actions
+
+
+@pytest.fixture
+def scripted_verifier_module(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    module=ModuleType('ml.vlm.verified_action_backend')
+    module.DECODER_POLICY='scripted_blind_verifier_policy'
+    constructed=[]
+    class Verified:
+        def __init__(self,inner,*,catalog):
+            self.inner,self.types=inner,catalog
+            self.last_actions=()
+            self.last_verifications=()
+            constructed.append(self)
+        def validate(self,timeout_s):
+            self.inner.validate(timeout_s)
+        def close(self):
+            self.inner.close()
+        def infer_with_budget(self,request,budget):
+            if not budget.claim():
+                raise RuntimeError('scripted budget exhausted')
+            return self.inner.infer(request,budget.remaining())
+    module.VerifiedActionBackend=Verified
+    module.constructed=constructed
+    monkeypatch.setitem(sys.modules,module.__name__,module)
+    return module
+
+
+def test_owned_verifier_startup_uses_single_raw_backend_current_catalog_and_lifecycle(
+        monkeypatch,scripted_verifier_module):
+    from ml import kb
+    from ml.vlm import action_backend,mlx_backend
+
+    types=catalog()
+    raw=OwnedScriptedActions('{"findings":[]}')
+    created=[]
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: created.append(True) or raw)
+    monkeypatch.setattr(kb,'catalog',lambda: types)
+    monkeypatch.setattr(action_backend,'ActionContrastBackend',lambda *a,**kw: pytest.fail('double wrapper'))
+    assert runtime.configure_discovery(model_path='scripted-model',python_executable='scripted-python',
+                                       verify_actions=True,frame_source=ScriptedFrames())
+    config=runtime._configuration
+    assert config.backend is scripted_verifier_module.constructed[0]
+    assert config.backend.inner is raw and config.backend.types is types
+    assert config.owned and config.max_calls==4 and raw.validated==[180] and created==[True]
+    original=candidate()
+    for _ in range(2):
+        assert runtime.augment_types('scripted.mp4',[original],types,duration_sec=20.,deadline=None)==[original]
+    assert len(raw.requests)==2 and raw.validated==[180] and created==[True]
+    runtime.configure_discovery()
+    assert raw.closed==1
+
+
+def test_injected_verifier_flag_only_declares_cap_without_wrapper_or_lifecycle_ownership(
+        monkeypatch,scripted_verifier_module):
+    from ml import kb
+    from ml.vlm import mlx_backend
+
+    injected=OwnedScriptedActions('{"findings":[]}')
+    def unexpected(*args,**kwargs):
+        pytest.fail('injected caller owns backend and wrapper')
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',unexpected)
+    monkeypatch.setattr(kb,'catalog',unexpected)
+    monkeypatch.setattr(scripted_verifier_module,'VerifiedActionBackend',unexpected)
+    assert runtime.configure_discovery(backend=injected,verify_actions=True)
+    assert runtime._configuration.backend is injected and not runtime._configuration.owned
+    seen=[]
+    def discover(*args,**kwargs):
+        seen.append(kwargs['budget'].max_calls)
+        assert kwargs['backend'] is injected
+        return SimpleNamespace(added_candidates=(),status='completed',calls_used=0)
+    monkeypatch.setattr(runtime,'discover_types',discover)
+    original=candidate()
+    assert runtime.augment_types('scripted.mp4',[original],catalog(),duration_sec=20.,deadline=None)==[original]
+    assert seen==[4] and injected.validated==[180]
+    runtime.configure_discovery()
+    assert injected.closed==0
+
+
+@pytest.mark.parametrize('invalid',[1,0,'1',None])
+def test_runtime_verifier_flag_is_exact_boolean_and_invalid_reconfiguration_preserves_configuration(invalid):
+    injected=OwnedScriptedActions('{"findings":[]}')
+    assert runtime.configure_discovery(backend=injected)
+    config=runtime._configuration
+    with pytest.raises(ValueError,match='verify_actions must be boolean'):
+        runtime.configure_discovery(backend=object(),verify_actions=invalid)
+    assert runtime._configuration is config and config.max_calls==2
+    assert injected.validated==[180] and injected.closed==0
+
+
+@pytest.mark.parametrize('stage',['wrapper','catalog','validate'])
+def test_owned_verified_startup_failure_closes_single_raw_worker(monkeypatch,scripted_verifier_module,stage):
+    from ml import kb
+    from ml.vlm import mlx_backend
+
+    raw=OwnedScriptedActions('{"findings":[]}')
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: raw)
+    def fail(*args,**kwargs):
+        raise RuntimeError('scripted verifier startup failure')
+    if stage=='wrapper':
+        monkeypatch.setattr(scripted_verifier_module,'VerifiedActionBackend',fail)
+    elif stage=='catalog':
+        monkeypatch.setattr(kb,'catalog',fail)
+    else:
+        monkeypatch.setattr(raw,'validate',fail)
+    assert not runtime.configure_discovery(model_path='scripted-model',python_executable='scripted-python',verify_actions=True)
+    assert raw.closed==1 and runtime._configuration is None
+
+
+@pytest.mark.parametrize('discovery_flag,verify_flag,expected',[
+    ('1','1',True),('1','0',False),('1','true',False),('0','1',None),
+])
+def test_pipeline_preload_verification_flag_requires_explicit_discovery_opt_in(
+        monkeypatch,discovery_flag,verify_flag,expected):
+    from ml import pipeline
+
+    seen=[]
+    monkeypatch.setenv('ML_VLM_DISCOVERY',discovery_flag)
+    monkeypatch.setenv('ML_VLM_VERIFY_ACTIONS',verify_flag)
+    monkeypatch.delenv('ML_VLM_COMPACT_VERIFY_ACTIONS',raising=False)
+    monkeypatch.delenv('ML_VLM_MIN_CONFIDENCE',raising=False)
+    monkeypatch.setenv('ML_VLM_MODEL','scripted-model')
+    monkeypatch.setenv('ML_VLM_PYTHON','scripted-python')
+    monkeypatch.setattr(runtime,'configure_discovery',lambda **kwargs: seen.append(kwargs) or True)
+    pipeline.preload()
+    if expected is None:
+        assert not seen
+    else:
+        assert seen==[{'model_path':'scripted-model','python_executable':'scripted-python','verify_actions':expected,'compact_verify_actions':False,'min_confidence':.7}]
+
+
+@pytest.mark.parametrize('proposal_action,object_kind,expected_calls,expected_addition',[
+    ('visitor_or_courier_bag_handled','bag',1,False),
+    ('cashier_places_removed_outerwear_on_cashdesk','outerwear',2,True),
+    ('cashier_places_removed_outerwear_on_cashdesk','bag',2,False),
+])
+def test_actual_owned_v5_verifier_and_shared_budget_preserve_cv_without_model_or_decode(
+        monkeypatch,proposal_action,object_kind,expected_calls,expected_addition):
+    from ml import kb
+    from ml.vlm import mlx_backend
+    from ml.vlm.verified_action_backend import VerifiedActionBackend
+    from ml.vlm.discovery_policy import plan_windows
+
+    actions={'actions':[{'action':proposal_action,'insufficient_evidence':False,'confidence':.95,
+                         'start_frame':10,'peak_frame':11,'end_frame':12}]}
+    facts={'episodes':[{'id':1,'rows':[
+        [1,'a','cashier','x',object_kind,'held','hand','none'],
+        [2,'a','cashier','x',object_kind,'placing','own_workdesk','none'],
+        [3,'a','cashier','x',object_kind,'resting','own_workdesk','none']]}]}
+    class Raw(OwnedScriptedActions):
+        def __init__(self):
+            super().__init__('')
+            self.replies=[json.dumps(actions),json.dumps(facts)]
+        def infer(self,request,timeout_s):
+            self.requests.append((request,timeout_s))
+            return self.replies.pop(0)
+    raw=Raw()
+    types=catalog()
+    monkeypatch.setattr(kb,'catalog',lambda: types)
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: raw)
+    actual_discover=runtime.discover_types
+    measured=[]
+    def observe(*args,**kwargs):
+        report=actual_discover(*args,**kwargs)
+        measured.append((report.calls_used,kwargs['budget'].calls_used,kwargs['budget'].max_calls))
+        return report
+    monkeypatch.setattr(runtime,'discover_types',observe)
+    assert runtime.configure_discovery(model_path='scripted-model',python_executable='scripted-python',
+                                       verify_actions=True,frame_source=ScriptedFrames())
+    wrapper=runtime._configuration.backend
+    assert isinstance(wrapper,VerifiedActionBackend)
+    original=candidate(confidence=.51)
+    result=runtime.augment_types('scripted.mp4',[original],types,duration_sec=20.,deadline=time.monotonic()+2)
+    assert result[0] is original and result[0].confidence==.51
+    assert len(result)==1+expected_addition
+    if expected_addition:
+        assert result[1].type_id=='personal_items_on_desk'
+        assert result[1].t_peak==plan_windows(20.)[0].timestamps[10]
+    assert measured==[(expected_calls,expected_calls,4)]
+    assert len(raw.requests)==wrapper.calls_used==expected_calls
+    if expected_calls==2:
+        proposal_frames=raw.requests[0][0].frames
+        verifier_frames=raw.requests[1][0].frames
+        assert len(verifier_frames)==3
+        assert all(original is focused for original,focused in zip(proposal_frames[-3:],verifier_frames,strict=True))
+        assert 'cashier_places_removed_outerwear_on_cashdesk' not in raw.requests[1][0].prompt
+        assert wrapper.last_verifications[0]['accepted'] is expected_addition
+    assert raw.validated==[180]
+    runtime.configure_discovery()
+    assert raw.closed==1
+
+
+@pytest.fixture
+def scripted_compact_module(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    module=ModuleType('ml.vlm.compact_verified_action_backend')
+    module.DECODER_POLICY='scripted_compact_blind_policy'
+    module.constructed=[]
+    class Compact:
+        def __init__(self,inner,*,catalog):
+            self.inner,self.types=inner,catalog
+            module.constructed.append(self)
+        def validate(self,timeout_s):
+            self.inner.validate(timeout_s)
+        def close(self):
+            self.inner.close()
+        def infer_with_budget(self,request,budget):
+            assert budget.claim()
+            return self.inner.infer(request,budget.remaining())
+    module.CompactVerifiedActionBackend=Compact
+    monkeypatch.setitem(sys.modules,module.__name__,module)
+    return module
+
+
+@pytest.mark.parametrize('legacy',[False,True])
+def test_owned_compact_precedes_legacy_single_raw_lifecycle_and_no_job_startup(
+        monkeypatch,scripted_compact_module,legacy):
+    from ml import kb
+    from ml.vlm import action_backend,mlx_backend,verified_action_backend
+
+    types=catalog()
+    raw=OwnedScriptedActions('{"findings":[]}')
+    created=[]
+    def other_wrapper(*args,**kwargs):
+        pytest.fail('compact must wrap raw worker exactly once')
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: created.append(True) or raw)
+    monkeypatch.setattr(kb,'catalog',lambda: types)
+    monkeypatch.setattr(verified_action_backend,'VerifiedActionBackend',other_wrapper)
+    monkeypatch.setattr(action_backend,'ActionContrastBackend',other_wrapper)
+    assert runtime.configure_discovery(model_path='scripted',python_executable='scripted',
+                                       compact_verify_actions=True,verify_actions=legacy,frame_source=ScriptedFrames())
+    config=runtime._configuration
+    assert config.backend is scripted_compact_module.constructed[0] and config.backend.inner is raw
+    assert config.backend.types is types and config.max_calls==4 and config.owned
+    original=candidate()
+    for _ in range(2):
+        assert runtime.augment_types('scripted.mp4',[original],types,duration_sec=20.,deadline=None)[0] is original
+    assert len(raw.requests)==2 and created==[True] and raw.validated==[180]
+    runtime.configure_discovery()
+    assert raw.closed==1
+
+
+def test_injected_compact_declares_four_calls_without_wrapping_or_taking_ownership(
+        monkeypatch,scripted_compact_module):
+    from ml import kb
+    from ml.vlm import mlx_backend
+
+    raw=OwnedScriptedActions('{"findings":[]}')
+    def unexpected(*args,**kwargs):
+        pytest.fail('injected backend is already caller prepared')
+    monkeypatch.setattr(scripted_compact_module,'CompactVerifiedActionBackend',unexpected)
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',unexpected)
+    monkeypatch.setattr(kb,'catalog',unexpected)
+    assert runtime.configure_discovery(backend=raw,compact_verify_actions=True)
+    assert runtime._configuration.backend is raw and not runtime._configuration.owned
+    observed=[]
+    def discover(*args,**kwargs):
+        observed.append((kwargs['backend'],kwargs['budget'].max_calls))
+        return SimpleNamespace(added_candidates=(),status='completed',calls_used=0)
+    monkeypatch.setattr(runtime,'discover_types',discover)
+    original=candidate()
+    assert runtime.augment_types('scripted.mp4',[original],{},duration_sec=20.,deadline=None)==[original]
+    assert observed==[(raw,4)] and raw.validated==[180]
+    runtime.configure_discovery()
+    assert raw.closed==0
+
+
+@pytest.mark.parametrize('invalid',[0,1,None,'1'])
+def test_compact_flag_requires_bool_before_existing_configuration_is_closed(invalid):
+    raw=OwnedScriptedActions('{"findings":[]}')
+    assert runtime.configure_discovery(backend=raw)
+    before=runtime._configuration
+    with pytest.raises(ValueError,match='compact_verify_actions must be boolean'):
+        runtime.configure_discovery(backend=object(),compact_verify_actions=invalid)
+    assert runtime._configuration is before and raw.closed==0 and raw.validated==[180]
+
+
+@pytest.mark.parametrize('stage',['catalog','wrapper','validate'])
+def test_owned_compact_startup_failure_closes_raw_and_stays_unavailable(
+        monkeypatch,scripted_compact_module,stage):
+    from ml import kb
+    from ml.vlm import mlx_backend
+
+    raw=OwnedScriptedActions('{"findings":[]}')
+    created=[]
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: created.append(True) or raw)
+    def fail(*args,**kwargs):
+        raise RuntimeError('scripted compact startup failure')
+    if stage=='catalog':
+        monkeypatch.setattr(kb,'catalog',fail)
+    elif stage=='wrapper':
+        monkeypatch.setattr(scripted_compact_module,'CompactVerifiedActionBackend',fail)
+    else:
+        monkeypatch.setattr(raw,'validate',fail)
+    assert not runtime.configure_discovery(model_path='scripted',python_executable='scripted',compact_verify_actions=True)
+    assert raw.closed==1 and runtime._configuration is None
+    for _ in range(2):
+        original=candidate()
+        assert runtime.augment_types('scripted.mp4',[original],{},duration_sec=20.,deadline=None)==[original]
+    assert created==[True] and not raw.requests
+
+
+@pytest.mark.parametrize('discovery,compact,expected',[
+    ('1','1',True),('1','true',False),('1','0',False),('0','1',None),('true','1',None),
+])
+def test_pipeline_compact_environment_requires_exact_explicit_discovery_opt_in(
+        monkeypatch,discovery,compact,expected):
+    from ml import pipeline
+
+    observed=[]
+    monkeypatch.setenv('ML_VLM_DISCOVERY',discovery)
+    monkeypatch.setenv('ML_VLM_COMPACT_VERIFY_ACTIONS',compact)
+    monkeypatch.setenv('ML_VLM_VERIFY_ACTIONS','1')
+    monkeypatch.setattr(runtime,'configure_discovery',lambda **kwargs: observed.append(kwargs) or True)
+    pipeline.preload()
+    if expected is None:
+        assert not observed
+    else:
+        assert len(observed)==1 and observed[0]['compact_verify_actions'] is expected
+        assert observed[0]['verify_actions'] is True
+
+
+@pytest.mark.parametrize('action,blind_object,actor_continuity,expected_calls,expected_addition',[
+    ('visitor_or_courier_bag_handled','bag','yes',2,False),
+    ('cashier_places_removed_outerwear_on_cashdesk','outerwear','yes',4,True),
+    ('cashier_places_removed_outerwear_on_cashdesk','bag','yes',4,False),
+    ('cashier_places_removed_outerwear_on_cashdesk','outerwear','unknown',4,False),
+])
+def test_actual_owned_compact_adapter_uses_source_anchors_four_call_budget_and_cv_reserved_slots(
+        monkeypatch,action,blind_object,actor_continuity,expected_calls,expected_addition):
+    from ml import kb
+    from ml.assemble import select
+    from ml.vlm import mlx_backend
+    from ml.vlm.compact_verified_action_backend import CompactVerifiedActionBackend
+    from ml.vlm.discovery_policy import plan_windows
+
+    class Raw(OwnedScriptedActions):
+        def __init__(self):
+            super().__init__('')
+        def infer(self,request,timeout_s):
+            self.requests.append((request,timeout_s))
+            if 'actions' in request.response_schema['properties']:
+                confidence=.9 if request.frames[0].timestamp_s==0 else .99
+                return json.dumps({'actions':[{'action':action,'insufficient_evidence':False,'confidence':confidence,
+                    'start_frame':10,'peak_frame':11,'end_frame':12}]})
+            atoms=(['cashier_holds_identifiable_outerwear','cashier_places_outerwear_on_own_workdesk',
+                    'outerwear_resting_on_own_workdesk'] if blind_object=='outerwear' else ['visitor_bag_handled']*3)
+            return json.dumps({'episodes':[{'id':1,'rows':[[index,atom,'unknown'] for index,atom in enumerate(atoms,1)],
+                                           'same_actor':actor_continuity,'same_object':'yes'}]})
+    types=catalog()
+    raw,source=Raw(),ScriptedFrames()
+    monkeypatch.setattr(kb,'catalog',lambda: types)
+    constructed=[]
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: constructed.append(True) or raw)
+    actual_discover=runtime.discover_types
+    measured=[]
+    deadline=time.monotonic()+3
+    def observe(*args,**kwargs):
+        assert kwargs['budget'].deadline==deadline and kwargs['budget'].max_calls==4
+        report=actual_discover(*args,**kwargs)
+        measured.append((report.calls_used,kwargs['budget'].calls_used))
+        return report
+    monkeypatch.setattr(runtime,'discover_types',observe)
+    assert runtime.configure_discovery(model_path='scripted',python_executable='scripted',
+                                       compact_verify_actions=True,frame_source=source)
+    wrapper=runtime._configuration.backend
+    assert isinstance(wrapper,CompactVerifiedActionBackend)
+    originals=[candidate('safe_left_open',0.,.51),candidate('door_left_open',5.,.52),
+               candidate('cash_left_on_desk_when_leaving',9.,.53),candidate('key_left_in_safe_lock',13.,.54)]
+    result=runtime.augment_types('scripted.mp4',originals,types,duration_sec=44.,deadline=deadline)
+    assert all(actual is original for actual,original in zip(result,originals))
+    assert [original.confidence for original in originals]==[.51,.52,.53,.54]
+    assert len(result)==4+expected_addition and len(select(result,types))==len(result)
+    if expected_addition:
+        assert result[-1].type_id=='personal_items_on_desk' and result[-1].confidence==.99
+        assert result[-1].t_peak==plan_windows(44.)[1].timestamps[10]
+    assert measured==[(expected_calls,expected_calls)]
+    assert source.calls==1 and len(raw.requests)==wrapper.calls_used==expected_calls
+    if expected_calls==4:
+        for proposal,verification in ((raw.requests[0][0],raw.requests[1][0]),(raw.requests[2][0],raw.requests[3][0])):
+            assert len(proposal.frames)==12 and len(verification.frames)==3
+            assert all(left is right for left,right in zip(proposal.frames[-3:],verification.frames,strict=True))
+            assert action not in verification.prompt and not verification.allowed_rule_ids
+        assert wrapper.last_verifications[0]['accepted'] is expected_addition
+    # Jobs never restart/revalidate the owner; an exhausted job does no work.
+    assert runtime.augment_types('scripted.mp4',originals,types,duration_sec=44.,deadline=0)==originals
+    assert len(raw.requests)==expected_calls and raw.validated==[180] and constructed==[True]
+    runtime.configure_discovery()
+    assert raw.closed==1
+
+
+@pytest.mark.parametrize('invalid',[True,False,None,'0.95',float('nan'),float('inf'),float('-inf'),-.001,1.001,10**1000])
+def test_owner_gate_invalid_input_preserves_live_configuration_and_never_constructs_worker(monkeypatch,invalid):
+    from ml.vlm import mlx_backend
+
+    raw=OwnedScriptedActions('{"findings":[]}')
+    assert runtime.configure_discovery(backend=raw)
+    original=runtime._configuration
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: pytest.fail('invalid gate cannot construct'))
+    with pytest.raises(ValueError,match='min_confidence must be finite between zero and one'):
+        runtime.configure_discovery(model_path='scripted',python_executable='scripted',min_confidence=invalid)
+    assert runtime._configuration is original and raw.closed==0
+
+
+@pytest.mark.parametrize('threshold',[0,.7,.95,1])
+def test_runtime_owner_gate_stores_and_forwards_exact_global_value(monkeypatch,threshold):
+    raw=OwnedScriptedActions('{"findings":[]}')
+    assert runtime.configure_discovery(backend=raw,min_confidence=threshold)
+    assert runtime._configuration.min_confidence==threshold
+    seen=[]
+    def discover(*args,**kwargs):
+        seen.append(kwargs['min_confidence'])
+        return SimpleNamespace(added_candidates=(),status='completed',calls_used=0)
+    monkeypatch.setattr(runtime,'discover_types',discover)
+    original=candidate(confidence=.51)
+    assert runtime.augment_types('scripted.mp4',[original],catalog(),duration_sec=20.,deadline=None)[0] is original
+    assert seen==[threshold] and original.confidence==.51
+
+
+@pytest.mark.parametrize('confidence,accepted',[(.949,False),(.95,True)])
+def test_actual_compact_verification_still_runs_before_owner_gate_boundary(monkeypatch,confidence,accepted):
+    from ml.vlm import mlx_backend
+    from ml.vlm.compact_verified_action_backend import CompactVerifiedActionBackend
+
+    actions={'actions':[{'action':'cashier_places_removed_outerwear_on_cashdesk','insufficient_evidence':False,
+                         'confidence':confidence,'start_frame':10,'peak_frame':11,'end_frame':12}]}
+    facts={'episodes':[{'id':1,'rows':[
+        [1,'cashier_holds_identifiable_outerwear','unknown'],
+        [2,'cashier_places_outerwear_on_own_workdesk','unknown'],
+        [3,'outerwear_resting_on_own_workdesk','unknown']], 'same_actor':'yes','same_object':'yes'}]}
+    class Raw(OwnedScriptedActions):
+        def __init__(self):
+            super().__init__('')
+            self.replies=[json.dumps(actions),json.dumps(facts)]
+        def infer(self,request,timeout_s):
+            self.requests.append((request,timeout_s))
+            return self.replies.pop(0)
+    raw=Raw()
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: raw)
+    actual_discover=runtime.discover_types
+    reports=[]
+    def observe(*args,**kwargs):
+        assert kwargs['min_confidence']==.95 and kwargs['budget'].max_calls==4
+        report=actual_discover(*args,**kwargs)
+        reports.append(report)
+        return report
+    monkeypatch.setattr(runtime,'discover_types',observe)
+    assert runtime.configure_discovery(model_path='scripted',python_executable='scripted',compact_verify_actions=True,
+                                       min_confidence=.95,frame_source=ScriptedFrames())
+    wrapper=runtime._configuration.backend
+    assert isinstance(wrapper,CompactVerifiedActionBackend)
+    original=candidate(confidence=.51)
+    result=runtime.augment_types('scripted.mp4',[original],catalog(),duration_sec=20.,deadline=None)
+    assert result[0] is original and original.confidence==.51 and len(result)==1+accepted
+    assert len(raw.requests)==wrapper.calls_used==reports[0].calls_used==2
+    assert wrapper.last_verifications[0]['accepted'] is True
+    assert reports[0].decisions[0].reason==('visible_evidence' if accepted else 'insufficient_evidence')
+
+
+@pytest.mark.parametrize('value',[None,'.95','0','1'])
+def test_pipeline_preload_owner_gate_valid_or_missing_value(monkeypatch,value):
+    from ml import pipeline
+
+    observed=[]
+    monkeypatch.setenv('ML_VLM_DISCOVERY','1')
+    if value is None:
+        monkeypatch.delenv('ML_VLM_MIN_CONFIDENCE',raising=False)
+    else:
+        monkeypatch.setenv('ML_VLM_MIN_CONFIDENCE',value)
+    monkeypatch.setattr(runtime,'configure_discovery',lambda **kwargs: observed.append(kwargs) or True)
+    pipeline.preload()
+    assert len(observed)==1 and observed[0]['min_confidence']==(.7 if value is None else float(value))
+
+
+@pytest.mark.parametrize('invalid',['not-a-number','nan','inf','-inf','-.1','1.1','SYNTHETIC_PRIVATE_CONFIG'])
+def test_pipeline_malformed_owner_gate_disables_previous_optional_owner_without_breaking_cv(
+        monkeypatch,caplog,invalid):
+    from ml import pipeline
+
+    raw=OwnedScriptedActions('{"findings":[]}')
+    runtime._configuration=runtime._Configuration(raw,owned=True)
+    monkeypatch.setenv('ML_VLM_DISCOVERY','1')
+    monkeypatch.setenv('ML_VLM_MIN_CONFIDENCE',invalid)
+    pipeline.preload()
+    assert runtime._configuration is None and raw.closed==1
+    assert 'confidence configuration invalid' in caplog.text and invalid not in caplog.text

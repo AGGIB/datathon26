@@ -228,7 +228,7 @@ def test_preparation_cannot_start_worker_after_deadline(tmp_path, monkeypatch):
         clock[0] = 2.0
         return tmp_path
 
-    monkeypatch.setattr(module, '_validated_model_directory', slow_check)
+    monkeypatch.setattr(module, '_validated_mlx_model_directory', slow_check)
     monkeypatch.setattr(module.subprocess, 'Popen', lambda *args, **kwargs: pytest.fail('worker started after deadline'))
     backend = module.LocalMLXBackend(tmp_path, python_executable=sys.executable)
     with pytest.raises(TimeoutError, match='inference_timeout'):
@@ -237,7 +237,7 @@ def test_preparation_cannot_start_worker_after_deadline(tmp_path, monkeypatch):
 
 
 def test_process_start_failure_marks_backend_closed(tmp_path, monkeypatch):
-    monkeypatch.setattr(module, '_validated_model_directory', lambda path: tmp_path)
+    monkeypatch.setattr(module, '_validated_mlx_model_directory', lambda path: tmp_path)
 
     def fail_start(*args, **kwargs):
         raise OSError('synthetic start failure')
@@ -306,6 +306,7 @@ sys.modules["mlx_vlm.structured"] = structured
 def load(path, **kwargs):
     assert kwargs == {"trust_remote_code": False, "local_files_only": True, "strict": True}
     assert os.environ["HF_HUB_OFFLINE"] == "1"
+    Path(model_path, "load-called").write_text("synthetic")
     return object(), processor
 runtime.load = load
 def generate(model, processor, prompt, images, **kwargs):
@@ -319,7 +320,11 @@ def generate(model, processor, prompt, images, **kwargs):
         "max_pixels":processor.image_processor.max_pixels,"min_pixels":processor.image_processor.min_pixels,
         "schema":schema,"compile_count":len(compiled)}))
 runtime.generate = generate
-prompt_utils.apply_chat_template = lambda processor, config, prompt, **kwargs: prompt
+def apply_chat_template(processor, config, prompt, **kwargs):
+    assert config["model_type"] in {"qwen3_vl", "qwen3_5"}
+    assert kwargs["num_images"] > 0 and kwargs["enable_thinking"] is False
+    return prompt
+prompt_utils.apply_chat_template = apply_chat_template
 sys.modules["mlx_vlm"] = runtime
 sys.modules["mlx_vlm.prompt_utils"] = prompt_utils
 class FakeImage:
@@ -341,11 +346,13 @@ main()
 '''
 
 
+@pytest.mark.parametrize('model_type', ['qwen3_vl', 'qwen3_5'])
 @pytest.mark.parametrize('mode', ['valid', 'huge'])
 @pytest.mark.parametrize('side', [224, 640])
 def test_worker_load_flags_time_mapping_and_pixel_guard_without_mlx(
-        backend_factory, inference_request, monkeypatch, tmp_path, mode, side):
+        backend_factory, inference_request, monkeypatch, tmp_path, mode, side, model_type):
     backend = backend_factory()
+    (backend.model_path / "config.json").write_text(json.dumps({"model_type": model_type}))
     backend.max_image_side = side
     worker = tmp_path / 'fake_runtime.py'
     worker.write_text(FAKE_RUNTIME)
@@ -363,10 +370,12 @@ def test_worker_load_flags_time_mapping_and_pixel_guard_without_mlx(
         assert result['min_pixels'] <= result['max_pixels']
 
 
+@pytest.mark.parametrize('model_type', ['qwen3_vl', 'qwen3_5'])
 @pytest.mark.parametrize('mode', ['valid', 'processor_tokenizer', 'no_schema', 'compile_failure'])
 def test_worker_builds_fresh_structured_processor_only_when_requested(
-        backend_factory, inference_request, monkeypatch, tmp_path, mode):
+        backend_factory, inference_request, monkeypatch, tmp_path, mode, model_type):
     backend = backend_factory()
+    (backend.model_path / "config.json").write_text(json.dumps({"model_type": model_type}))
     worker = tmp_path / 'fake_runtime.py'
     worker.write_text(FAKE_RUNTIME)
     monkeypatch.setattr(backend, '_command', lambda directory: [sys.executable, '-u', str(worker), str(directory), mode, '640'])
@@ -406,3 +415,31 @@ def test_worker_rejects_malformed_optional_schema_from_wire(
     with pytest.raises(ModelUnavailable):
         backend.infer(inference_request, 2)
     assert backend._closed
+
+
+@pytest.mark.parametrize('model_type', ['qwen3_5_text', 'qwen3_5_moe', 'qwen2_vl', 'arbitrary_architecture'])
+def test_mlx_preparation_rejects_other_model_types_before_start(backend_factory, monkeypatch, model_type):
+    backend = backend_factory()
+    (backend.model_path / 'config.json').write_text(json.dumps({'model_type': model_type}))
+    # The generic artifact guard remains reusable by other optional backends.
+    assert module._validated_model_directory(backend.model_path) == backend.model_path
+    monkeypatch.setattr(module.subprocess, 'Popen', lambda *a, **kw: pytest.fail('unsupported worker started'))
+    with pytest.raises(ModelUnavailable, match='unsupported_checkpoint'):
+        backend.validate(2)
+    assert backend._closed and backend._process is None
+
+
+@pytest.mark.parametrize('model_type', ['qwen3_5_text', 'qwen3_5_moe', 'qwen2_vl', 'arbitrary_architecture'])
+def test_worker_independently_rejects_unsupported_architectures_before_load(
+        backend_factory, monkeypatch, tmp_path, model_type):
+    backend = backend_factory()
+    (backend.model_path / 'config.json').write_text(json.dumps({'model_type': model_type}))
+    worker = tmp_path / 'fake_runtime.py'
+    worker.write_text(FAKE_RUNTIME)
+    monkeypatch.setattr(backend, '_command', lambda directory: [sys.executable, '-u', str(worker), str(directory), 'valid', '640'])
+    # Deliberately bypass only the parent guard: the worker must independently fail closed.
+    monkeypatch.setattr(module, '_validated_mlx_model_directory', lambda directory: backend.model_path)
+    with pytest.raises(ModelUnavailable):
+        backend.validate(2)
+    assert not (backend.model_path / 'load-called').exists()
+    assert backend._closed and backend._process is None

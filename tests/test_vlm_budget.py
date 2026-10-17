@@ -283,11 +283,18 @@ def test_owner_frame_source_lazily_uses_cv_index_fps_contract(tmp_path, monkeypa
     from ml.vlm import owner_frames as module
 
     calls = []
+    images = {0.5: object(), 1.0: object()}
+    saved = []
+    def frames_at(path, times):
+        calls.append((path, times))
+        # Mapping order differs from selection order; repeated slots stay intact.
+        return images
     owner = types.SimpleNamespace(
         probe=lambda path: types.SimpleNamespace(fps=2.0, frame_count=4, duration=2.0),
-        frame_at=lambda path, t: calls.append((path, t)) or object())
+        frames_at=frames_at)
     def save(path, frame):
         from pathlib import Path
+        saved.append((Path(path).name, frame))
         Path(path).write_bytes(b"SYNTHETIC IMAGE FIXTURE")
         return True
     before = {name: sys.modules.get(name) for name in ("ml.video", "cv2", "numpy")}
@@ -295,7 +302,8 @@ def test_owner_frame_source_lazily_uses_cv_index_fps_contract(tmp_path, monkeypa
     assert {name: sys.modules.get(name) for name in before} == before
     assert source.timebase == "cv_index_fps"
     deadline = time.monotonic() + 5
-    selected = (vlm.FrameTimestamp(1, 0.5, 0.5), vlm.FrameTimestamp(2, 1.0, 1.0))
+    selected = (vlm.FrameTimestamp(2, 1.0, 1.0), vlm.FrameTimestamp(1, 0.5, 0.5),
+                vlm.FrameTimestamp(2, 1.0, 1.0))
     commands = iter([("probe", ("synthetic.mp4",), deadline),
                      ("extract", ("synthetic.mp4", selected, tmp_path), deadline)])
     replies = []
@@ -316,9 +324,106 @@ def test_owner_frame_source_lazily_uses_cv_index_fps_contract(tmp_path, monkeypa
     assert replies[0][0] == replies[1][0] == "ok"
     assert [f.timestamp_s for f in replies[0][1].frames] == [0, 0.5, 1, 1.5]
     assert replies[0][1].duration_s == 2
-    assert calls == [("synthetic.mp4", 0.5), ("synthetic.mp4", 1.0)]
-    assert [f.timestamp_s for f in replies[1][1]] == [0.5, 1.0]
+    assert calls == [("synthetic.mp4", [1.0, 0.5, 1.0])]
+    assert [f.timestamp_s for f in replies[1][1]] == [1.0, 0.5, 1.0]
+    assert [f.pts_s for f in replies[1][1]] == [1.0, 0.5, 1.0]
+    assert saved == [("frame-0.png", images[1.0]), ("frame-1.png", images[0.5]),
+                     ("frame-2.png", images[1.0])]
     source.close()
+
+
+def _owner_extract_reply(tmp_path, monkeypatch, *, images, deadline_phase=None, save_ok=True):
+    import types
+    from ml.vlm import owner_frames as module
+
+    clock = [0.0]
+    events, replies = [], []
+    selected = (vlm.FrameTimestamp(2, 1.0, 1.0), vlm.FrameTimestamp(1, 0.5, 0.5))
+    def decode(path, times):
+        events.append(("decode", times))
+        if deadline_phase == "decode":
+            clock[0] = 2.0
+        return images
+    def save(path, image):
+        events.append(("save", image))
+        if deadline_phase == "save":
+            clock[0] = 2.0
+        return save_ok
+    owner = types.SimpleNamespace(frames_at=decode)
+    def load(name):
+        if deadline_phase == "imports":
+            clock[0] = 2.0
+        return owner if name == "ml.video" else types.SimpleNamespace(imwrite=save)
+    class Connection:
+        consumed = False
+        closed = False
+        def recv(self):
+            if self.consumed:
+                raise EOFError
+            self.consumed = True
+            return "extract", ("synthetic.mp4", selected, tmp_path), 1.0
+        def send(self, reply):
+            replies.append(reply)
+        def close(self):
+            self.closed = True
+    connection = Connection()
+    if deadline_phase == "receive":
+        clock[0] = 2.0
+    monkeypatch.setattr(module, "_silence_worker", lambda: None)
+    monkeypatch.setattr(module, "importlib", types.SimpleNamespace(import_module=load))
+    monkeypatch.setattr(module, "time", types.SimpleNamespace(monotonic=lambda: clock[0]))
+    module._owner_video_worker(connection)
+    assert connection.closed
+    return replies, events
+
+
+@pytest.mark.parametrize("images, save_ok", [({0.5: object()}, True),
+                                            ({1.0: None, 0.5: object()}, True),
+                                            ({1.0: object(), 0.5: object()}, False)])
+def test_owner_batch_missing_or_unwritable_frame_returns_no_partial_result(tmp_path, monkeypatch, images, save_ok):
+    replies, events = _owner_extract_reply(tmp_path, monkeypatch, images=images, save_ok=save_ok)
+    assert replies == [("error", None)]
+    assert events[0] == ("decode", [1.0, 0.5])
+    assert sum(event[0] == "decode" for event in events) == 1
+
+
+@pytest.mark.parametrize("phase", ["receive", "imports", "decode", "save"])
+def test_owner_batch_checks_deadline_before_decode_after_decode_and_after_save(tmp_path, monkeypatch, phase):
+    replies, events = _owner_extract_reply(tmp_path, monkeypatch,
+        images={1.0: object(), 0.5: object()}, deadline_phase=phase)
+    assert replies == [("timeout", None)]
+    assert [event[0] for event in events] == {
+        "receive": [], "imports": [], "decode": ["decode"], "save": ["decode", "save"]}[phase]
+
+
+def test_real_owner_batch_integration_preserves_selected_frame_identity(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    from ml.vlm.owner_frames import OwnerFrames
+
+    video = tmp_path / "synthetic.mp4"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 2.0, (32, 32))
+    if not writer.isOpened():
+        writer.release()
+        pytest.skip("synthetic MP4 encoder unavailable")
+    try:
+        for level in (20, 70, 140, 220):
+            writer.write(np.full((32, 32, 3), level, dtype=np.uint8))
+    finally:
+        writer.release()
+    source = OwnerFrames()
+    try:
+        info = source.probe(video, 5)
+        assert source.timebase == "cv_index_fps"
+        assert info.duration_s == 2.0
+        selected = tuple(info.frames[index] for index in (3, 0, 2))
+        frames = source.extract(video, selected, tmp_path, 5)
+        assert [frame.timestamp_s for frame in frames] == [1.5, 0.0, 1.0]
+        assert [frame.pts_s for frame in frames] == [1.5, 0.0, 1.0]
+        levels = [cv2.imread(str(frame.path)).mean() for frame in frames]
+        assert levels == pytest.approx([220, 20, 140], abs=8)
+    finally:
+        source.close()
 
 
 def synthetic_slow_owner_frames(connection):

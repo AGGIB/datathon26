@@ -1,0 +1,2 @@
+# HISTORICAL DISABLED environment; not an approved workflow or installation recommendation.
+mlx-vlm==0.7.8
