@@ -4,7 +4,7 @@
 
 **Goal:** Implement minimum pipeline time budget threshold (20s), lost compute slots monitoring in `/health`, and reject placeholder API keys at startup as directed by team lead @AGGIB.
 
-**Architecture:** 
+**Architecture:**
 - In `backend/app/config.py`: Add validation in `Settings.__post_init__` to fail startup if any key in `api_keys` matches placeholder pattern `change-me-*`.
 - In `backend/app/runner.py`: Add minimum budget guard (`min_budget_sec=20.0`), rejecting execution if remaining time before or after acquiring semaphore is less than threshold; track `lost_slots` when watchdog timeout triggers and log `ERROR`.
 - In `backend/app/main.py`: Expose `lost_slots` metric in `GET /health`.

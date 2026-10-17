@@ -599,10 +599,3 @@ def test_final_nonfinite_pipeline_budget_rejected_and_slot_returned(tmp_path):
         runner._sem.release()
     finally:
         runner.shutdown()
-
-
-
-
-
-
-

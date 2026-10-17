@@ -90,6 +90,3 @@ def test_nonfinite_environment_budget_rejected(tmp_path, monkeypatch, field, val
     monkeypatch.setenv(field, value)
     with pytest.raises(ValueError, match=field):
         Settings.from_env(env_path=tmp_path / "absent.env")
-
-
-
