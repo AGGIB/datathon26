@@ -382,3 +382,132 @@ def test_owned_wrapper_honors_current_catalog_disable_gate(monkeypatch):
     assert runtime.augment_types('synthetic.mp4',[original],types,duration_sec=20.,deadline=None)==[original]
     allowed_actions = raw.requests[0][0].response_schema['properties']['actions']['items']['properties']['action']['enum']
     assert 'cashier_places_removed_outerwear_on_cashdesk' not in allowed_actions
+
+
+@pytest.fixture
+def scripted_verifier_module(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    module=ModuleType('ml.vlm.verified_action_backend')
+    module.DECODER_POLICY='scripted_blind_verifier_policy'
+    constructed=[]
+    class Verified:
+        def __init__(self,inner,*,catalog):
+            self.inner,self.types=inner,catalog
+            self.last_actions=()
+            self.last_verifications=()
+            constructed.append(self)
+        def validate(self,timeout_s):
+            self.inner.validate(timeout_s)
+        def close(self):
+            self.inner.close()
+        def infer_with_budget(self,request,budget):
+            if not budget.claim():
+                raise RuntimeError('scripted budget exhausted')
+            return self.inner.infer(request,budget.remaining())
+    module.VerifiedActionBackend=Verified
+    module.constructed=constructed
+    monkeypatch.setitem(sys.modules,module.__name__,module)
+    return module
+
+
+def test_owned_verifier_startup_uses_single_raw_backend_current_catalog_and_lifecycle(
+        monkeypatch,scripted_verifier_module):
+    from ml import kb
+    from ml.vlm import action_backend,mlx_backend
+
+    types=catalog()
+    raw=OwnedScriptedActions('{"findings":[]}')
+    created=[]
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: created.append(True) or raw)
+    monkeypatch.setattr(kb,'catalog',lambda: types)
+    monkeypatch.setattr(action_backend,'ActionContrastBackend',lambda *a,**kw: pytest.fail('double wrapper'))
+    assert runtime.configure_discovery(model_path='scripted-model',python_executable='scripted-python',
+                                       verify_actions=True,frame_source=ScriptedFrames())
+    config=runtime._configuration
+    assert config.backend is scripted_verifier_module.constructed[0]
+    assert config.backend.inner is raw and config.backend.types is types
+    assert config.owned and config.max_calls==4 and raw.validated==[180] and created==[True]
+    original=candidate()
+    for _ in range(2):
+        assert runtime.augment_types('scripted.mp4',[original],types,duration_sec=20.,deadline=None)==[original]
+    assert len(raw.requests)==2 and raw.validated==[180] and created==[True]
+    runtime.configure_discovery()
+    assert raw.closed==1
+
+
+def test_injected_verifier_flag_only_declares_cap_without_wrapper_or_lifecycle_ownership(
+        monkeypatch,scripted_verifier_module):
+    from ml import kb
+    from ml.vlm import mlx_backend
+
+    injected=OwnedScriptedActions('{"findings":[]}')
+    def unexpected(*args,**kwargs):
+        pytest.fail('injected caller owns backend and wrapper')
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',unexpected)
+    monkeypatch.setattr(kb,'catalog',unexpected)
+    monkeypatch.setattr(scripted_verifier_module,'VerifiedActionBackend',unexpected)
+    assert runtime.configure_discovery(backend=injected,verify_actions=True)
+    assert runtime._configuration.backend is injected and not runtime._configuration.owned
+    seen=[]
+    def discover(*args,**kwargs):
+        seen.append(kwargs['budget'].max_calls)
+        assert kwargs['backend'] is injected
+        return SimpleNamespace(added_candidates=(),status='completed',calls_used=0)
+    monkeypatch.setattr(runtime,'discover_types',discover)
+    original=candidate()
+    assert runtime.augment_types('scripted.mp4',[original],catalog(),duration_sec=20.,deadline=None)==[original]
+    assert seen==[4] and injected.validated==[180]
+    runtime.configure_discovery()
+    assert injected.closed==0
+
+
+@pytest.mark.parametrize('invalid',[1,0,'1',None])
+def test_runtime_verifier_flag_is_exact_boolean_and_invalid_reconfiguration_preserves_configuration(invalid):
+    injected=OwnedScriptedActions('{"findings":[]}')
+    assert runtime.configure_discovery(backend=injected)
+    config=runtime._configuration
+    with pytest.raises(ValueError,match='verify_actions must be boolean'):
+        runtime.configure_discovery(backend=object(),verify_actions=invalid)
+    assert runtime._configuration is config and config.max_calls==2
+    assert injected.validated==[180] and injected.closed==0
+
+
+@pytest.mark.parametrize('stage',['wrapper','catalog','validate'])
+def test_owned_verified_startup_failure_closes_single_raw_worker(monkeypatch,scripted_verifier_module,stage):
+    from ml import kb
+    from ml.vlm import mlx_backend
+
+    raw=OwnedScriptedActions('{"findings":[]}')
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: raw)
+    def fail(*args,**kwargs):
+        raise RuntimeError('scripted verifier startup failure')
+    if stage=='wrapper':
+        monkeypatch.setattr(scripted_verifier_module,'VerifiedActionBackend',fail)
+    elif stage=='catalog':
+        monkeypatch.setattr(kb,'catalog',fail)
+    else:
+        monkeypatch.setattr(raw,'validate',fail)
+    assert not runtime.configure_discovery(model_path='scripted-model',python_executable='scripted-python',verify_actions=True)
+    assert raw.closed==1 and runtime._configuration is None
+
+
+@pytest.mark.parametrize('discovery_flag,verify_flag,expected',[
+    ('1','1',True),('1','0',False),('1','true',False),('0','1',None),
+])
+def test_pipeline_preload_verification_flag_requires_explicit_discovery_opt_in(
+        monkeypatch,discovery_flag,verify_flag,expected):
+    from ml import pipeline
+
+    seen=[]
+    monkeypatch.setenv('ML_VLM_DISCOVERY',discovery_flag)
+    monkeypatch.setenv('ML_VLM_VERIFY_ACTIONS',verify_flag)
+    monkeypatch.setenv('ML_VLM_MODEL','scripted-model')
+    monkeypatch.setenv('ML_VLM_PYTHON','scripted-python')
+    monkeypatch.setattr(runtime,'configure_discovery',lambda **kwargs: seen.append(kwargs) or True)
+    pipeline.preload()
+    if expected is None:
+        assert not seen
+    else:
+        assert seen==[{'model_path':'scripted-model','python_executable':'scripted-python','verify_actions':expected}]

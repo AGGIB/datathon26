@@ -190,6 +190,21 @@ def _baseline_result(base, elapsed=0.0, error=None):
     return result
 
 
+def _coded_verifications(values):
+    """Copy only the verifier's numeric/boolean/fixed-code diagnostics."""
+    result = []
+    if not isinstance(values, (tuple, list)):
+        return result
+    for value in values:
+        if (not isinstance(value, dict) or type(value.get("episode_id")) is not int
+                or value["episode_id"] < 0 or type(value.get("accepted")) is not bool
+                or not isinstance(value.get("reason"), str)
+                or re.fullmatch(r"[a-z][a-z0-9_]{0,79}", value["reason"]) is None):
+            continue
+        result.append({key: value[key] for key in ("episode_id", "accepted", "reason")})
+    return result
+
+
 def run(args):
     from ml.kb import KB_PATH, catalog
     from ml.video import probe
@@ -217,10 +232,19 @@ def run(args):
     artifacts = {path.name: _sha(path) for path in sorted(directory.iterdir())
                  if path.is_file() and (path.suffix in {".json", ".jinja", ".txt", ".model", ".safetensors"})}
     action_contrast = getattr(args, "action_contrast", False)
+    verify_actions = getattr(args, "verify_actions", False)
     if type(action_contrast) is not bool:
         raise ValueError("action_contrast_must_be_boolean")
+    if type(verify_actions) is not bool:
+        raise ValueError("verify_actions_must_be_boolean")
     from ml.vlm.action_backend import DECODER_POLICY
 
+    decoder_policy = DECODER_POLICY if action_contrast else "direct_discovery"
+    if verify_actions:
+        from ml.vlm.verified_action_backend import DECODER_POLICY as VERIFIER_POLICY
+
+        decoder_policy = VERIFIER_POLICY
+    max_model_calls = 4 if verify_actions else 2
     config = {"model_directory": str(directory), "model_artifact_sha256": artifacts,
               "model_weights_sha256": artifacts.get("model.safetensors"),
               "python": str(args.python.absolute()), "runtime": _runtime_versions(args.python),
@@ -229,7 +253,7 @@ def run(args):
               "kb_path": str(Path(KB_PATH).absolute()), "kb_sha256": _sha(Path(KB_PATH)),
               "max_tokens": args.max_tokens, "frame_side": args.frame_side,
               "budget_sec": args.budget, "allowlist": TYPE_IDS, "sampling_policy": POLICY_ID,
-              "decoder_policy": DECODER_POLICY if action_contrast else "direct_discovery",
+              "decoder_policy": decoder_policy, "max_model_calls_per_video": max_model_calls,
               "baseline_sha256": _sha(args.baseline) if args.baseline else None,
               "source_sha256": _source_hashes(), "selected_video_ids": sorted(videos),
               "evaluation_scope": "development_only_not_new_angle",
@@ -240,7 +264,11 @@ def run(args):
     types = catalog()
     backend = LocalMLXBackend(directory, python_executable=args.python,
                               max_new_tokens=args.max_tokens, max_image_side=args.frame_side)
-    if action_contrast:
+    if verify_actions:
+        from ml.vlm.verified_action_backend import VerifiedActionBackend
+
+        backend = VerifiedActionBackend(backend, catalog=types)
+    elif action_contrast:
         from ml.vlm.action_backend import ActionContrastBackend
 
         backend = ActionContrastBackend(backend, catalog=types)
@@ -270,7 +298,7 @@ def run(args):
                         owner, report = completed[identity]
                     else:
                         owner = key
-                        budget = DiscoveryBudget(started + args.budget, max_calls=2)
+                        budget = DiscoveryBudget(started + args.budget, max_calls=max_model_calls)
                         report = discover_types(path, (), types, duration_sec=duration, windows=windows,
                                                 allowed_type_ids=TYPE_IDS, budget=budget, backend=backend)
                         if report.status == "completed":
@@ -286,8 +314,11 @@ def run(args):
                                              "report": asdict(report), "vlm_only": additions,
                                              "inference_reused": reused, "inference_source_video": owner,
                                              "actual_calls_used": 0 if reused else report.calls_used}
-                    if action_contrast and not reused:
-                        audit["videos"][key]["decoder_last_call_actions"] = list(backend.last_actions)
+                    if not reused:
+                        if hasattr(backend, "last_actions"):
+                            audit["videos"][key]["decoder_last_call_actions"] = list(backend.last_actions)
+                        if hasattr(backend, "last_verifications"):
+                            audit["videos"][key]["verifier_last_call_decisions"] = _coded_verifications(backend.last_verifications)
                     logging.info("%s status=%s calls=%d added=%d reused=%s elapsed=%.1fs", key, report.status,
                                  0 if reused else report.calls_used, len(additions), reused, time.monotonic() - started)
                 except Exception as exc:
@@ -316,6 +347,7 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--frame-side", type=int, default=640)
     parser.add_argument("--action-contrast", action="store_true", help="experimental balanced physical-action decoder")
+    parser.add_argument("--verify-actions", action="store_true", help="experimental blind primitive verification; overrides --action-contrast")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     try:
         args = parser.parse_args()

@@ -374,3 +374,85 @@ def test_action_contrast_is_optional_fingerprinted_and_lifecycle_owned_by_probe(
     assert len(wrapped) == 1 and len(case.prepared) == len(case.closed) == 2
     assert second['videos']['X-1']['decoder_last_call_actions'] == []
     assert 'decoder_last_call_actions' not in second['videos']['X-3']  # reuse links its source.
+
+
+@pytest.mark.parametrize('action_contrast',[False,True])
+def test_verify_actions_overrides_contrast_uses_four_call_budget_and_coded_audit(local_probe,monkeypatch,action_contrast):
+    import json
+    import sys
+    from types import ModuleType
+    from ml.vlm import action_backend
+
+    case = local_probe
+    created=[]
+    module=ModuleType('ml.vlm.verified_action_backend')
+    module.DECODER_POLICY='scripted_blind_verifier_policy'
+    class Verifier:
+        def __init__(self,inner,*,catalog):
+            self.inner=inner
+            self.last_actions=({'action':'unclear','start_frame':1,'peak_frame':1,'end_frame':1,
+                                'confidence':.5,'insufficient_evidence':True},)
+            self.last_verifications=({'episode_id':1,'accepted':False,'reason':'unclear_object',
+                                      'raw_error':'PRIVATE_UNSTRUCTURED_ERROR'},)
+            created.append(self)
+        def validate(self,timeout_s):
+            self.inner.validate(timeout_s)
+        def close(self):
+            self.inner.close()
+    module.VerifiedActionBackend=Verifier
+    monkeypatch.setitem(sys.modules,module.__name__,module)
+    monkeypatch.setattr(action_backend,'ActionContrastBackend',lambda *a,**kw: pytest.fail('double wrapper'))
+    case.args.verify_actions=True
+    case.args.action_contrast=action_contrast
+    original=case.discovery.discover_types
+    def discover(*args,**kwargs):
+        assert kwargs['backend'] is created[0] and kwargs['budget'].max_calls==4
+        report=original(*args,**kwargs)
+        report.calls_used=4
+        return report
+    monkeypatch.setattr(case.discovery,'discover_types',discover)
+    case.module.run(case.args)
+    audit=json.loads(case.args.out.with_suffix('.audit.json').read_text())
+    assert audit['config']['decoder_policy']==module.DECODER_POLICY
+    assert audit['config']['max_model_calls_per_video']==4
+    assert len(created)==len(case.prepared)==len(case.closed)==1
+    assert audit['videos']['X-1']['actual_calls_used']==4
+    assert audit['videos']['X-3']['actual_calls_used']==0
+    assert audit['videos']['X-1']['verifier_last_call_decisions']==[
+        {'episode_id':1,'accepted':False,'reason':'unclear_object'}]
+    assert 'PRIVATE_UNSTRUCTURED_ERROR' not in json.dumps(audit)
+    assert 'verifier_last_call_decisions' not in audit['videos']['X-3']
+    assert 'decoder_last_call_actions' in audit['videos']['X-1']
+
+
+@pytest.mark.parametrize('name',['verify_actions','action_contrast'])
+@pytest.mark.parametrize('invalid',[1,0,'true',None])
+def test_experiment_mode_flags_require_exact_booleans(local_probe,name,invalid):
+    case=local_probe
+    setattr(case.args,name,invalid)
+    with pytest.raises(ValueError,match=name+'_must_be_boolean'):
+        case.module.run(case.args)
+    assert not case.prepared and not case.calls and not case.closed
+
+
+def test_cli_parses_verification_as_explicit_opt_in_only(monkeypatch):
+    import sys
+    from ml.tools import vlm_type_probe as module
+
+    received=[]
+    monkeypatch.setattr(module,'run',lambda args: received.append(args) or {})
+    argv=['probe','--model','scripted-model','--python','scripted-python','--out','var/scripted.json']
+    monkeypatch.setattr(sys,'argv',argv)
+    assert module.main()==0 and received[-1].verify_actions is False
+    monkeypatch.setattr(sys,'argv',argv+['--verify-actions','--action-contrast'])
+    assert module.main()==0 and received[-1].verify_actions is True and received[-1].action_contrast is True
+
+
+def test_coded_verifier_diagnostics_never_copy_free_text():
+    from ml.tools.vlm_type_probe import _coded_verifications
+
+    assert _coded_verifications([{'episode_id':1,'accepted':True,'reason':'supported','observations':'PRIVATE'}])==[
+        {'episode_id':1,'accepted':True,'reason':'supported'}]
+    assert _coded_verifications([{'episode_id':True,'accepted':True,'reason':'supported'},
+                                {'episode_id':1,'accepted':1,'reason':'supported'},
+                                {'episode_id':1,'accepted':False,'reason':'PRIVATE ERROR PATH'}])==[]

@@ -250,7 +250,8 @@ def preload() -> None:
         from .vlm.type_runtime import configure_discovery
 
         ready = configure_discovery(model_path=os.environ.get("ML_VLM_MODEL"),
-                                    python_executable=os.environ.get("ML_VLM_PYTHON"))
+                                    python_executable=os.environ.get("ML_VLM_PYTHON"),
+                                    verify_actions=os.environ.get("ML_VLM_VERIFY_ACTIONS", "0") == "1")
         log.info("pipeline: optional local VLM discovery ready=%s", ready)
 
 
