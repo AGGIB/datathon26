@@ -64,7 +64,7 @@ def decode_hits(
 
 
 class OwlDetector:
-    """Lazy OWLv2 wrapper; `detect` accepts a BGR frame and an optional region to zoom into."""
+    """Lazy OWLv2 wrapper. `detect` / `detect_batch` take BGR frames and optional regions to zoom into."""
 
     def __init__(self, model_id: str = MODEL_ID, device: str | None = None, cache_dir: Path | None = None) -> None:
         self.model_id = model_id
@@ -72,7 +72,8 @@ class OwlDetector:
         self._model = None
         self._processor = None
         self.cache_dir = cache_dir
-        self.calls = 0
+        self.calls = 0  # forward passes
+        self.images = 0  # images scored
 
     def load(self) -> None:
         """Load weights now (otherwise on the first detect call)."""
@@ -96,24 +97,49 @@ class OwlDetector:
         threshold: float = DEFAULT_THRESHOLD,
         cache_key: str | None = None,
     ) -> list[OwlHit]:
-        h, w = frame_bgr.shape[:2]
-        x0, y0, x1, y1 = to_int_box(clip_box(region, w, h)) if region else (0, 0, w, h)
-        if cache_key is not None:  # the key names the call; the content hash keeps stale hits out
-            cache_key = f"{cache_key}_{hashlib.sha1(frame_bgr[y0:y1, x0:x1].tobytes()).hexdigest()[:12]}"
-        cached = self._cache_get(cache_key, queries, (x0, y0, x1, y1), threshold)
-        if cached is not None:
-            return cached
+        return self.detect_batch([(frame_bgr, region)], queries, threshold, [cache_key])[0]
+
+    def detect_batch(
+        self,
+        views: Sequence[tuple[np.ndarray, Box | None]],
+        queries: Sequence[str],
+        threshold: float = DEFAULT_THRESHOLD,
+        cache_keys: Sequence[str | None] | None = None,
+    ) -> list[list[OwlHit]]:
+        """Run several (frame, region) views with the same queries in one forward pass."""
+        keys = list(cache_keys) if cache_keys is not None else [None] * len(views)
+        crops, todo, results = [], [], [None] * len(views)
+        for i, ((frame, region), key) in enumerate(zip(views, keys)):
+            h, w = frame.shape[:2]
+            rect = to_int_box(clip_box(region, w, h)) if region else (0, 0, w, h)
+            crop = frame[rect[1]:rect[3], rect[0]:rect[2]]
+            if key is not None:  # the key names the call; the content hash keeps stale hits out
+                key = f"{key}_{hashlib.sha1(crop.tobytes()).hexdigest()[:12]}"
+            keys[i] = key
+            results[i] = self._cache_get(key, queries, rect, threshold)
+            if results[i] is None:
+                todo.append((i, rect))
+                crops.append(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+        if todo:
+            for (i, rect), hits in zip(todo, self._forward(crops, queries, [r for _, r in todo], threshold)):
+                results[i] = hits
+                self._cache_put(keys[i], queries, rect, threshold, hits)
+        return results
+
+    def _forward(self, crops: list[np.ndarray], queries: Sequence[str], rects: list[tuple], threshold: float):
         self.load()
-        crop = cv2.cvtColor(frame_bgr[y0:y1, x0:x1], cv2.COLOR_BGR2RGB)
-        inputs = self._processor(text=[list(queries)], images=crop, return_tensors="pt").to(self._device)
+        texts = [list(queries)] * len(crops)
+        inputs = self._processor(text=texts, images=crops, return_tensors="pt").to(self._device)
         with self._torch.no_grad():
             out = self._model(**inputs)
         self.calls += 1
-        probs = out.logits[0].sigmoid().cpu().numpy()  # (P, Q)
-        boxes = out.pred_boxes[0].cpu().numpy()  # (P, 4)
-        hits = decode_hits(probs, boxes, queries, float(max(x1 - x0, y1 - y0)), (x0, y0), threshold)
-        self._cache_put(cache_key, queries, (x0, y0, x1, y1), threshold, hits)
-        return hits
+        self.images += len(crops)
+        probs = out.logits.sigmoid().cpu().numpy()  # (B, P, Q)
+        boxes = out.pred_boxes.cpu().numpy()  # (B, P, 4)
+        return [
+            decode_hits(probs[j], boxes[j], queries, float(max(r[2] - r[0], r[3] - r[1])), (r[0], r[1]), threshold)
+            for j, r in enumerate(rects)
+        ]
 
     # --- tiny JSON cache: one file per (key, queries, region, threshold) -------------------------------
     def _cache_file(self, key: str, queries: Sequence[str], region: tuple, threshold: float) -> Path | None:

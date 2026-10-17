@@ -77,7 +77,8 @@ from .scene_signals import (
 
 SAMPLE_FPS = 2.0
 MAX_BACKGROUND_FRAMES = 30
-MAX_KEYFRAMES = 6
+MAX_KEYFRAMES = 4
+MAX_SAMPLES = 120  # long videos are sampled sparser to stay within the time budget
 KEYFRAME_MIN_GAP = 1.5
 PERSON_MATCH_SEC = 0.4
 SMOOTH_K = 3
@@ -221,10 +222,10 @@ def locate_layout(
     fallback = masked_median(np.stack([frames[i] for i in idx]), np.stack([masks[i] for i in idx]))
     background = initial_background(frames, masks, fallback)
     coco_laptops = [d.box for dets in detections for d in dets if d.label == "laptop"]
-    hits: list[OwlHit] = []
-    if owl is not None:
-        hits = owl.detect(background, LAYOUT_QUERIES, cache_key=f"{cache_key}_layout" if cache_key else None)
-    laptop, c_laptop = pick_laptop(coco_laptops, hits)
+    laptop, c_laptop = pick_laptop(coco_laptops, [])
+    hits, screen_hits = _layout_hits(background, laptop, owl, cache_key)
+    if laptop is None:
+        laptop, c_laptop = pick_laptop(coco_laptops, hits)
     desk, c_desk = pick_desk(hits, laptop, w, h)
     safe, c_safe = pick_safe(hits, desk, laptop, w, h)
     door, c_door = pick_door(hits, w, h)
@@ -234,15 +235,28 @@ def locate_layout(
         lock_hits = owl.detect(background, LOCK_QUERIES, region=region,
                                cache_key=f"{cache_key}_lock" if cache_key else None)
         lock, c_lock = pick_lock(lock_hits, safe)
-    screen_hits: list[OwlHit] = []
-    if owl is not None and laptop is not None:
-        screen_hits = owl.detect(background, SCREEN_QUERIES, region=expand_box(laptop, 0.4, width=w, height=h),
-                                 cache_key=f"{cache_key}_screen" if cache_key else None)
     screen, c_screen = pick_screen(screen_hits, laptop)
     conf = {"desk": c_desk, "safe": c_safe, "door": c_door, "laptop": c_laptop, "lock": c_lock, "screen": c_screen}
     layout = Layout(w, h, desk, safe, door, laptop, lock, screen, {k: round(v, 3) for k, v in conf.items()})
     log.info("layout %s", layout)
     return layout, background
+
+
+def _layout_hits(
+    background: np.ndarray, laptop: Box | None, owl: OwlDetector | None, cache_key: str | None
+) -> tuple[list[OwlHit], list[OwlHit]]:
+    """Whole-room layout queries and the zoomed laptop crop (screen) in one OWLv2 forward pass."""
+    if owl is None:
+        return [], []
+    h, w = background.shape[:2]
+    views: list[tuple[np.ndarray, Box | None]] = [(background, None)]
+    if laptop is not None:
+        views.append((background, expand_box(laptop, 0.4, width=w, height=h)))
+    keys = [f"{cache_key}_layout", f"{cache_key}_screen"][: len(views)] if cache_key else None
+    results = owl.detect_batch(views, LAYOUT_QUERIES + SCREEN_QUERIES, cache_keys=keys)
+    hits = [x for x in results[0] if x.query in LAYOUT_QUERIES]
+    screen_hits = results[1] if len(results) > 1 else []
+    return hits, screen_hits
 
 
 # --------------------------------------------------------------------------------------------------- signals
@@ -396,12 +410,13 @@ def _scan_keyframes(
         return {}
     zone = desk_zone(layout.desk, layout.width, layout.height)
     region = expand_box(zone, 0.05, width=layout.width, height=layout.height)
+    snapped = sorted({int(np.argmin([abs(t - kt) for t in times])) for kt in keyframes})
+    views = [(frames[i], region) for i in snapped]
+    keys = [f"{cache_key}_desk_{times[i]:.2f}" for i in snapped] if cache_key else None
+    batches = owl.detect_batch(views, ITEM_SCAN_QUERIES, cache_keys=keys) if views else []
     out: dict[float, list[DeskItem]] = {}
-    for kt in keyframes:
-        i = int(np.argmin([abs(t - kt) for t in times]))
+    for i, hits in zip(snapped, batches):
         persons = [d.box for d in persons_at(perception, times[i])]
-        key = f"{cache_key}_desk_{times[i]:.2f}" if cache_key else None
-        hits = owl.detect(frames[i], ITEM_SCAN_QUERIES, region=region, cache_key=key)
         out[times[i]] = items_from_owl(hits, zone, persons)
     return out
 
@@ -468,10 +483,11 @@ def analyze_scene(
     sample_fps: float = SAMPLE_FPS,
     cache_key: str | None = None,
 ) -> SceneAnalysis:
-    """One-call entry for the pipeline: layout + states at `sample_fps` over the whole video."""
+    """One-call entry for the pipeline: layout + states at `sample_fps` (at most MAX_SAMPLES) over the video."""
     started = time.monotonic()
     calls_before = owl.calls if owl else 0
-    times = sample_times(perception.info.duration, sample_fps)
+    duration = perception.info.duration
+    times = sample_times(duration, min(sample_fps, MAX_SAMPLES / max(duration, 1e-6)))
     frames = read_frames(video_path, times)
     layout, background = locate_layout(frames, [detections_at(perception, t) for t in times], owl, cache_key)
     keyframes = pick_keyframes(perception.events, perception.info.duration)
