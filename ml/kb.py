@@ -2,10 +2,14 @@
 
 The kb owns the wording; code only fills placeholders. A `description_template` in the contract format
 uses {observation} plus any of PLACEHOLDERS and ends with VERIFIED_ENDING (type with a verified norm) or
-DRAFT_ENDING (no verified norm). Such templates are validated strictly, so a typo fails at load time.
-Templates not yet in that format (the generic «<что видно>» one, or prose without {observation}) are
-replaced by FALLBACK_TEMPLATES with a warning. A type keeps its `rule` only when the norm is verified;
-otherwise no reference is cited at all.
+DRAFT_ENDING (no verified norm, case-insensitive).
+
+Failure policy: structural errors (bad yaml shape, unknown placeholder in a contract template) raise
+KBError at load, and the backend loads the catalog at startup, so a broken kb stops the boot. Problems that
+only concern one type's wording (ending does not match the current state of the norm, a typo such as
+{observaton}) are logged as ERROR and that type gets FALLBACK_TEMPLATES; jobs keep running. Templates not
+yet in the contract format (the generic «<что видно>» one) get the fallback with a warning. A type keeps its
+`rule` only when the norm is verified; otherwise no reference is cited at all.
 """
 
 import functools
@@ -33,10 +37,12 @@ PLACEHOLDERS = frozenset({"t", "observation", "rule_document", "rule_clause", "r
 RULE_PLACEHOLDERS = frozenset({"rule_document", "rule_clause", "rule_number_date"})
 VERIFIED_ENDING = "Основание: {rule_document}, {rule_clause}."
 DRAFT_ENDING = "Нормативное основание уточняется."
+# Generic wording keeps the caveat that kb templates carry: the requirement may not apply / may not exist.
 FALLBACK_TEMPLATES = MappingProxyType({
-    "verified": "На {t} с {observation}. Это может указывать на несоблюдение требования, указанного в основании. "
-    + VERIFIED_ENDING,
-    "draft": "На {t} с {observation}. Это может указывать на несоблюдение установленного порядка. " + DRAFT_ENDING,
+    VERIFIED: "На {t} с {observation}. Это может указывать на несоблюдение требования, указанного в основании, "
+    "если оно применимо. " + VERIFIED_ENDING,
+    "draft": "На {t} с {observation}. Это может указывать на несоблюдение применимого порядка, если он установлен. "
+    + DRAFT_ENDING,
 })
 
 
@@ -97,48 +103,70 @@ def _parse_rule(type_id: str, raw: Mapping) -> RuleText | None:
     )
 
 
-def _placeholders(type_id: str, template: str) -> set[str]:
+def _fields(template: str) -> list[tuple[str, str, str | None]]:
+    """(name, format_spec, conversion) of every placeholder; ValueError on broken braces."""
+    return [(name, spec or "", conv) for _lit, name, spec, conv in string.Formatter().parse(template) if name is not None]
+
+
+def _structural_names(type_id: str, template: str) -> set[str]:
+    """Placeholders of a contract template. Anything the renderer cannot fill is a kb error (fail fast)."""
     try:
-        parsed = list(string.Formatter().parse(template))
+        fields = _fields(template)
     except ValueError as exc:
         raise KBError(f"{type_id}: description_template is not a valid template ({exc})") from None
-    names = set()
-    for _literal, name, spec, conversion in parsed:
-        if name is None:
-            continue
+    for name, spec, conversion in fields:
         if spec or conversion or name not in PLACEHOLDERS:
             raise KBError(f"{type_id}: unknown placeholder {{{name}}} in description_template, "
                           f"allowed: {sorted(PLACEHOLDERS)}")
-        names.add(name)
-    return names
+    return {name for name, _, _ in fields}
 
 
-def _check_contract(type_id: str, template: str, rule: RuleText | None) -> str:
-    names = _placeholders(type_id, template)
+def _state_problem(template: str, names: set[str], rule: RuleText | None) -> str | None:
+    """Mismatch between the wording and the current state of the norm (owned by different people)."""
     if rule is None:
-        if not template.endswith(DRAFT_ENDING):
-            raise KBError(f"{type_id}: template of a type without verified norm must end with «{DRAFT_ENDING}»")
+        if not template.lower().endswith(DRAFT_ENDING.lower()):
+            return f"the type has no verified norm, so its template must end with «{DRAFT_ENDING}»"
         if names & RULE_PLACEHOLDERS:
-            raise KBError(f"{type_id}: template references rule fields, but the type has no verified rule")
-        return template
+            return "the template cites rule fields, but the type has no verified norm"
+        return None
     if not template.endswith(VERIFIED_ENDING):
-        raise KBError(f"{type_id}: template of a verified type must end with «{VERIFIED_ENDING}»")
+        return f"the type has a verified norm, so its template must end with «{VERIFIED_ENDING}»"
     if "rule_number_date" in names and not rule.number_date:
-        raise KBError(f"{type_id}: template uses {{rule_number_date}}, but rule.number_date is empty")
-    return _without_missing_clause(template, rule)
+        return "the template uses {rule_number_date}, but rule.number_date is empty"
+    return None
 
 
 def _without_missing_clause(template: str, rule: RuleText) -> str:
     return template if rule.clause else template.replace(", {rule_clause}", "")
 
 
+def _fallback(rule: RuleText | None) -> str:
+    return _without_missing_clause(FALLBACK_TEMPLATES[VERIFIED], rule) if rule else FALLBACK_TEMPLATES["draft"]
+
+
+def _unknown_names(template: str) -> list[str]:
+    try:
+        return sorted({name for name, _, _ in _fields(template)} - PLACEHOLDERS)
+    except ValueError:
+        return []
+
+
 def _parse_template(type_id: str, raw: Any, rule: RuleText | None) -> tuple[str, bool]:
-    """(template, is_fallback)."""
+    """(template, is_legacy). Errors that only affect this type's wording are logged and fall back."""
     template = _text(raw)
-    if template is not None and "{observation}" in template:
-        return _check_contract(type_id, template, rule), False
-    fallback = FALLBACK_TEMPLATES[VERIFIED if rule else "draft"]
-    return (_without_missing_clause(fallback, rule) if rule else fallback), True
+    if template is None or "{observation}" not in template:
+        unknown = _unknown_names(template or "")
+        if unknown:  # most likely a typo such as {observaton}
+            log.error("kb: %s: description_template has unknown placeholder(s) %s and no {observation} — "
+                      "generic wording used", type_id, unknown)
+            return _fallback(rule), False
+        return _fallback(rule), True
+    names = _structural_names(type_id, template)
+    problem = _state_problem(template, names, rule)
+    if problem:
+        log.error("kb: %s: %s — generic wording used for this type", type_id, problem)
+        return _fallback(rule), False
+    return (_without_missing_clause(template, rule) if rule else template), False
 
 
 def _parse_entry(index: int, raw: Any) -> tuple[ViolationType, bool]:
@@ -153,7 +181,7 @@ def _parse_entry(index: int, raw: Any) -> tuple[ViolationType, bool]:
     if status not in STATUSES:
         raise KBError(f"{type_id}: unknown status {status!r}, expected one of {sorted(STATUSES)}")
     rule = _parse_rule(type_id, raw)
-    template, is_fallback = _parse_template(type_id, raw.get("description_template"), rule)
+    template, is_legacy = _parse_template(type_id, raw.get("description_template"), rule)
     vtype = ViolationType(
         id=type_id,
         name=_text(raw["name"]),
@@ -163,7 +191,7 @@ def _parse_entry(index: int, raw: Any) -> tuple[ViolationType, bool]:
         template=template,
         enabled=raw.get("enabled", True) is not False,
     )
-    return vtype, is_fallback
+    return vtype, is_legacy
 
 
 def parse_catalog(raw: Any) -> Mapping[str, ViolationType]:
@@ -171,17 +199,17 @@ def parse_catalog(raw: Any) -> Mapping[str, ViolationType]:
     if not isinstance(entries, list):
         raise KBError("top-level `violations` list is missing")
     types: dict[str, ViolationType] = {}
-    fallbacks: list[str] = []
+    legacy: list[str] = []
     for index, item in enumerate(entries):
-        vtype, is_fallback = _parse_entry(index, item)
+        vtype, is_legacy = _parse_entry(index, item)
         if vtype.id in types:
             raise KBError(f"duplicate violation id {vtype.id!r}")
         types[vtype.id] = vtype
-        if is_fallback:
-            fallbacks.append(vtype.id)
-    if fallbacks:
+        if is_legacy:
+            legacy.append(vtype.id)
+    if legacy:
         log.warning("kb: %d type(s) have no description_template in the contract format, generic wording used: %s",
-                    len(fallbacks), fallbacks)
+                    len(legacy), legacy)
     return MappingProxyType(types)
 
 

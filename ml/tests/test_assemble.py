@@ -1,17 +1,14 @@
 import logging
-import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
 
 from backend.app.schemas import AnalysisResult
 from ml.assemble import MAX_VIOLATIONS, MIN_CONFIDENCE, assemble, clamp_time, describe, select
 from ml.candidates import Candidate
-from ml.kb import DRAFT_ENDING, FALLBACK_TEMPLATES, RuleText, ViolationType, catalog, parse_catalog
+from ml.kb import DRAFT_ENDING, FALLBACK_TEMPLATES, RuleText, ViolationType, catalog, load_catalog
 
-REPO = Path(__file__).resolve().parents[2]
-PR32_REF = "origin/codex/olzhas-normative-kb:kb/violations.yaml"
+PR32_FIXTURE = Path(__file__).parent / "fixtures" / "kb_pr32_violations.yaml"
 RULE = RuleText(
     document="Правила осуществления кассовых операций",
     number_date="Постановление Правления НБРК от 29.11.2019 № 231",
@@ -168,7 +165,7 @@ def test_fallback_description_fills_time_observation_and_basis():
                     TYPES["cash_left_on_desk"])
     assert text == (
         "На 22,4 с кассир выходит из кадра, пачка остаётся на столе. "
-        "Это может указывать на несоблюдение требования, указанного в основании. "
+        "Это может указывать на несоблюдение требования, указанного в основании, если оно применимо. "
         "Основание: Правила осуществления кассовых операций, п. 20."
     )
 
@@ -213,8 +210,8 @@ def test_clamp_time_bounds():
 # --- evidence ------------------------------------------------------------------------------------
 
 
-def test_candidate_without_evidence_frames_is_dropped(caplog):
-    with caplog.at_level(logging.WARNING, logger="ml.assemble"):
+def test_candidate_without_evidence_frames_is_dropped_with_error(caplog):
+    with caplog.at_level(logging.ERROR, logger="ml.assemble"):
         result = run([cand()], render=lambda cs: {})
     assert result == {"verdict": "no_violation", "violations": []}
     assert "evidence" in caplog.text
@@ -228,12 +225,7 @@ def test_more_than_three_frames_are_trimmed():
 # --- every type of both catalogs ---------------------------------------------------------------------
 
 
-def _pr32_types():
-    proc = subprocess.run(["git", "show", PR32_REF], cwd=REPO, capture_output=True, text=True)
-    return parse_catalog(yaml.safe_load(proc.stdout)) if proc.returncode == 0 else {}
-
-
-CATALOGS = {"main": dict(catalog()), "pr32": dict(_pr32_types())}
+CATALOGS = {"main": dict(catalog()), "pr32": dict(load_catalog(PR32_FIXTURE))}
 ALL_TYPES = [(name, type_id) for name, types in CATALOGS.items() for type_id in types]
 
 
@@ -249,10 +241,8 @@ def test_every_kb_type_assembles_into_valid_k1(catalog_name, type_id):
         assert v["rule"] == rule.as_ref()
         assert v["description"].endswith(f"Основание: {rule.document}, {rule.clause}.")
     else:
-        assert "rule" not in v and v["description"].endswith(DRAFT_ENDING)
+        assert "rule" not in v and v["description"].lower().endswith(DRAFT_ENDING.lower())
 
 
-def test_pr32_catalog_was_checked():
-    if not CATALOGS["pr32"]:
-        pytest.skip(f"{PR32_REF} is not available locally")
-    assert len(CATALOGS["pr32"]) >= 17
+def test_both_catalogs_are_covered():
+    assert len(CATALOGS["main"]) >= 17 and len(CATALOGS["pr32"]) == 27

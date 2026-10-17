@@ -1,8 +1,7 @@
-import subprocess
+import logging
 from pathlib import Path
 
 import pytest
-import yaml
 
 from ml.kb import (
     DRAFT_ENDING,
@@ -14,8 +13,7 @@ from ml.kb import (
     parse_catalog,
 )
 
-REPO = Path(__file__).resolve().parents[2]
-PR32_REF = "origin/codex/olzhas-normative-kb:kb/violations.yaml"
+PR32_FIXTURE = Path(__file__).parent / "fixtures" / "kb_pr32_violations.yaml"
 
 VERIFIED_RULE = {
     "document": "Правила осуществления кассовых операций",
@@ -51,11 +49,8 @@ def one(raw_entry):
     return next(iter(parse_catalog(doc(raw_entry)).values()))
 
 
-def pr32_raw():
-    proc = subprocess.run(["git", "show", PR32_REF], cwd=REPO, capture_output=True, text=True)
-    if proc.returncode != 0:
-        pytest.skip(f"{PR32_REF} is not available locally")
-    return yaml.safe_load(proc.stdout)
+def errors(caplog):
+    return [r.getMessage() for r in caplog.records if r.name == "ml.kb" and r.levelno >= logging.ERROR]
 
 
 # --- the real catalogs --------------------------------------------------------------------------
@@ -74,11 +69,14 @@ def test_real_catalog_draft_types_carry_no_rule():
             assert vt.rule is None
 
 
-def test_pr32_catalog_loads_with_its_extra_fields():
-    types = parse_catalog(pr32_raw())
-    assert len(types) >= 17
-    draft = [vt for vt in types.values() if vt.rule is None]
-    assert [vt.id for vt in draft] == ["computer_left_unlocked"]
+def test_pr32_catalog_loads_with_its_own_templates(caplog):
+    with caplog.at_level(logging.WARNING, logger="ml.kb"):
+        types = load_catalog(PR32_FIXTURE)
+    assert len(types) == 27
+    assert not errors(caplog)
+    assert [vt.id for vt in types.values() if vt.rule is None] == ["computer_left_unlocked"]
+    assert all("{observation}" in vt.template and vt.template not in FALLBACK_TEMPLATES.values()
+               for vt in types.values())
     for vt in types.values():
         assert vt.template.endswith(VERIFIED_ENDING if vt.rule else DRAFT_ENDING)
 
@@ -105,19 +103,8 @@ def test_draft_type_has_no_rule_even_if_fields_present():
     assert vt.rule is None
 
 
-def test_verified_status_without_verifier_is_not_trusted():
-    vt = one(entry(rule={**VERIFIED_RULE, "verified_by": None}, template=CONTRACT_DRAFT))
-    assert vt.rule is None
-
-
-def test_pending_citation_is_not_trusted():
-    vt = one(entry(rule={**VERIFIED_RULE, "citation_status": "pending"}, template=CONTRACT_DRAFT))
-    assert vt.rule is None
-
-
 def test_empty_rule_block_gives_no_rule():
-    vt = one(entry(status="draft", rule=EMPTY_RULE, template=CONTRACT_DRAFT))
-    assert vt.rule is None
+    assert one(entry(status="draft", rule=EMPTY_RULE, template=CONTRACT_DRAFT)).rule is None
 
 
 def test_disabled_type_is_marked():
@@ -125,11 +112,16 @@ def test_disabled_type_is_marked():
     assert one(entry()).enabled is True
 
 
-# --- templates ------------------------------------------------------------------------------------
+# --- templates: kb wording -----------------------------------------------------------------------
 
 
 def test_contract_template_is_kept():
     assert one(entry()).template == CONTRACT_VERIFIED
+
+
+def test_draft_ending_is_case_insensitive():
+    template = "На {t} с: {observation}; нормативное основание уточняется."
+    assert one(entry(status="draft", rule=EMPTY_RULE, template=template)).template == template
 
 
 @pytest.mark.parametrize("template", [LEGACY, None, "", "Пачка остаётся на столе; это может указывать на нарушение."])
@@ -137,13 +129,63 @@ def test_legacy_or_missing_template_falls_back(template):
     assert one(entry(template=template)).template == FALLBACK_TEMPLATES["verified"]
 
 
-def test_draft_fallback_does_not_cite_anything():
-    vt = one(entry(status="draft", rule=EMPTY_RULE, template=LEGACY))
-    assert vt.template == FALLBACK_TEMPLATES["draft"]
-    assert "{rule_" not in vt.template
+def test_generic_wording_keeps_the_caveats():
+    assert "если оно применимо" in FALLBACK_TEMPLATES["verified"]
+    assert "применимого порядка, если он установлен" in FALLBACK_TEMPLATES["draft"]
+    assert FALLBACK_TEMPLATES["draft"].endswith(DRAFT_ENDING)
+    assert "{rule_" not in FALLBACK_TEMPLATES["draft"]
 
 
-def test_unknown_placeholder_fails_fast():
+def test_missing_clause_drops_it_from_the_basis():
+    assert one(entry(rule={**VERIFIED_RULE, "clause": None})).template.endswith("Основание: {rule_document}.")
+
+
+# --- templates: a wording problem of one type never stops the service -----------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw_entry", "expected"),
+    [
+        # verified wording, but the norm's verification was withdrawn / is pending / the type is draft
+        (entry(rule={**VERIFIED_RULE, "verified_by": None}), "draft"),
+        (entry(rule={**VERIFIED_RULE, "citation_status": "pending"}), "draft"),
+        (entry(status="draft"), "draft"),
+        # draft wording, but the norm got verified
+        (entry(template=CONTRACT_DRAFT), "verified"),
+        # wrong ending for a verified type
+        (entry(template="На {t} с {observation}. Это может указывать на нарушение."), "verified"),
+        # draft template citing rule fields
+        (entry(status="draft", rule=EMPTY_RULE, template="На {t} с {observation} ({rule_document}). " + DRAFT_ENDING),
+         "draft"),
+        # {rule_number_date} without number_date
+        (entry(template="На {t} с {observation} ({rule_number_date}). " + VERIFIED_ENDING,
+               rule={**VERIFIED_RULE, "number_date": None}), "verified"),
+    ],
+)
+def test_template_that_does_not_match_the_norm_state_falls_back_with_error(raw_entry, expected, caplog):
+    with caplog.at_level(logging.ERROR, logger="ml.kb"):
+        vt = one(raw_entry)
+    assert vt.template == FALLBACK_TEMPLATES[expected]
+    assert (vt.rule is None) == (expected == "draft")
+    assert [m for m in errors(caplog) if raw_entry["id"] in m]
+
+
+def test_typo_in_observation_placeholder_is_reported_as_error(caplog):
+    with caplog.at_level(logging.ERROR, logger="ml.kb"):
+        vt = one(entry(template="На {t} с {observaton}. " + VERIFIED_ENDING))
+    assert vt.template == FALLBACK_TEMPLATES["verified"]
+    assert any("observaton" in m for m in errors(caplog))
+
+
+def test_number_date_placeholder_works_when_present():
+    template = "На {t} с {observation} ({rule_number_date}). " + VERIFIED_ENDING
+    assert one(entry(template=template)).template == template
+
+
+# --- structural errors fail fast -----------------------------------------------------------------------
+
+
+def test_unknown_placeholder_in_contract_template_fails_fast():
     with pytest.raises(KBError, match="door_observation"):
         parse_catalog(doc(entry(template="На {t} с {observation}; {door_observation}. " + VERIFIED_ENDING)))
 
@@ -153,35 +195,9 @@ def test_format_spec_in_placeholder_fails_fast():
         parse_catalog(doc(entry(template="На {t:.1f} с {observation}. " + VERIFIED_ENDING)))
 
 
-def test_verified_template_must_end_with_basis():
-    with pytest.raises(KBError, match="Основание"):
-        parse_catalog(doc(entry(template="На {t} с {observation}. Это может указывать на нарушение.")))
-
-
-def test_draft_template_must_say_basis_is_being_clarified():
-    with pytest.raises(KBError, match="уточняется"):
-        parse_catalog(doc(entry(status="draft", rule=EMPTY_RULE, template=CONTRACT_VERIFIED)))
-
-
-def test_draft_template_cannot_reference_rule_fields():
-    template = "На {t} с {observation} ({rule_document}). " + DRAFT_ENDING
-    with pytest.raises(KBError, match="rule"):
-        parse_catalog(doc(entry(status="draft", rule=EMPTY_RULE, template=template)))
-
-
-def test_number_date_placeholder_requires_number_date():
-    template = "На {t} с {observation} ({rule_number_date}). " + VERIFIED_ENDING
-    assert one(entry(template=template)).template == template
-    with pytest.raises(KBError, match="number_date"):
-        parse_catalog(doc(entry(template=template, rule={**VERIFIED_RULE, "number_date": None})))
-
-
-def test_missing_clause_drops_it_from_the_basis():
-    vt = one(entry(rule={**VERIFIED_RULE, "clause": None}))
-    assert vt.template.endswith("Основание: {rule_document}.")
-
-
-# --- structure ------------------------------------------------------------------------------------
+def test_broken_braces_in_contract_template_fail_fast():
+    with pytest.raises(KBError, match="valid template"):
+        parse_catalog(doc(entry(template="На {t с {observation}. " + VERIFIED_ENDING)))
 
 
 def test_duplicate_ids_are_rejected():
