@@ -144,7 +144,7 @@ def assemble(
     for c in selected:
         frames = frames_by_candidate.get(c) or []
         if not frames:
-            log.warning("assemble: no evidence frames for %s at %.1fs, dropped", c.type_id, c.t_peak)
+            log.error("assemble: no evidence frames for %s at %.1fs, violation dropped", c.type_id, c.t_peak)
             continue
         violations.append(build_violation(c, types[c.type_id], frames, duration))
     return {"verdict": "violation" if violations else "no_violation", "violations": violations}

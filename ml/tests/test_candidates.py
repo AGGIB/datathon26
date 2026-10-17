@@ -13,8 +13,8 @@ def test_valid_candidate():
     assert make().t_peak == 2.0
 
 
-@pytest.mark.parametrize("obs", ["", "   "])
-def test_observation_is_required(obs):
+@pytest.mark.parametrize("obs", ["", "   ", "...", " … ", "—", "12:30", "?!"])
+def test_observation_must_contain_words(obs):
     with pytest.raises(ValueError):
         make(observation=obs)
 

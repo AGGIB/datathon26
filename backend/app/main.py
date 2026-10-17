@@ -81,8 +81,9 @@ MULTIPART_OVERHEAD_BYTES = 64 * 1024
 def load_pipeline(settings: Settings) -> PipelineFn:
     if settings.pipeline == "mock":
         return functools.partial(mock_pipeline.analyze, delay_sec=settings.mock_delay_sec)
-    from ml.pipeline import analyze  # heavy imports only when the real pipeline is enabled
+    from ml.pipeline import analyze, preload  # heavy imports only when the real pipeline is enabled
 
+    preload()  # a broken kb must stop the boot, not fail every job
     return analyze
 
 
