@@ -15,6 +15,8 @@ Speed differs ~30x between MPS and a CPU container, so the detector's cost per f
 import dataclasses
 import logging
 import math
+import os
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -49,6 +51,8 @@ SMALL_INPUT_SIZE = 480  # ~0.55x the CPU cost of 640; on MPS it saves nothing
 PLAN_LADDER = ((INPUT_SIZE, SAFE_MIN_FPS), (SMALL_INPUT_SIZE, SAFE_MIN_FPS), (SMALL_INPUT_SIZE, HARD_MIN_FPS))
 PLAN_SHARE = 0.7  # share of the detection window the plan may fill; calibration on 2 frames runs ~30% optimistic
 FINISH_RESERVE_SEC = 15.0  # detection ends this long before the deadline so rules and evidence still run
+SCENE_RESERVE_SEC = 30.0  # scene analysis (layout + OWLv2 on a few keyframes) runs after detection
+SCENE_MIN_LEFT_SEC = 15.0  # skip the scene stage (rules run on events + COCO items) when less time is left
 TAIL_TOLERANCE_SEC = 1.0  # missing video end beyond one sampling step + this is treated as undecodable
 CALIBRATION_AT_SEC = 1.0  # calibration frames come from the first seconds: decoding them is cheap
 
@@ -137,7 +141,7 @@ def _finalize(perception: Perception, guard: _BudgetedDetector, plan: SamplingPl
 
 def _perceive(video_path: str, info: VideoInfo, time_budget_sec: float | None, started: float,
               report: ProgressFn) -> Perception:
-    deadline = None if time_budget_sec is None else started + time_budget_sec - FINISH_RESERVE_SEC
+    deadline = None if time_budget_sec is None else started + time_budget_sec - FINISH_RESERVE_SEC - _scene_reserve()
     window = None if deadline is None else deadline - time.monotonic()
     sample: list[np.ndarray] = []
 
@@ -168,11 +172,74 @@ def _calibration_frames(video_path: str, info: VideoInfo) -> list[np.ndarray]:
     return frames or [np.zeros((info.height, info.width, 3), np.uint8)] * CALIBRATION_FRAMES
 
 
-def _judge(perception: Perception) -> Sequence[Candidate]:
+def _scene_enabled() -> bool:
+    return os.environ.get("ML_SCENE", "1") != "0"
+
+
+def _scene_reserve() -> float:
+    return SCENE_RESERVE_SEC if _scene_enabled() else 0.0
+
+
+_OWL_LOCK = threading.Lock()
+_OWL: Any = None
+
+
+def _owl() -> Any:
+    """Return the lazy model wrapper. The caller holds _OWL_LOCK during the entire scene stage.
+
+    Loading stays inside deadline-aware scene inference. A cold model load or an inference already
+    running cannot be interrupted; scene code checks the deadline as soon as that call returns.
+    """
+    global _OWL
+    if _OWL is None:
+        from .scene_owl import OwlDetector
+
+        _OWL = OwlDetector()
+    return _OWL
+
+
+def _analyze_scene(video_path: str, perception: Perception, deadline: float | None = None) -> Any:
+    from .scene import analyze_scene
+
+    # Queueing behind the other worker is part of this job's scene budget, too.
+    if deadline is None:
+        _OWL_LOCK.acquire()
+    else:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not _OWL_LOCK.acquire(timeout=remaining):
+            raise TimeoutError("scene budget exhausted waiting for OWLv2")
+    try:
+        if deadline is not None and deadline - time.monotonic() < SCENE_MIN_LEFT_SEC:
+            raise TimeoutError("too little scene time left after waiting for OWLv2")
+        return analyze_scene(video_path, perception, owl=_owl(), deadline=deadline)
+    finally:
+        _OWL_LOCK.release()
+
+
+def _scene_or_none(video_path: str, perception: Perception, scene_deadline: float | None) -> Any:
+    """scene_deadline: monotonic time by which the scene stage must be done (rules + evidence still follow)."""
+    if not _scene_enabled():
+        return None
+    if scene_deadline is not None and scene_deadline - time.monotonic() < SCENE_MIN_LEFT_SEC:
+        log.warning("pipeline: too little time left for the scene stage — rules run on events and COCO items")
+        return None
+    try:
+        scene = _analyze_scene(video_path, perception, deadline=scene_deadline)
+    except TimeoutError:
+        log.warning("pipeline: scene budget exhausted — rules run on events and COCO items")
+        return None
+    except Exception:  # noqa: BLE001 — the scene stage is an enhancement; rules still run without it
+        log.exception("pipeline: scene stage failed — rules run on events and COCO items")
+        return None
+    log.info("pipeline: scene in %.1fs", getattr(scene, "elapsed_sec", float("nan")))
+    return scene
+
+
+def _judge(video_path: str, perception: Perception, scene_deadline: float | None) -> Sequence[Candidate]:
     if not perception.frames:
         log.warning("pipeline: no frames were analysed in time, nothing to judge")
         return []
-    return rules.find_candidates(perception, scene=None)
+    return rules.find_candidates(perception, scene=_scene_or_none(video_path, perception, scene_deadline))
 
 
 def preload() -> None:
@@ -207,7 +274,8 @@ def _analyze(video_path: str, report: ProgressFn, time_budget_sec: float | None)
     perception = _perceive(video_path, info, time_budget_sec, started, report)
 
     report(PROGRESS_DETECT_END, "rules")
-    candidates = _judge(perception)
+    scene_deadline = None if time_budget_sec is None else started + time_budget_sec - FINISH_RESERVE_SEC
+    candidates = _judge(video_path, perception, scene_deadline)
 
     report(PROGRESS_RULES_END, "evidence")
     analysed = perception.info.duration  # shorter than the video after a budget stop or a lost tail

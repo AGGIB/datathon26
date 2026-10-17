@@ -154,3 +154,59 @@ def test_person_pixels_in_start_reference_do_not_open_an_unchanged_safe():
     assert chosen == "start"
     assert raw == [0.0] * 6
     assert _finish(raw, (0.07, 0.17)) == [0.0] * 6
+
+
+def test_key_evidence_ignores_moving_safe_door_and_lights_off(monkeypatch):
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    import ml.scene as scene_module
+
+    rng = np.random.default_rng(9)
+    background = rng.integers(80, 180, (32, 32, 3), dtype=np.uint8)
+    frames = [background, background, np.zeros_like(background)]
+    safe_changes = [0.0, 0.3, 0.0]  # the safe swings open at sample 1
+    monkeypatch.setattr(scene_module, "_region_series", lambda *args, **kwargs: (safe_changes, "start"))
+    measured = []
+
+    def key_raw(*args):
+        measured.append(True)
+        return 20.0
+
+    monkeypatch.setattr(scene_module, "_key_raw", key_raw)
+    layout = Layout(32, 32, None, (0, 0, 32, 32), None, None, (15, 15, 18, 18),
+                    confidence={"lock": 0.9})
+    raw = scene_module._measure([0.0, 1.0, 2.0], frames, SimpleNamespace(frames=[]), layout, {}, background)
+    assert raw.key == [20.0, None, None]  # neither movement nor darkness calibrates a key transition
+    assert len(measured) == 1
+    assert not scene_module.key_trusted(raw.key, lock_confidence=0.9)
+
+
+def test_key_dynamic_gate_requires_both_absent_and_present_evidence():
+    from ml.scene import key_trusted
+
+    # A dark lock can vary with shadows while remaining above the key-present threshold throughout.
+    assert not key_trusted([14.0] * 5 + [25.0] * 5, lock_confidence=0.9)
+    assert key_trusted([0.0] * 5 + [20.0] * 5, lock_confidence=0.9)
+
+
+def test_key_darkening_is_normalized_for_global_exposure(monkeypatch):
+    from types import SimpleNamespace
+
+    import numpy as np
+    import pytest
+
+    import ml.scene as scene_module
+
+    rng = np.random.default_rng(10)
+    background = rng.integers(40, 80, (32, 32, 3), dtype=np.uint8)
+    frames = [background] * 3 + [background * 2] * 3
+    monkeypatch.setattr(scene_module, "_region_series", lambda *args, **kwargs: ([0.0] * 6, "start"))
+    values = iter([10.0] * 3 + [20.0] * 3)
+    monkeypatch.setattr(scene_module, "_key_raw", lambda *args: next(values))
+    layout = Layout(32, 32, None, (0, 0, 32, 32), None, None, (15, 15, 18, 18),
+                    confidence={"lock": 0.9})
+    raw = scene_module._measure(list(range(6)), frames, SimpleNamespace(frames=[]), layout, {}, background)
+    assert raw.key == pytest.approx([10.0] * 6, abs=0.1)
+    assert not scene_module.key_trusted(raw.key, lock_confidence=0.9)

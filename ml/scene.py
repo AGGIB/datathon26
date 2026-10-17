@@ -26,7 +26,8 @@ How it works (no hard-coded pixel coordinates; everything is located per video):
   signal is inverted (closing it reads as "open"). Rules must not treat "0 all clip" as a confident "closed".
 * laptop_screen_on / _work = brightness, saturation and texture of the inner screen area vs. its surroundings;
 * key_in_lock (experimental) = darkening right under the lock cylinder; None unless the lock was found with
-  confidence >= LOCK_MIN_CONF and the darkening changes on camera (key inserted / removed);
+  confidence >= LOCK_MIN_CONF and the illumination-normalized darkening changes on camera while the safe
+  stays closed (key inserted / removed); moving-door / changed-light samples cannot calibrate the key;
 * desk items = COCO detections at every sample + OWLv2 on a zoomed desk crop at up to MAX_KEYFRAMES keyframes
   (one inside every cashier_left / room_empty span, after exits latest first, then start/middle/end), filtered
   by novelty against the start background; a mostly yellow "cash bundle" is relabelled food (banana).
@@ -389,7 +390,11 @@ def _finish_unit(raw: Sequence[float | None]) -> list[float | None]:
 def key_trusted(raw: Sequence[float | None], lock_confidence: float) -> bool:
     """The key signal is reported only for a confidently located lock whose look changes on camera."""
     vals = [v for v in median_smooth(raw, SMOOTH_K) if v is not None]
-    return lock_confidence >= LOCK_MIN_CONF and len(vals) >= 3 and max(vals) - min(vals) >= KEY_MIN_SWING
+    return (
+        lock_confidence >= LOCK_MIN_CONF and len(vals) >= 3
+        and min(vals) <= KEY_DARKENING[0] and max(vals) >= KEY_DARKENING[1]
+        and max(vals) - min(vals) >= KEY_MIN_SWING
+    )
 
 
 @dataclass
@@ -430,12 +435,18 @@ def _measure(
     raw.door, door_ref = _region_series(grays, visible, times, _int_roi(layout.door, w, h), gains, skip)
     raw.references = {"safe": safe_ref, "door": door_ref}
     zone = desk_zone(layout.desk, w, h) if layout.desk else None
-    for t, frame, gray, dets, valid, gain in zip(times, frames, grays, dets_all, visible, gains):
+    for t, frame, gray, dets, valid, gain, safe_change, skipped in zip(
+        times, frames, grays, dets_all, visible, gains, raw.safe, skip
+    ):
         persons = [d.box for d in dets if d.label == "person"]
         on, work = _screen(frame, layout, persons)
         raw.screen_on.append(on)
         raw.screen_work.append(work)
-        raw.key.append(_key_raw(gray, layout, persons))
+        # A swinging safe door moves the lock out of its fixed box; light changes can imitate insertion.
+        # Neither is valid evidence that a key appeared/disappeared, even when the lock was found reliably.
+        key_visible = not skipped and gain > 0 and safe_change is not None and safe_change <= SAFE_CHANGE[0]
+        key_value = _key_raw(gray, layout, persons) if key_visible else None
+        raw.key.append(None if key_value is None else key_value / gain)
         items: list[DeskItem] = []
         if zone is not None:
             items = items_from_coco(dets, zone, persons) + keyframe_items.get(t, [])

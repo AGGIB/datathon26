@@ -21,10 +21,11 @@ from .candidates import Candidate
 from .perception import Perception
 
 HIGH = 0.6  # a 0..1 state score at or above this counts as "on" (open door, lit screen, ...)
+LOW = 0.3  # ... and below this as clearly "off"; open/key states only count after an observed "off" period
 MIN_SHARE = 0.5  # share of dense samples in a window that must show the condition
 MIN_SAMPLES = 2
 LEAVE_LOOK_SEC = 6.0  # how long after the room becomes empty we look at what was left behind
-SAFE_OPEN_MIN_SEC = 6.0  # taking cash out takes ~2 s (X-21, X-27); X-20 keeps it open ~9 s
+SAFE_OPEN_MIN_SEC = 7.0  # open-dataset duration sweep: removes one extra safe alarm without losing matched events
 DOOR_OPEN_MIN_SEC = 5.0
 RUN_MAX_MISSES = 1  # one missed sample does not break an "open" run
 PERSONAL_MIN_SEC = 4.0
@@ -139,6 +140,12 @@ def _cand(type_id: str, t0: float, t1: float, peak: float, observation: str, ext
     return Candidate(type_id, t0, t1, peak, CONF[type_id], observation, times)
 
 
+def _was_off_before(samples: Sequence[Sample], attr: str, t: float) -> bool:
+    """Scene states are measured against the clip start: "on" from the first frame is an artifact, not an event."""
+    off = [s for s in samples if s.t < t and getattr(s, attr) is not None and getattr(s, attr) < LOW]
+    return len(off) >= MIN_SAMPLES
+
+
 def _roles_known(events: Sequence[Any]) -> bool:
     return any(e.kind in ROLE_KINDS for e in events)
 
@@ -167,7 +174,8 @@ def _empty_window(inp: RuleInput, ev: Any) -> list[Sample]:
     return [s for s in empty if s.t <= empty[0].t + LEAVE_LOOK_SEC] if empty else []
 
 
-def _left_behind_findings(window: list[Sample]) -> list[tuple[str, Sample, str]]:
+def _left_behind_findings(window: list[Sample], history: Sequence[Sample], t_leave: float
+                          ) -> list[tuple[str, Sample, str]]:
     found: list[tuple[str, Sample, str]] = []
     if hits := _item_hits(window, ["cash_bundle"]):
         found.append(("cash_left_on_desk_when_leaving", hits[0], "на столе остаётся пачка, похожая на банкноты"))
@@ -175,12 +183,16 @@ def _left_behind_findings(window: list[Sample]) -> list[tuple[str, Sample, str]]
         labels = {i for s in hits for i in s.items if i in ("stamp", "book")}
         found.append(("stamps_and_book_left_on_desk", hits[0], _left_items_text(labels)))
     states = [
-        ("computer_left_unlocked", lambda s: _on(s.screen_work), "экран ноутбука остаётся включённым с рабочим содержимым"),
-        ("key_left_in_safe_lock", lambda s: _on(s.key_in_lock), "в замке сейфа остаётся предмет, похожий на ключ"),
-        ("safe_left_open", lambda s: _on(s.safe_open), "дверца сейфа остаётся открытой"),
-        ("door_left_open", lambda s: _on(s.door_open), "дверь кассового помещения остаётся открытой"),
+        ("computer_left_unlocked", None, lambda s: _on(s.screen_work),
+         "экран ноутбука остаётся включённым с рабочим содержимым"),
+        ("key_left_in_safe_lock", "key_in_lock", lambda s: _on(s.key_in_lock),
+         "в замке сейфа остаётся предмет, похожий на ключ"),
+        ("safe_left_open", "safe_open", lambda s: _on(s.safe_open), "дверца сейфа остаётся открытой"),
+        ("door_left_open", "door_open", lambda s: _on(s.door_open), "дверь кассового помещения остаётся открытой"),
     ]
-    for type_id, cond, text in states:
+    for type_id, attr, cond, text in states:
+        if attr is not None and not _was_off_before(history, attr, t_leave):
+            continue
         if hit := _state_hit(window, cond):
             found.append((type_id, hit, text))
     return found
@@ -192,7 +204,7 @@ def rule_left_behind(inp: RuleInput) -> list[Candidate]:
         window = _empty_window(inp, ev)
         if not window:
             continue  # nobody left the room (e.g. tidying up next to the desk)
-        for type_id, hit, text in _left_behind_findings(window):
+        for type_id, hit, text in _left_behind_findings(window, inp.samples, ev.t):
             out.append(_cand(type_id, ev.t, window[-1].t, hit.t, LEFT_PREFIX[by_cashier] + text, [ev.t],
                              inp.duration))
     return out
@@ -202,13 +214,16 @@ def rule_left_behind(inp: RuleInput) -> list[Candidate]:
 
 def rule_open_too_long(inp: RuleInput) -> list[Candidate]:
     specs = [
-        ("safe_left_open", lambda s: _on(s.safe_open), SAFE_OPEN_MIN_SEC, "дверца сейфа остаётся открытой около {d} с"),
-        ("door_left_open", lambda s: _on(s.door_open), DOOR_OPEN_MIN_SEC,
+        ("safe_left_open", "safe_open", lambda s: _on(s.safe_open), SAFE_OPEN_MIN_SEC,
+         "дверца сейфа остаётся открытой около {d} с"),
+        ("door_left_open", "door_open", lambda s: _on(s.door_open), DOOR_OPEN_MIN_SEC,
          "дверь кассового помещения остаётся открытой около {d} с"),
     ]
     out = []
-    for type_id, cond, min_sec, text in specs:
+    for type_id, attr, cond, min_sec, text in specs:
         for a, b in _runs(inp.samples, cond, min_sec):
+            if not _was_off_before(inp.samples, attr, a):
+                continue
             peak = min(a + PEAK_AFTER_START_SEC, b)
             out.append(_cand(type_id, a, b, peak, text.format(d=round(b - a)), [b], inp.duration))
     return out
