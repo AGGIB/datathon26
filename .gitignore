@@ -1,0 +1,33 @@
+# data — never commit videos, frames or weights
+data/
+open/
+*.mov
+*.mp4
+*.avi
+weights/
+*.pt
+*.pth
+*.onnx
+*.safetensors
+var/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# node
+node_modules/
+frontend/dist/
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# os
+.DS_Store
