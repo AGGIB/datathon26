@@ -266,6 +266,112 @@ def test_invalid_intervals_remain_uncertain_even_if_rejection_is_enabled(changes
     assert report.retained_candidates[0] is original
 
 
+def test_production_missing_rule_attribute_retains_exact_originals_with_safe_warning(caplog):
+    from types import SimpleNamespace
+    from ml import vlm
+
+    entry = SimpleNamespace(id="fixture_action", status="verified", summary="PRIVATE_SYNTHETIC_SCENE")
+    original = candidate()
+    originals = [original, candidate(), original]
+    backend = FixtureBackend([])
+    try:
+        assert vlm.configure(backend=backend, catalog={"fixture_action": entry},
+                             frame_source=FixtureFrames(), timebase_verified=True)
+        retained = vlm.verify(originals, "synthetic.mp4", 1)
+        assert len(retained) == len(originals)
+        assert all(actual is expected for actual, expected in zip(retained, originals))
+        assert backend.requests == []
+        records = [record for record in caplog.records if record.name == "ml.vlm.runtime"]
+        assert len(records) == 1
+        assert records[0].levelname == "WARNING"
+        assert records[0].getMessage() == "VLM verification unavailable: AttributeError"
+        assert records[0].exc_info is None
+        assert "PRIVATE_SYNTHETIC_SCENE" not in caplog.text
+    finally:
+        vlm.configure(catalog={})
+
+
+@pytest.mark.parametrize("phase", ["construct", "adapter", "cleanup"])
+def test_production_boundary_exceptions_preserve_originals_with_class_only_warning(monkeypatch, caplog, phase):
+    from ml import vlm
+    from ml.vlm import owner_frames, runtime
+
+    original = candidate()
+    originals = [original, candidate(), original]
+    events = []
+    class FailedFrames:
+        def __init__(self):
+            events.append("construct")
+            if phase == "construct":
+                raise RuntimeError("PRIVATE_SYNTHETIC_SCENE")
+        def close(self):
+            events.append("close")
+            if phase == "cleanup":
+                raise RuntimeError("PRIVATE_SYNTHETIC_SCENE")
+    def adapter(*args, **kwargs):
+        from types import SimpleNamespace
+        events.append("adapter")
+        if phase == "adapter":
+            raise RuntimeError("PRIVATE_SYNTHETIC_SCENE")
+        return SimpleNamespace(retained_candidates=originals[:-1])
+    monkeypatch.setattr(owner_frames, "OwnerFrames", FailedFrames)
+    monkeypatch.setattr(runtime, "verify_pipeline_candidates", adapter)
+    try:
+        assert vlm.configure(backend=FixtureBackend([]), catalog={})
+        retained = vlm.verify(originals, "synthetic.mp4", 1)
+        assert len(retained) == len(originals)
+        assert all(actual is expected for actual, expected in zip(retained, originals))
+        assert all(actual.confidence == 0.8 for actual in retained)
+        assert events == (["construct"] if phase == "construct" else ["construct", "adapter", "close"])
+        records = [record for record in caplog.records if record.name == "ml.vlm.runtime"]
+        assert len(records) == 1
+        assert records[0].levelname == "WARNING"
+        assert records[0].getMessage() == "VLM verification unavailable: RuntimeError"
+        assert records[0].exc_info is None
+        assert "PRIVATE_SYNTHETIC_SCENE" not in caplog.text
+    finally:
+        vlm.configure(catalog={})
+
+
+@pytest.mark.parametrize("failure", [ImportError, ValueError, OSError, RuntimeError])
+@pytest.mark.parametrize("phase", ["load", "snapshot"])
+def test_catalogue_startup_failure_warns_without_claiming_ready_or_retrying(monkeypatch, caplog, phase, failure):
+    import sys
+    from types import SimpleNamespace
+    from ml import vlm
+    from ml.vlm import runtime
+
+    events = []
+    class Backend(FixtureBackend):
+        def validate(self, timeout_s):
+            events.append("validate")
+    def fail():
+        events.append(phase)
+        raise failure("PRIVATE_SYNTHETIC_SCENE")
+    class BrokenCatalog:
+        def keys(self):
+            return fail()
+    monkeypatch.setitem(sys.modules, "ml.kb", SimpleNamespace(catalog=fail))
+    backend = Backend([])
+    original = candidate()
+    try:
+        catalog = None if phase == "load" else BrokenCatalog()
+        assert vlm.configure(backend=backend, catalog=catalog) is False
+        assert runtime._configuration is None
+        for _ in range(2):
+            assert vlm.verify([original], "synthetic.mp4", 1)[0] is original
+        assert events == [phase]
+        assert backend.requests == []
+        records = [record for record in caplog.records if record.name == "ml.vlm.runtime"]
+        assert len(records) == 1
+        assert records[0].levelname == "WARNING"
+        assert records[0].getMessage() == f"VLM catalogue unavailable: {failure.__name__}"
+        assert records[0].exc_info is None
+        assert "PRIVATE_SYNTHETIC_SCENE" not in caplog.text
+    finally:
+        vlm.configure(catalog={})
+
+
 def test_production_startup_seam_preserves_original_frozen_candidates():
     from ml import vlm
 

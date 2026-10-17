@@ -318,7 +318,9 @@ class VLMTests(unittest.TestCase):
                 Qwen2_5_VLForConditionalGeneration=loader("load_qwen", Model()),
                 AutoModelForImageTextToText=loader("load_generic", Model()))}
         with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as directory:
-            root = Path(directory)
+            nested = Path(directory) / "nested"
+            nested.mkdir()
+            root = nested / ".."  # Lexical alias also exercises macOS /var vs /private/var.
             request = api.InferenceRequest("visible actions only", (api.Frame(0.5, root / "fixture.png", 0.5),),
                                            "candidate", "cv-1", ("r1",))
             structural_model_fixture(root)
