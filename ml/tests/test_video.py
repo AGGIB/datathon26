@@ -74,3 +74,24 @@ def test_frame_at_matches_sample_frames_timebase(synthetic_video):
 
     sampled = dict(sample_frames(synthetic_video, fps_out=2))
     assert np.array_equal(frame_at(synthetic_video, 1.5), sampled[1.5])
+
+
+def test_frames_at_unreachable_tail_gets_the_last_decoded_frame(synthetic_video, monkeypatch):
+    import ml.video as video
+
+    real = video.probe(synthetic_video)
+    overstated = video.VideoInfo(fps=real.fps, frame_count=real.frame_count + 5, width=real.width, height=real.height)
+    monkeypatch.setattr(video, "probe", lambda *a, **k: overstated)
+    got = video.frames_at(synthetic_video, [1.0, 3.4])
+    assert abs(int(got[3.4].mean()) - 29 * 8) < 12  # last real frame, not the 1.0 s one
+    assert abs(int(got[1.0].mean()) - 80) < 12
+
+
+def test_frames_at_only_unreachable_tail_requested(synthetic_video, monkeypatch):
+    import ml.video as video
+
+    real = video.probe(synthetic_video)
+    overstated = video.VideoInfo(fps=real.fps, frame_count=real.frame_count + 5, width=real.width, height=real.height)
+    monkeypatch.setattr(video, "probe", lambda *a, **k: overstated)
+    got = video.frames_at(synthetic_video, [3.4])
+    assert 3.4 in got and abs(int(got[3.4].mean()) - 29 * 8) < 12
