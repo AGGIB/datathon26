@@ -47,20 +47,26 @@ class Tolerances:
     min_empty_sec: float  # an empty room / exit must last clearly longer than any bridged dropout
 
 
-def _off_lattice(seconds: float, step: float) -> float:
-    """Move a limit half a sampling step past the lattice (n + 0.5 steps) so that frame-time jitter between
-    29.76 and 30 fps videos cannot decide whether n steps are within it."""
+def _half_step_above(seconds: float, step: float) -> float:
+    """n + 0.5 steps, the first such value >= seconds: frame-time jitter (29.76-30 fps sources) cannot decide
+    whether a gap of whole steps is within the limit."""
     return (math.floor(seconds / step + 1e-6) + 0.5) * step
+
+
+def _half_step_below(seconds: float, step: float) -> float:
+    return (math.ceil(seconds / step - 1e-6) - 0.5) * step
 
 
 def tolerances(sample_fps: float) -> Tolerances:
     step = 1.0 / sample_fps
-    tracker_gap = _off_lattice(max(TRACKER_GAP_SEC, TRACKER_GAP_SAMPLES * step), step)
+    # The tracker may bridge ~TRACKER_GAP_SAMPLES missed samples, rounded down to a half step: bridging more lets a
+    # track walk from a leaving visitor through the people behind the glass to the next visitor.
+    tracker_gap = max(_half_step_below(TRACKER_GAP_SEC, step), TRACKER_GAP_SAMPLES * step)
     longer = tracker_gap + step
     return Tolerances(
         tracker_gap,
-        _off_lattice(max(STITCH_GAP_SEC, longer), step),
-        _off_lattice(max(MIN_EMPTY_SEC, longer), step),
+        _half_step_above(max(STITCH_GAP_SEC, longer), step),
+        _half_step_above(max(MIN_EMPTY_SEC, longer), step),
     )
 
 

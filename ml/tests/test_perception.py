@@ -84,7 +84,7 @@ def test_missed_detections_at_any_sampling_rate_are_not_an_empty_room(fps, misse
 
 def test_perception_tolerances_follow_the_sampling_interval():
     slow, fast = tolerances(1.25), tolerances(4.0)
-    assert slow.tracker_gap_sec >= 2.0 and fast.tracker_gap_sec >= 1.0
+    assert slow.tracker_gap_sec >= 2.5 / 1.25 and fast.tracker_gap_sec >= 2.5 / 4.0
     assert slow.min_empty_sec > slow.tracker_gap_sec + 1 / 1.25 - 1e-9
     assert fast.min_empty_sec >= 2.0
     assert slow.stitch_gap_sec > slow.tracker_gap_sec
