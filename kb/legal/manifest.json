@@ -85,7 +85,7 @@
       ],
       "snapshot_format": "official_article_text_with_preserved_tables",
       "anchor_verification": "historical_html_extraction_not_live_dom_validation",
-      "number_date": "Постановление Правления Национального Банка Республики Казахстан от 29.11.2019 № 231 (рег. № 19680)"
+      "number_date": "Постановление Правления НБРК от 29.11.2019 № 231 (Правила осуществления кассовых операций и инкассации)"
     },
     {
       "id": "NBRK-14",
@@ -133,7 +133,7 @@
       ],
       "snapshot_format": "official_article_text_with_preserved_tables",
       "anchor_verification": "historical_html_extraction_not_live_dom_validation",
-      "number_date": "Постановление Правления Национального Банка Республики Казахстан от 24.02.2020 № 14 (рег. № 20075)"
+      "number_date": "Постановление Правления НБРК от 24.02.2020 № 14 (Правила организации охраны и устройства помещений банков)"
     },
     {
       "id": "KZ-SECURITY-LAW",
@@ -247,7 +247,7 @@
       ],
       "snapshot_format": "official_article_text_with_preserved_tables",
       "anchor_verification": "historical_html_extraction_not_live_dom_validation",
-      "number_date": "Закон Республики Казахстан от 28.08.2009 № 191-IV"
+      "number_date": "Закон Республики Казахстан от 28.08.2009 № 191-IV (ПОД/ФТ)"
     },
     {
       "id": "ARDFM-53",
