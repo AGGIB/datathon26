@@ -1,6 +1,6 @@
 """Dev tool: compare perception events with expectations derived from kb/annotations.csv.
 
-    python -m ml.tools.eval_events [--fps 6] [--only X-18,X-19] [--build]
+    python -m ml.tools.eval_events [--cache-fps 6] [--fps 6] [--only X-18,X-19] [--build]
 
 Runs the production post-detection stage (ml.perception.analyze_frames) on cached detections
 (ml/tools/det_cache.py; --build runs the detector for videos without a cache) and prints:
@@ -186,8 +186,8 @@ def count_room_events(video: str, events: Iterable[Event]) -> RoomCount:
     return RoomCount(video, len(detected), matched, len(detected) - matched, len(truth) - len(used))
 
 
-def cached_source(fps: float, build: bool) -> EventSource:
-    every = max(1, round(CACHE_FPS / fps))
+def cached_source(fps: float, build: bool, cache_fps: float = CACHE_FPS) -> EventSource:
+    every = max(1, round(cache_fps / fps))
     videos = {normalize_video_name(p.name): p for p in det_cache.list_videos()}
 
     def factory():
@@ -197,12 +197,12 @@ def cached_source(fps: float, build: bool) -> EventSource:
 
     @functools.cache
     def source(name: str) -> Sequence[Event]:
-        cached = det_cache.load_or_build(videos[name], CACHE_FPS, factory if build else None)
+        cached = det_cache.load_or_build(videos[name], cache_fps, factory if build else None)
         frames = [
             FrameObjects(f.t, f.detections, tuple(color_signature(c) if c is not None else () for c in f.crops))
             for f in cached.frames[::every]
         ]
-        return analyze_frames(frames, cached.info.duration, CACHE_FPS / every).events
+        return analyze_frames(frames, cached.info.duration, cache_fps / every).events
 
     return source
 
@@ -233,12 +233,13 @@ def print_room_table(counts: Sequence[RoomCount]) -> None:
 def main() -> None:
     logging.basicConfig(level=logging.WARNING)
     ap = argparse.ArgumentParser()
-    ap.add_argument("--fps", type=float, default=CACHE_FPS, help="analysis rate; the 6 fps cache is subsampled")
+    ap.add_argument("--cache-fps", type=float, default=CACHE_FPS, help="sampling rate of the detection cache")
+    ap.add_argument("--fps", type=float, default=None, help="analysis rate (subsamples the cache; default: cache)")
     ap.add_argument("--only", default="")
     ap.add_argument("--build", action="store_true", help="run the detector for videos without a cache")
     args = ap.parse_args()
     wanted = {v.strip().upper() for v in args.only.split(",") if v.strip()}
-    source = cached_source(args.fps, args.build)
+    source = cached_source(args.fps or args.cache_fps, args.build, args.cache_fps)
 
     expectations = [e for e in ROLE_EXPECTATIONS if not wanted or e.video in wanted]
     print_role_table(judge_all(source, expectations))
