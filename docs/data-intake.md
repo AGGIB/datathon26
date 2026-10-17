@@ -7,9 +7,9 @@
 ## Запуск по README
 
 ```sh
-python3 -m venv .venv-audit
-.venv-audit/bin/python -m pip install -r tools/requirements-audit.txt
-.venv-audit/bin/python -B tools/audit_dataset.py
+python3 -m venv .venv
+.venv/bin/python -m pip install -r tools/requirements-audit.txt
+.venv/bin/python -B tools/audit_dataset.py
 ```
 
 По умолчанию используются `data/open/open_labels.xlsx` и `data/open/videos/`, как в [README](../README.md). Ожидаемое число записей по умолчанию — 42; для другого набора задаётся `--expected-count`. Настраиваются `--labels`, `--videos` и `--output` (по умолчанию `data/audit/intake.json`). Аудит использует активный лист, как `ml.labels.load_labels`; `--sheet` может только явно подтвердить его имя.
@@ -25,7 +25,7 @@ python3 -m venv .venv-audit
 Пример полного локального запуска:
 
 ```sh
-.venv-audit/bin/python -B tools/audit_dataset.py \
+.venv/bin/python -B tools/audit_dataset.py \
   --manifest /local/package/manifest.json \
   --taxonomy /local/package/types.docx \
   --report-data /local/package/report_data.json \
