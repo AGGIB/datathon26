@@ -1,12 +1,15 @@
 """API contract tests (К1): auth, upload validation, job lifecycle, persistence."""
 
 import io
+import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.config import Settings
 from backend.app.main import create_app
+from backend.app.runner import JobRunner
 from backend.app.schemas import AnalysisResult
 from backend.app.store import JobStore
 
@@ -165,6 +168,7 @@ def test_pipeline_hard_timeout_marks_job_failed(settings):
         pipeline="mock",
         mock_delay_sec=0.0,
         job_timeout_sec=0.1,  # 100ms hard watchdog
+        min_budget_sec=0.01,
     )
     app = create_app(short_budget, pipeline_fn=hanging_pipeline)
     with TestClient(app) as c:
@@ -361,7 +365,7 @@ def test_timed_out_pipeline_holds_slot_until_thread_exits(tmp_path):
         return {"verdict": "no_violation", "violations": []}
 
     # runner with workers=1, time_budget_sec=0.15s, soft_budget_sec=0.05s
-    runner = JobRunner(store=store, pipeline=slow_hanging_pipeline, workers=1, time_budget_sec=0.15, soft_budget_sec=0.05)
+    runner = JobRunner(store=store, pipeline=slow_hanging_pipeline, workers=1, time_budget_sec=0.15, soft_budget_sec=0.05, min_budget_sec=0.01)
 
     v1 = tmp_path / "v1.mov"
     v1.write_bytes(b"dummy")
@@ -459,6 +463,83 @@ def test_health_reports_lost_slots_on_thread_timeout(tmp_path, caplog):
         assert c.app.state.runner.lost_slots == 0
         h2 = c.get("/health").json()
         assert h2.get("lost_slots") == 0
+
+
+def test_short_hard_timeout_rejected_by_default_min_budget(tmp_path):
+    store = JobStore(tmp_path / "jobs")
+    pipeline_called = []
+
+    def dummy_pipeline(video_path, on_progress=None, time_budget_sec=None):
+        pipeline_called.append(time_budget_sec)
+        return {"verdict": "no_violation", "violations": []}
+
+    # hard_timeout = 10s with default min_budget_sec = 20s
+    runner = JobRunner(store, dummy_pipeline, workers=1, time_budget_sec=10.0)
+    video = tmp_path / "v_short.mov"
+    video.write_bytes(b"dummy")
+    job_id = "1122334455cc"
+    store.create(job_id, video, "v_short.mov")
+    runner.submit(job_id, video)
+    runner.wait(job_id, timeout=2.0)
+
+    res = store.get(job_id)
+    assert res is not None
+    assert res["status"] == "failed"
+    assert "Недостаточно времени для обработки видео" in res["error"]
+    assert len(pipeline_called) == 0
+    runner.shutdown()
+
+
+def test_tiny_soft_budget_rejected_by_default_min_budget(tmp_path):
+    store = JobStore(tmp_path / "jobs")
+    pipeline_called = []
+
+    def dummy_pipeline(video_path, on_progress=None, time_budget_sec=None):
+        pipeline_called.append(time_budget_sec)
+        return {"verdict": "no_violation", "violations": []}
+
+    # hard_timeout = 30s, but soft_budget_sec = 0.001s (< default min_budget_sec = 20s)
+    runner = JobRunner(store, dummy_pipeline, workers=1, time_budget_sec=30.0, soft_budget_sec=0.001)
+    video = tmp_path / "v_tiny.mov"
+    video.write_bytes(b"dummy")
+    job_id = "1122334455dd"
+    store.create(job_id, video, "v_tiny.mov")
+    runner.submit(job_id, video)
+    runner.wait(job_id, timeout=2.0)
+
+    res = store.get(job_id)
+    assert res is not None
+    assert res["status"] == "failed"
+    assert "Недостаточно времени для обработки видео" in res["error"]
+    assert len(pipeline_called) == 0
+    runner.shutdown()
+
+
+def test_watchdog_boundary_race_does_not_leak_lost_slots(tmp_path):
+    store = JobStore(tmp_path / "jobs")
+    finish_ev = threading.Event()
+
+    def quick_pipeline(video_path, on_progress=None, time_budget_sec=None):
+        # finishes right around the timeout boundary
+        finish_ev.wait(timeout=0.06)
+        return {"verdict": "no_violation", "violations": []}
+
+    runner = JobRunner(store, quick_pipeline, workers=1, time_budget_sec=0.08, soft_budget_sec=0.05, min_budget_sec=0.01)
+    video = tmp_path / "v_race.mov"
+    video.write_bytes(b"dummy")
+    job_id = "1122334455ee"
+    store.create(job_id, video, "v_race.mov")
+    runner.submit(job_id, video)
+    runner.wait(job_id, timeout=2.0)
+
+    finish_ev.set()
+    time.sleep(0.05)
+    # Regardless of whether it timed out or succeeded, lost_slots must be 0 once thread exits
+    assert runner.lost_slots == 0
+    assert runner._sem.acquire(blocking=False) is True
+    runner._sem.release()
+    runner.shutdown()
+
 
 
 

@@ -41,10 +41,7 @@ class JobRunner:
         self._pipeline = pipeline
         self._hard_timeout = float(time_budget_sec)
         self._soft_budget = float(soft_budget_sec) if soft_budget_sec is not None else min(200.0, self._hard_timeout * 0.75)
-        if self._hard_timeout < min_budget_sec:
-            self._min_budget = min(0.01, self._hard_timeout * 0.1)
-        else:
-            self._min_budget = float(min_budget_sec)
+        self._min_budget = float(min_budget_sec)
         self._workers = workers
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="job")
         self._futures: dict[str, Future] = {}
@@ -158,16 +155,12 @@ class JobRunner:
             )
             return
 
-        # Dual budgets: soft budget passed to pipeline, hard timeout enforced by watchdog
-        grace_sec = min(10.0, self._hard_timeout * 0.1) if self._hard_timeout < 60 else max(10.0, self._hard_timeout - self._soft_budget)
-        available = max(0.001, hard_remaining - grace_sec)
-
-        if available < self._min_budget:
+        if hard_remaining < self._min_budget:
             self._sem.release()
             log.warning(
-                "job %s: available budget (%.1fs) below minimum budget %.1fs",
+                "job %s: remaining time after acquire (%.1fs) below minimum budget %.1fs",
                 job_id,
-                available,
+                hard_remaining,
                 self._min_budget,
             )
             self._store.update(
@@ -178,19 +171,38 @@ class JobRunner:
             )
             return
 
+        # Dual budgets: soft budget passed to pipeline, hard timeout enforced by watchdog
+        grace_sec = min(10.0, self._hard_timeout * 0.1) if self._hard_timeout < 60 else max(10.0, self._hard_timeout - self._soft_budget)
+        available = max(0.0, hard_remaining - grace_sec)
         pipeline_budget = min(self._soft_budget, available)
+
+        if pipeline_budget < self._min_budget:
+            self._sem.release()
+            log.warning(
+                "job %s: pipeline budget (%.3fs) below minimum budget %.1fs",
+                job_id,
+                pipeline_budget,
+                self._min_budget,
+            )
+            self._store.update(
+                job_id,
+                status="failed",
+                stage="failed",
+                error="Недостаточно времени для обработки видео",
+            )
+            return
 
         pipeline_result: list[dict[str, Any]] = []
         pipeline_exc: list[Exception] = []
-        slot_released = threading.Event()
-        is_lost_slot = [False]
+        slot_state = {"released": False, "timed_out": False}
 
         def release_slot() -> None:
-            if not slot_released.is_set():
-                slot_released.set()
-                with self._lock:
-                    if is_lost_slot[0]:
-                        self._lost_slots = max(0, self._lost_slots - 1)
+            with self._lock:
+                if slot_state["released"]:
+                    return
+                slot_state["released"] = True
+                if slot_state["timed_out"]:
+                    self._lost_slots = max(0, self._lost_slots - 1)
                 self._sem.release()
 
         def target() -> None:
@@ -213,10 +225,15 @@ class JobRunner:
             thread_started = True
             thread.join(timeout=hard_remaining)
 
-            if thread.is_alive():
-                with self._lock:
-                    is_lost_slot[0] = True
+            with self._lock:
+                if not slot_state["released"]:
+                    slot_state["timed_out"] = True
                     self._lost_slots += 1
+                    timed_out = True
+                else:
+                    timed_out = False
+
+            if timed_out:
                 log.error(
                     "job %s: pipeline exceeded hard timeout %.1fs (allocated %.1fs); compute slot retained by lingering thread",
                     job_id,
