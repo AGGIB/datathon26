@@ -137,7 +137,7 @@ def test_low_confidence_or_uncertain_proposals_never_spend_verification_call(inf
 @pytest.mark.parametrize("name,phase,column,replacement", [
     (COAT, 0, 2, "visitor"), (COAT, 1, 1, "b"), (COAT, 2, 3, "y"),
     (COAT, 1, 4, "bag"), (COAT, 2, 4, "papers"), (COAT, 2, 5, "held"),
-    (COAT, 1, 6, "visitor_side"), (COAT, 0, 7, "unknown"),
+    (COAT, 1, 6, "visitor_side"), (COAT, 0, 1, "unknown"),
     (FOOD, 1, 4, "other"), (FOOD, 1, 5, "held"), (FOOD, 1, 6, "hand"),
     (KEY, 1, 4, "highlight_handle"), (KEY, 1, 6, "unidentified_lock"),
     (KEY, 0, 7, "none"), (KEY, 1, 7, "unknown"),
@@ -164,6 +164,81 @@ def test_one_verifier_call_checks_two_episodes_and_does_not_transfer_support(inf
     assert finding["type_id"] == _ACTIONS[FOOD].type_id
     assert [item["accepted"] for item in backend.last_verifications] == [False, True]
     assert len(inner.requests) == 2
+
+
+@pytest.mark.parametrize("name", [COAT, FOOD])
+def test_unknown_unused_direction_does_not_negate_required_visible_facts(inference_request, name):
+    rows = facts(name)
+    for row in rows:
+        row[7] = "unknown"
+    backend = VerifiedActionBackend(Scripted([action(name)], primitive_payload(rows)), catalog=catalog())
+    assert len(json.loads(backend.infer(inference_request, 2))["findings"]) == 1
+
+
+def test_return_unused_before_direction_does_not_negate_known_processing_and_handover(inference_request):
+    rows = facts(RETURN)
+    rows[0][7] = "unknown"
+    backend = VerifiedActionBackend(Scripted([action(RETURN)], primitive_payload(rows)), catalog=catalog())
+    assert len(json.loads(backend.infer(inference_request, 2))["findings"]) == 1
+
+
+def test_food_peak_is_sufficient_when_adjacent_role_object_and_context_are_unknown(inference_request):
+    rows = [[1, *(["unknown"] * 7)], row(2, "food", "biting", "mouth", "unknown"),
+            [3, "not_visible", "not_visible", "unknown", "unknown", "unknown", "unknown", "unknown"]]
+    backend = VerifiedActionBackend(Scripted([action(FOOD)], primitive_payload(rows)), catalog=catalog())
+    [finding] = json.loads(backend.infer(inference_request, 2))["findings"]
+    assert finding["type_id"] == _ACTIONS[FOOD].type_id
+
+
+@pytest.mark.parametrize("phase,column,value", [
+    (0, 1, "b"), (2, 1, "c"), (0, 2, "visitor"), (2, 2, "other"),
+    (0, 3, "y"), (2, 3, "z"), (0, 4, "papers"), (2, 4, "food"),
+])
+def test_food_known_adjacent_actor_or_object_contradiction_still_rejects(inference_request, phase, column, value):
+    rows = facts(FOOD)
+    rows[phase][column] = value
+    backend = VerifiedActionBackend(Scripted([action(FOOD)], primitive_payload(rows)), catalog=catalog())
+    assert json.loads(backend.infer(inference_request, 2)) == {"findings": []}
+
+
+@pytest.mark.parametrize("column", [1, 2, 3, 4, 5, 6])
+def test_food_unknown_required_peak_fact_still_rejects(inference_request, column):
+    rows = facts(FOOD)
+    rows[1][column] = "unknown"
+    backend = VerifiedActionBackend(Scripted([action(FOOD)], primitive_payload(rows)), catalog=catalog())
+    assert json.loads(backend.infer(inference_request, 2)) == {"findings": []}
+
+
+def test_coat_can_persist_after_cashier_is_no_longer_visible(inference_request):
+    rows = facts(COAT)
+    rows[2][1:3] = ["not_visible", "not_visible"]
+    rows[2][7] = "unknown"
+    backend = VerifiedActionBackend(Scripted([action(COAT)], primitive_payload(rows)), catalog=catalog())
+    assert len(json.loads(backend.infer(inference_request, 2))["findings"]) == 1
+
+
+@pytest.mark.parametrize("phase,column,value", [
+    (0, 1, "unknown"), (1, 2, "unknown"), (2, 1, "unknown"),
+    (2, 2, "visitor"), (2, 1, "b"), (2, 3, "unknown"),
+    (2, 4, "unknown"), (2, 5, "unknown"), (2, 6, "unknown"),
+])
+def test_coat_still_requires_known_placement_persistence_and_no_actor_substitution(inference_request, phase, column, value):
+    rows = facts(COAT)
+    rows[phase][column] = value
+    backend = VerifiedActionBackend(Scripted([action(COAT)], primitive_payload(rows)), catalog=catalog())
+    assert json.loads(backend.infer(inference_request, 2)) == {"findings": []}
+
+
+@pytest.mark.parametrize("name", [KEY, STAMP])
+@pytest.mark.parametrize("phase,column,value", [
+    (0, 7, "unknown"), (1, 7, "unknown"), (2, 7, "unknown"),
+    (0, 3, "unknown"), (1, 4, "unknown"), (2, 5, "unknown"), (2, 6, "unknown"),
+])
+def test_departure_unknowns_never_replace_required_observed_departure_and_persistence(inference_request, name, phase, column, value):
+    rows = facts(name)
+    rows[phase][column] = value
+    backend = VerifiedActionBackend(Scripted([action(name)], primitive_payload(rows)), catalog=catalog())
+    assert json.loads(backend.infer(inference_request, 2)) == {"findings": []}
 
 
 @pytest.mark.parametrize("mutation", ["missing", "duplicate", "extra", "wrong_id", "bool_id", "wrong_phase", "bool_index",
@@ -318,14 +393,46 @@ def test_owner_allowlist_is_respected_before_any_second_call(inference_request):
 
 
 def test_schema_has_bounded_uniform_eight_field_rows_and_no_proposal_conditioning():
-    schema = _schema(2, 12)
+    schema = _schema([{"id": 1, "anchors": [2, 7, 12]}, {"id": 2, "anchors": [4, 9, 9]}], 12)
     episodes = schema["properties"]["episodes"]
-    rows = episodes["items"]["properties"]["rows"]
-    row_schema = rows["items"]
     assert episodes["minItems"] == episodes["maxItems"] == 2
-    assert rows["minItems"] == rows["maxItems"] == 3
-    assert row_schema["minItems"] == row_schema["maxItems"] == len(row_schema["prefixItems"]) == 8
-    assert row_schema["items"] is False
-    assert all("unknown" in field["enum"] for field in row_schema["prefixItems"][1:])
+    assert episodes["items"] is False and len(episodes["prefixItems"]) == 2
+    choices = []
+    for identity, expected in ((1, [2, 7, 12]), (2, [4, 9, 9])):
+        episode = episodes["prefixItems"][identity - 1]
+        assert episode["properties"]["id"] == {"type": "integer", "const": identity}
+        rows = episode["properties"]["rows"]
+        assert rows["minItems"] == rows["maxItems"] == len(rows["prefixItems"]) == 3
+        assert rows["items"] is False
+        for row_schema, anchor in zip(rows["prefixItems"], expected, strict=True):
+            assert row_schema["minItems"] == row_schema["maxItems"] == len(row_schema["prefixItems"]) == 8
+            assert row_schema["items"] is False
+            assert row_schema["prefixItems"][0] == {"type": "integer", "const": anchor}
+            choices.append(row_schema["prefixItems"][1:])
+            assert all("unknown" in field["enum"] for field in choices[-1])
+    assert all(choice == choices[0] for choice in choices)
     with pytest.raises(InvalidResponse):
         _primitives('{"episodes":[],"episodes":[]}', [])
+
+
+def test_late_proposal_anchors_are_constrained_in_each_generated_phase(inference_request):
+    frames = tuple(Frame(float(index), inference_request.frames[0].path, float(index)) for index in range(1, 13))
+    inference_request = replace(inference_request, frames=frames)
+    selected = action(start_frame=8, peak_frame=11, end_frame=12)
+    rows = facts()
+    for row, anchor in zip(rows, (8, 11, 12), strict=True):
+        row[0] = anchor
+    inner = Scripted([selected], primitive_payload(rows))
+    backend = VerifiedActionBackend(inner, catalog=catalog())
+    [finding] = json.loads(backend.infer(inference_request, 2))["findings"]
+    assert finding["t_peak"] == 11.
+    schema = inner.requests[1][0].response_schema
+    row_schemas = schema["properties"]["episodes"]["prefixItems"][0]["properties"]["rows"]["prefixItems"]
+    assert [item["prefixItems"][0]["const"] for item in row_schemas] == [8, 11, 12]
+    with pytest.raises(InvalidResponse, match="primitive_values"):
+        _primitives(primitive_payload(facts()), [{"id": 1, "anchors": [8, 11, 12]}])
+
+
+def test_schema_never_treats_boolean_episode_id_as_integer_anchor_identity():
+    with pytest.raises(ValueError, match="primitive_schema_anchors"):
+        _schema([{"id": True, "anchors": [1, 2, 3]}], 12)

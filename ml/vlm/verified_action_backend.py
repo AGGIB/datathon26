@@ -16,8 +16,8 @@ from .discovery import BudgetExhausted, DiscoveryBudget
 from .preflight import ModelUnavailable
 from .validation import InvalidResponse, number, strict_json
 
-VERIFICATION_POLICY = "blind_episode_primitives_v1"
-DECODER_POLICY = "physical_action_search_v4_blind_episode_primitives_v1"
+VERIFICATION_POLICY = "blind_episode_primitives_v2"
+DECODER_POLICY = "physical_action_search_v4_blind_episode_primitives_v2"
 MIN_PROPOSAL_CONFIDENCE = .7
 _ACTORS = ("a", "b", "c", "not_visible", "unknown")
 _ROLES = ("cashier", "visitor", "other", "not_visible", "unknown")
@@ -58,17 +58,27 @@ _INSTRUCTION = (
 )
 
 
-def _schema(count, frame_count):
+def _schema(episodes, frame_count):
     # Every episode gets the SAME balanced enum sets. No action-conditioned choices.
-    row = {"type": "array", "minItems": 8, "maxItems": 8, "items": False,
-           "prefixItems": [{"type": "integer", "enum": list(range(1, frame_count + 1))},
-                           *({"type": "string", "enum": list(values)} for values in _ENUMS)]}
-    episode = {"type": "object", "additionalProperties": False,
-        "properties": {"id": {"type": "integer", "enum": list(range(1, count + 1))},
-            "rows": {"type": "array", "minItems": 3, "maxItems": 3, "items": row}},
-        "required": ["id", "rows"]}
+    count = len(episodes)
+    if (not 1 <= count <= 2 or type(frame_count) is not int or not 1 <= frame_count <= 12
+            or any(type(episode["id"]) is not int or episode["id"] != index or len(episode["anchors"]) != 3
+                or any(type(anchor) is not int or not 1 <= anchor <= frame_count for anchor in episode["anchors"])
+                for index, episode in enumerate(episodes, 1))):
+        raise ValueError("primitive_schema_anchors")
+    schemas = []
+    for episode in episodes:
+        rows = [{"type": "array", "minItems": 8, "maxItems": 8, "items": False,
+            "prefixItems": [{"type": "integer", "const": anchor},
+                *({"type": "string", "enum": list(values)} for values in _ENUMS)]}
+            for anchor in episode["anchors"]]
+        schemas.append({"type": "object", "additionalProperties": False,
+            "properties": {"id": {"type": "integer", "const": episode["id"]},
+                "rows": {"type": "array", "minItems": 3, "maxItems": 3, "prefixItems": rows, "items": False}},
+            "required": ["id", "rows"]})
     return {"type": "object", "additionalProperties": False,
-        "properties": {"episodes": {"type": "array", "minItems": count, "maxItems": count, "items": episode}},
+        "properties": {"episodes": {"type": "array", "minItems": count, "maxItems": count,
+                                    "prefixItems": schemas, "items": False}},
         "required": ["episodes"]}
 
 
@@ -117,17 +127,38 @@ def _departure(rows, kinds, state, place):
         and _same_object(rows, kinds) and all(row[5] == state and row[6] == place for row in rows))
 
 
+def _consumption(rows):
+    """A visible bite/drink is a peak fact; adjacent unknowns cannot negate it.
+
+    Known adjacent role or identity/object contradictions still reject. This
+    does not let a standing cup or face touch replace actual consumption.
+    """
+    peak = rows[1]
+    if (not _cashier([peak]) or not _same_object([peak], {"food", "cup"}) or peak[6] != "mouth"
+            or (peak[4], peak[5]) not in (("food", "biting"), ("cup", "drinking"))):
+        return False
+    for row in (rows[0], rows[2]):
+        if row[2] in ("visitor", "other"):
+            return False
+        if row[1] in ("a", "b", "c") and row[1] != peak[1]:
+            return False
+        if row[3] in ("x", "y", "z") and row[3] != peak[3]:
+            return False
+        if row[4] != "unknown" and row[4] != peak[4]:
+            return False
+    return True
+
+
 def _supports(action, rows):
     before, peak, after = rows
-    if any("unknown" in row[1:] for row in rows):
-        return False
     if action == "cashier_places_removed_outerwear_on_cashdesk":
-        return (_cashier(rows) and _same_object(rows, {"outerwear"})
+        post_actor = (after[1:3] == ["not_visible", "not_visible"]
+                      or (after[1:3] == peak[1:3]))
+        return (_cashier([before, peak]) and post_actor and _same_object(rows, {"outerwear"})
             and before[5:7] == ["held", "hand"] and peak[5] in ("placing", "resting")
             and peak[6] == "own_workdesk" and after[5:7] == ["resting", "own_workdesk"])
     if action == "food_or_drink_actually_consumed":
-        return (_cashier(rows) and _same_object(rows, {"food", "cup"}) and peak[6] == "mouth"
-            and (peak[4], peak[5]) in (("food", "biting"), ("cup", "drinking")))
+        return _consumption(rows)
     if action == "key_remains_in_safe_lock_after_departure":
         return _departure(rows, {"key"}, "inserted", "identified_safe_lock")
     if action == "stamp_or_book_remains_after_departure":
@@ -249,7 +280,7 @@ class VerifiedActionBackend:
             "enums": [list(values) for values in _ENUMS], "episodes": episodes,
             "frames_in_supplied_order": [{"frame": index, "timestamp_s": frame.timestamp_s}
                 for index, frame in enumerate(request.frames, 1)]}, separators=(",", ":"))
-        translated = InferenceRequest(prompt, request.frames, "checklist", None, (), _schema(len(proposals), len(request.frames)))
+        translated = InferenceRequest(prompt, request.frames, "checklist", None, (), _schema(episodes, len(request.frames)))
         verified_raw = self._proxy.infer(translated, timeout_s=budget.remaining())
         if budget.remaining() <= 0:
             raise TimeoutError("verification_timeout")
