@@ -7,6 +7,37 @@ from pathlib import Path
 PIPELINES = frozenset({"mock", "real"})
 
 
+def _strip_inline_comment(line: str) -> str:
+    in_quote: str | None = None
+    for i, ch in enumerate(line):
+        if ch in ('"', "'"):
+            if in_quote == ch:
+                in_quote = None
+            elif in_quote is None:
+                in_quote = ch
+        elif ch == "#" and in_quote is None:
+            return line[:i].strip()
+    return line.strip()
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        return {}
+    res: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = _strip_inline_comment(line)
+        if not line:
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" in line:
+            k, v = line.split("=", 1)
+            k, v = k.strip(), v.strip().strip("'\"")
+            if k:
+                res[k] = v
+    return res
+
+
 @dataclass(frozen=True)
 class Settings:
     api_keys: frozenset[str]
@@ -15,8 +46,9 @@ class Settings:
     workers: int = 2
     pipeline: str = "mock"
     mock_delay_sec: float = 2.0
-    # Jury hard limit is 300 s per video; leave margin for upload and queueing.
-    job_timeout_sec: float = 240.0
+    # Soft pipeline budget (K2 returns best effort result) and hard watchdog limit
+    pipeline_timeout_sec: float = 200.0
+    job_timeout_sec: float = 270.0
     frontend_dist: Path | None = None
 
     def __post_init__(self) -> None:
@@ -28,18 +60,41 @@ class Settings:
             raise ValueError("WORKERS must be >= 1")
 
     @classmethod
-    def from_env(cls) -> "Settings":
-        keys = frozenset(k.strip() for k in os.environ.get("API_KEYS", "").split(",") if k.strip())
+    def from_env(cls, env_path: Path | None = None) -> "Settings":
+        file_vars: dict[str, str] = {}
+        candidates = [env_path] if env_path is not None else [Path(".env"), Path(__file__).resolve().parent.parent.parent / ".env"]
+        for candidate in candidates:
+            if candidate and candidate.is_file():
+                file_vars = _parse_env_file(candidate)
+                break
+
+        def get_val(key: str, default: str | None = None) -> str | None:
+            # os.environ has precedence, followed by .env file, then default
+            if key in os.environ:
+                return os.environ[key]
+            if key in file_vars:
+                return file_vars[key]
+            return default
+
+        raw_keys = get_val("API_KEYS", "") or ""
+        keys = frozenset(k.strip() for k in raw_keys.split(",") if k.strip())
         if not keys:
             raise RuntimeError("API_KEYS is not set (comma-separated list, e.g. JURY_KEY,UI_KEY)")
-        dist = os.environ.get("FRONTEND_DIST")
+
+        dist = get_val("FRONTEND_DIST")
+        if not dist:
+            default_dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+            if default_dist.is_dir():
+                dist = str(default_dist)
+
         return cls(
             api_keys=keys,
-            data_dir=Path(os.environ.get("DATA_DIR", "./var")).resolve(),
-            max_upload_mb=int(os.environ.get("MAX_UPLOAD_MB", "200")),
-            workers=int(os.environ.get("WORKERS", "2")),
-            pipeline=os.environ.get("PIPELINE", "mock"),
-            mock_delay_sec=float(os.environ.get("MOCK_DELAY_SEC", "2.0")),
-            job_timeout_sec=float(os.environ.get("JOB_TIMEOUT_SEC", "240")),
+            data_dir=Path(get_val("DATA_DIR", "./var")).resolve(),
+            max_upload_mb=int(get_val("MAX_UPLOAD_MB", "200")),
+            workers=int(get_val("WORKERS", "2")),
+            pipeline=get_val("PIPELINE", "mock"),
+            mock_delay_sec=float(get_val("MOCK_DELAY_SEC", "2.0")),
+            pipeline_timeout_sec=float(get_val("PIPELINE_TIMEOUT_SEC", "200")),
+            job_timeout_sec=float(get_val("JOB_TIMEOUT_SEC", "270")),
             frontend_dist=Path(dist).resolve() if dist else None,
         )

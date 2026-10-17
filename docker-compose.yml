@@ -1,15 +1,20 @@
 services:
   api:
+    image: datathon26-api:latest
     build:
       context: .
       dockerfile: backend/Dockerfile
     env_file: .env
     environment:
       DATA_DIR: /data
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      FRONTEND_DIST: /app/frontend/dist
     ports:
       - "8000:8000"
     volumes:
       - jobs:/data
+      - ./frontend/dist:/app/frontend/dist:ro
     restart: unless-stopped
 
 volumes:
