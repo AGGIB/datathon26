@@ -511,3 +511,61 @@ def test_pipeline_preload_verification_flag_requires_explicit_discovery_opt_in(
         assert not seen
     else:
         assert seen==[{'model_path':'scripted-model','python_executable':'scripted-python','verify_actions':expected}]
+
+
+@pytest.mark.parametrize('proposal_action,object_kind,expected_calls,expected_addition',[
+    ('visitor_or_courier_bag_handled','bag',1,False),
+    ('cashier_places_removed_outerwear_on_cashdesk','outerwear',2,True),
+    ('cashier_places_removed_outerwear_on_cashdesk','bag',2,False),
+])
+def test_actual_owned_v5_verifier_and_shared_budget_preserve_cv_without_model_or_decode(
+        monkeypatch,proposal_action,object_kind,expected_calls,expected_addition):
+    from ml import kb
+    from ml.vlm import mlx_backend
+    from ml.vlm.verified_action_backend import VerifiedActionBackend
+    from ml.vlm.discovery_policy import plan_windows
+
+    actions={'actions':[{'action':proposal_action,'insufficient_evidence':False,'confidence':.95,
+                         'start_frame':10,'peak_frame':11,'end_frame':12}]}
+    facts={'episodes':[{'id':1,'rows':[
+        [10,'a','cashier','x',object_kind,'held','hand','none'],
+        [11,'a','cashier','x',object_kind,'placing','own_workdesk','none'],
+        [12,'a','cashier','x',object_kind,'resting','own_workdesk','none']]}]}
+    class Raw(OwnedScriptedActions):
+        def __init__(self):
+            super().__init__('')
+            self.replies=[json.dumps(actions),json.dumps(facts)]
+        def infer(self,request,timeout_s):
+            self.requests.append((request,timeout_s))
+            return self.replies.pop(0)
+    raw=Raw()
+    types=catalog()
+    monkeypatch.setattr(kb,'catalog',lambda: types)
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: raw)
+    actual_discover=runtime.discover_types
+    measured=[]
+    def observe(*args,**kwargs):
+        report=actual_discover(*args,**kwargs)
+        measured.append((report.calls_used,kwargs['budget'].calls_used,kwargs['budget'].max_calls))
+        return report
+    monkeypatch.setattr(runtime,'discover_types',observe)
+    assert runtime.configure_discovery(model_path='scripted-model',python_executable='scripted-python',
+                                       verify_actions=True,frame_source=ScriptedFrames())
+    wrapper=runtime._configuration.backend
+    assert isinstance(wrapper,VerifiedActionBackend)
+    original=candidate(confidence=.51)
+    result=runtime.augment_types('scripted.mp4',[original],types,duration_sec=20.,deadline=time.monotonic()+2)
+    assert result[0] is original and result[0].confidence==.51
+    assert len(result)==1+expected_addition
+    if expected_addition:
+        assert result[1].type_id=='personal_items_on_desk'
+        assert result[1].t_peak==plan_windows(20.)[0].timestamps[10]
+    assert measured==[(expected_calls,expected_calls,4)]
+    assert len(raw.requests)==wrapper.calls_used==expected_calls
+    if expected_calls==2:
+        assert raw.requests[0][0].frames is raw.requests[1][0].frames
+        assert 'cashier_places_removed_outerwear_on_cashdesk' not in raw.requests[1][0].prompt
+        assert wrapper.last_verifications[0]['accepted'] is expected_addition
+    assert raw.validated==[180]
+    runtime.configure_discovery()
+    assert raw.closed==1
