@@ -66,15 +66,33 @@ class SharedDetector:
     def detect(self, frames: list[np.ndarray], input_size: int = INPUT_SIZE) -> list[list[Detection]]:
         model = self.model()
         with self._infer_lock:
-            # Detector reads input_size per call; switching it is safe only while the lock is held.
-            previous = model.input_size
-            model.input_size = input_size
-            try:
-                started = time.monotonic()
-                out = model.detect(frames)
-                self._record_speed(model, input_size, len(frames), time.monotonic() - started)
-            finally:
-                model.input_size = previous
+            return self._run(model, frames, input_size)
+
+    def detect_before(
+        self, frames: list[np.ndarray], input_size: int, deadline: float, sec_per_frame: float
+    ) -> list[list[Detection]] | None:
+        """detect(), or None if the batch would end after `deadline` (time spent waiting for the model counts)."""
+        model = self.model()
+        timeout = deadline - time.monotonic()
+        if timeout <= 0 or not self._infer_lock.acquire(timeout=timeout):
+            return None
+        try:
+            if time.monotonic() + sec_per_frame * len(frames) > deadline:
+                return None
+            return self._run(model, frames, input_size)
+        finally:
+            self._infer_lock.release()
+
+    def _run(self, model: Detector, frames: list[np.ndarray], input_size: int) -> list[list[Detection]]:
+        # Detector reads input_size per call; switching it is safe only while the inference lock is held.
+        previous = model.input_size
+        model.input_size = input_size
+        try:
+            started = time.monotonic()
+            out = model.detect(frames)
+            self._record_speed(model, input_size, len(frames), time.monotonic() - started)
+        finally:
+            model.input_size = previous
         return out
 
     def _record_speed(self, model: Detector, input_size: int, n_frames: int, elapsed: float) -> None:

@@ -83,6 +83,38 @@ def test_cpu_measures_from_the_first_call():
     assert CALIBRATION_FRAMES >= 1
 
 
+def test_detect_before_runs_when_batch_fits():
+    model = TimedDetector()
+    shared = SharedDetector(factory=lambda: model)
+    out = shared.detect_before([FRAME], INPUT_SIZE, deadline=time.monotonic() + 5.0, sec_per_frame=0.02)
+    assert out == [[]]
+    assert model.sizes_used == [INPUT_SIZE]
+
+
+def test_detect_before_refuses_batch_that_would_overrun():
+    model = TimedDetector()
+    shared = SharedDetector(factory=lambda: model)
+    out = shared.detect_before([FRAME] * 8, INPUT_SIZE, deadline=time.monotonic() + 1.0, sec_per_frame=0.5)
+    assert out is None
+    assert model.sizes_used == []
+
+
+def test_detect_before_gives_up_waiting_for_a_busy_model():
+    model = TimedDetector(sec_per_frame={INPUT_SIZE: 1.0})
+    shared = SharedDetector(factory=lambda: model)
+    shared.model()
+    busy = threading.Thread(target=shared.detect, args=([FRAME],))
+    busy.start()
+    time.sleep(0.1)  # the other job now holds the model for ~1 s
+    started = time.monotonic()
+    out = shared.detect_before([FRAME], INPUT_SIZE, deadline=started + 0.3, sec_per_frame=0.01)
+    waited = time.monotonic() - started
+    busy.join(timeout=5)
+    assert not busy.is_alive()
+    assert out is None
+    assert waited < 0.8
+
+
 def test_job_counter_tracks_running_jobs():
     shared = SharedDetector(factory=TimedDetector)
     assert shared.active_jobs() == 0
