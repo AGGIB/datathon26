@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from backend.app.schemas import AnalysisResult
+import ml.evidence as evidence
 from ml import pipeline
 from ml.candidates import Candidate
 from ml.detect import INPUT_SIZE, Detection
@@ -297,50 +298,69 @@ def test_video_without_decodable_frames_fails_instead_of_clean_verdict(clip, fak
         pipeline.analyze(str(clip))
 
 
-def test_undecodable_tail_is_not_read_as_an_empty_room(tmp_path, fake, monkeypatch):
-    video = make_video(tmp_path / "v.mp4", seconds=10.0)
+class PersonUntil(FakeDetector):
+    """A person is visible while the synthetic frame is darker than `brightness` (i.e. early in the clip)."""
+
+    def __init__(self, brightness: float) -> None:
+        super().__init__()
+        self.brightness = brightness
+
+    def detect(self, frames):
+        self.calls += 1
+        return [[PERSON] if f.mean() < self.brightness else [] for f in frames]
+
+
+def lose_tail_after(monkeypatch, t_cut: float) -> None:
     real_perceive = pipeline.perceive
 
     def tail_lost(*args, **kwargs):
         p = real_perceive(*args, **kwargs)
-        return dataclasses.replace(p, frames=tuple(f for f in p.frames if f.t < 4.0))
+        return dataclasses.replace(p, frames=tuple(f for f in p.frames if f.t < t_cut))
 
     monkeypatch.setattr(pipeline, "perceive", tail_lost)
+
+
+def test_undecodable_tail_is_not_read_as_an_empty_room(tmp_path, fake, monkeypatch):
+    video = make_video(tmp_path / "v.mp4", seconds=10.0)
+    lose_tail_after(monkeypatch, 4.0)
     seen = capture_rules(monkeypatch)
     pipeline.analyze(str(video))
-    assert seen["perception"].info.duration < 5.0
+    p = seen["perception"]
+    assert p.info.duration < 5.0
+    assert not [e for e in p.events if e.kind in ("exit", "room_empty")]  # the person is there until the cut
 
 
-def test_failed_evidence_falls_back_to_interval_edges(clip, fake, monkeypatch):
-    capture_rules(monkeypatch, [one_candidate(t=1.0)])
-    real_render = pipeline.render_evidence
-    calls = []
-
-    def flaky(video_path, times, boxes=()):
-        calls.append(tuple(times))
-        if len(calls) == 1:
-            raise cv2.error("seek failed")
-        return real_render(video_path, times, boxes)
-
-    monkeypatch.setattr(pipeline, "render_evidence", flaky)
-    [v] = pipeline.analyze(str(clip))["violations"]
-    assert calls == [(1.0,), (0.5, 1.5)]
-    assert [f["timestamp_sec"] for f in v["evidence_frames"]] == [0.5, 1.5]
+def test_real_exit_before_lost_tail_is_kept_and_nothing_is_invented_at_the_cut(tmp_path, monkeypatch):
+    video = make_video(tmp_path / "v.mp4", seconds=10.0)  # brightness = 3 * frame index
+    use_detector(monkeypatch, PersonUntil(brightness=60))  # person visible for the first ~2 s
+    lose_tail_after(monkeypatch, 6.0)
+    seen = capture_rules(monkeypatch)
+    pipeline.analyze(str(video))
+    p = seen["perception"]
+    exits = [e.t for e in p.events if e.kind == "exit"]
+    assert exits and max(exits) < 2.5
+    assert all(e.t <= p.info.duration and (e.t_end or 0.0) <= p.info.duration for e in p.events)
 
 
-def test_one_unrenderable_candidate_does_not_sink_the_others(clip, fake, monkeypatch):
+def test_reported_times_never_leave_the_analysed_part(tmp_path, fake, monkeypatch):
+    video = make_video(tmp_path / "v.mp4", seconds=10.0)
+    lose_tail_after(monkeypatch, 4.0)
+    capture_rules(monkeypatch, [one_candidate(t=8.0)])  # rules pointing past what was analysed
+    result = pipeline.analyze(str(video))
+    [v] = result["violations"]
+    assert v["timecode_sec"] <= 4.0 and v["t_end"] <= 4.0
+    assert all(f["timestamp_sec"] <= 4.0 for f in v["evidence_frames"])
+
+
+def test_evidence_for_all_violations_comes_from_one_decode_pass(clip, fake, monkeypatch):
     capture_rules(monkeypatch, [one_candidate(t=0.5), one_candidate(type_id="door_left_open", t=2.0)])
-    real_render = pipeline.render_evidence
-
-    def broken_early(video_path, times, boxes=()):
-        if min(times) < 1.0:
-            raise ValueError("cannot encode")
-        return real_render(video_path, times, boxes)
-
-    monkeypatch.setattr(pipeline, "render_evidence", broken_early)
+    calls = []
+    real = evidence.frames_at
+    monkeypatch.setattr(evidence, "frames_at", lambda path, times: calls.append(sorted(times)) or real(path, times))
     result = pipeline.analyze(str(clip))
     AnalysisResult.model_validate(result)
-    assert [v["type_id"] for v in result["violations"]] == ["door_left_open"]
+    assert len(result["violations"]) == 2
+    assert len(calls) == 1 and {0.5, 2.0} <= set(calls[0])
 
 
 # --- real model -------------------------------------------------------------------------------------

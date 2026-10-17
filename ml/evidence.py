@@ -1,5 +1,7 @@
-"""Evidence frames for К1: video frames at given times, with highlight boxes, as base64 JPEG.
+"""Evidence frames for К1: video frames at the candidates' times, with highlight boxes, as base64 JPEG.
 
+All frames of a job come from ONE sequential decode pass (ml.video.frames_at): seeking returns wrong or
+missing frames on part of the dataset, and sequential indices match what the detector saw.
 No face processing of any kind happens here (no detection, blurring or recognition):
 frames are passed through as recorded, only boxes from the rules stage are drawn on top.
 """
@@ -7,14 +9,16 @@ frames are passed through as recorded, only boxes from the rules stage are drawn
 import base64
 import logging
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
 import cv2
 import numpy as np
 
+from .assemble import clamp_time
+from .candidates import Candidate
 from .detect import Box
-from .video import frame_at, probe
+from .video import frames_at
 
 log = logging.getLogger(__name__)
 
@@ -23,9 +27,7 @@ MAX_FRAME_BYTES = 150 * 1024  # of the base64 text, i.e. ~112 KB of JPEG
 MAX_SIDE_PX = 1280
 JPEG_QUALITIES = (85, 70, 55, 40)
 DOWNSCALE_STEPS = (1.0, 0.75, 0.5, 0.35, 0.25)
-TIME_DECIMALS = 1
-SEEK_RETRIES = 2
-SEEK_STEP_BACK_SEC = 0.5
+PEAK_FALLBACK_SEC = 0.5  # if the t_peak frame is unusable, the nearest of t_peak ∓ this is shown instead
 
 BOX_COLOR = (0, 215, 255)  # BGR amber: readable on both dark floors and white desks
 OUTLINE_COLOR = (0, 0, 0)
@@ -83,39 +85,54 @@ def encode_jpeg_b64(frame: np.ndarray, max_bytes: int = MAX_FRAME_BYTES) -> str:
     raise ValueError(f"frame {frame.shape} does not fit into {max_bytes} bytes as JPEG")
 
 
-def _clamp_times(times: Sequence[float], duration: float, fps: float) -> list[float]:
-    """Round to the reported precision without ever landing after the last frame."""
-    scale = 10**TIME_DECIMALS
-    last = math.floor(max(0.0, duration - 1.0 / fps) * scale) / scale
-    clamped: list[float] = []
-    for t in times:
-        value = min(max(0.0, round(float(t), TIME_DECIMALS)), last)
-        if value not in clamped:
-            clamped.append(value)
-    return clamped[:MAX_FRAMES]
+def _peak_fallbacks(candidate: Candidate, duration: float) -> tuple[float, float]:
+    return (clamp_time(candidate.t_peak - PEAK_FALLBACK_SEC, duration),
+            clamp_time(candidate.t_peak + PEAK_FALLBACK_SEC, duration))
 
 
-def _read_frame(video_path: Path | str, t: float) -> tuple[float, np.ndarray] | None:
-    """Frame at t; some containers fail to seek near the end, so step back a little before giving up."""
-    for attempt in range(SEEK_RETRIES + 1):
-        at = round(max(0.0, t - attempt * SEEK_STEP_BACK_SEC), TIME_DECIMALS)
-        image = frame_at(video_path, at)
-        if image is not None:
-            return at, image
-        if at == 0.0:
-            break
-    log.warning("evidence: no frame near %.1fs in %s", t, Path(video_path).name)
+def wanted_times(candidates: Sequence[Candidate], duration: float) -> list[float]:
+    """Every timestamp the evidence of these candidates may need (reported precision, inside the video)."""
+    times: set[float] = set()
+    for c in candidates:
+        times.update(clamp_time(t, duration) for t in c.evidence_times)
+        times.update(_peak_fallbacks(c, duration))
+    return sorted(times)
+
+
+def _encode(image: np.ndarray, boxes: Sequence[Box], t: float) -> dict | None:
+    try:
+        return {"timestamp_sec": t, "image_base64": encode_jpeg_b64(draw_boxes(image, boxes))}
+    except (ValueError, cv2.error):
+        log.exception("evidence: frame at %.1fs could not be encoded", t)
+        return None
+
+
+def _peak_frame(candidate: Candidate, frames: Mapping[float, np.ndarray], duration: float) -> dict | None:
+    """t_peak with the rule's boxes (valid only there); else the nearest neighbour without boxes."""
+    t = clamp_time(candidate.t_peak, duration)
+    if t in frames and (rendered := _encode(frames[t], candidate.highlight_boxes, t)):
+        return rendered
+    for alt in _peak_fallbacks(candidate, duration):
+        if alt in frames and (rendered := _encode(frames[alt], (), alt)):
+            log.warning("evidence: %s frame at %.1fs unusable, showing %.1fs", candidate.type_id, t, alt)
+            return rendered
     return None
 
 
-def render_evidence(video_path: Path | str, times: Sequence[float], boxes: Sequence[Box] = ()) -> list[dict]:
-    """К1 evidence_frames: [{timestamp_sec, image_base64}], up to 3, in the order of `times`."""
-    info = probe(video_path)
-    frames = []
-    for t in _clamp_times(times, info.duration, info.fps):
-        found = _read_frame(video_path, t)
-        if found is None or any(f["timestamp_sec"] == found[0] for f in frames):
-            continue
-        at, image = found
-        frames.append({"timestamp_sec": at, "image_base64": encode_jpeg_b64(draw_boxes(image, boxes))})
-    return frames
+def frames_for(candidate: Candidate, frames: Mapping[float, np.ndarray], duration: float) -> list[dict]:
+    """К1 evidence_frames for one candidate: t_peak first, then its other evidence times (no boxes)."""
+    out = [f for f in [_peak_frame(candidate, frames, duration)] if f]
+    for t in (clamp_time(t, duration) for t in candidate.evidence_times[1:]):
+        if t in frames and all(f["timestamp_sec"] != t for f in out) and (rendered := _encode(frames[t], (), t)):
+            out.append(rendered)
+    return out[:MAX_FRAMES]
+
+
+def render_candidates(
+    video_path: Path | str, candidates: Sequence[Candidate], duration: float
+) -> dict[Candidate, list[dict]]:
+    """Evidence for all candidates of a job from a single decode pass; times are clamped to `duration`."""
+    if not candidates:
+        return {}
+    frames = frames_at(video_path, wanted_times(candidates, duration))
+    return {c: frames_for(c, frames, duration) for c in candidates}

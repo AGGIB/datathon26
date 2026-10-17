@@ -20,7 +20,6 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 
 from . import rules
@@ -28,11 +27,11 @@ from .assemble import assemble
 from .candidates import Candidate
 from .detect import INPUT_SIZE, Detection
 from .events import extract_events
-from .evidence import render_evidence
+from .evidence import render_candidates
 from .kb import ViolationType, catalog
 from .perception import SAMPLE_FPS, Perception, perceive
 from .shared_detector import CALIBRATION_FRAMES, SharedDetector
-from .video import VideoInfo, frame_at, probe
+from .video import VideoInfo, frames_at, probe
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +51,7 @@ PLAN_LADDER = ((INPUT_SIZE, SAFE_MIN_FPS), (SMALL_INPUT_SIZE, SAFE_MIN_FPS), (SM
 PLAN_SHARE = 0.7  # share of the detection window the plan may fill; calibration on 2 frames runs ~30% optimistic
 FINISH_RESERVE_SEC = 15.0  # detection ends this long before the deadline so rules and evidence still run
 TAIL_TOLERANCE_SEC = 1.0  # missing video end beyond one sampling step + this is treated as undecodable
-RENDER_ERRORS = (ValueError, OSError, cv2.error)
+CALIBRATION_AT_SEC = 1.0  # calibration frames come from the first seconds: decoding them is cheap
 
 
 @dataclasses.dataclass(frozen=True)
@@ -158,24 +157,10 @@ def _perceive(video_path: str, info: VideoInfo, time_budget_sec: float | None, s
 
 
 def _calibration_frames(video_path: str, info: VideoInfo) -> list[np.ndarray]:
-    """Real frames from inside the video (detection cost depends on content a little); blank if unreadable."""
-    times = [info.duration * (i + 1) / (CALIBRATION_FRAMES + 1) for i in range(CALIBRATION_FRAMES)]
-    frames = [f for f in (frame_at(video_path, t) for t in times) if f is not None]
+    """Real frames of the video (detection cost depends on content a little); blank if unreadable."""
+    times = [min(info.duration, CALIBRATION_AT_SEC * (i + 1)) for i in range(CALIBRATION_FRAMES)]
+    frames = list(frames_at(video_path, times).values())
     return frames or [np.zeros((info.height, info.width, 3), np.uint8)] * CALIBRATION_FRAMES
-
-
-def _render(video_path: str, candidate: Candidate) -> list[dict]:
-    """Evidence at the rule's moments; if that fails, at the interval edges without boxes."""
-    attempts = ((candidate.evidence_times, candidate.highlight_boxes), ((candidate.t_start, candidate.t_end), ()))
-    for times, boxes in attempts:
-        try:
-            frames = render_evidence(video_path, times, boxes)
-        except RENDER_ERRORS:
-            log.exception("pipeline: evidence for %s at %s failed", candidate.type_id, times)
-            continue
-        if frames:
-            return frames
-    return []
 
 
 def _judge(perception: Perception) -> Sequence[Candidate]:
@@ -214,7 +199,9 @@ def _analyze(video_path: str, report: ProgressFn, time_budget_sec: float | None)
     candidates = _judge(perception)
 
     report(PROGRESS_RULES_END, "evidence")
-    result = assemble(candidates, lambda c: _render(video_path, c), types=types)
+    analysed = perception.info.duration  # shorter than the video after a budget stop or a lost tail
+    result = assemble(candidates, lambda selected: render_candidates(video_path, selected, analysed),
+                      types=types, duration=analysed)
     report(1.0, "evidence")
     log.info("pipeline: %s -> %s, %d candidates, %d violations, %.1fs total", Path(video_path).name,
              result["verdict"], len(candidates), len(result["violations"]), time.monotonic() - started)

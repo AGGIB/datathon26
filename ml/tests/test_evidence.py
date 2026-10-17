@@ -1,10 +1,18 @@
 import base64
+from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
 
-from ml.evidence import MAX_FRAME_BYTES, draw_boxes, encode_jpeg_b64, render_evidence
+import ml.evidence as evidence
+from ml.candidates import Candidate
+from ml.evidence import MAX_FRAME_BYTES, draw_boxes, encode_jpeg_b64, frames_for, render_candidates, wanted_times
+from ml.video import probe, sample_frames
+
+REPO = Path(__file__).resolve().parents[2]
+X11 = REPO / "data" / "open" / "videos" / "Х-11.mov"  # VFR-like h264 where seeking returned wrong frames
+BOX = (20.0, 20.0, 80.0, 80.0)
 
 
 def decode(b64: str) -> np.ndarray:
@@ -13,6 +21,17 @@ def decode(b64: str) -> np.ndarray:
     img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
     assert img is not None
     return img
+
+
+def cand(peak=1.0, times=None, boxes=(BOX,), type_id="cash_left_on_desk_when_leaving"):
+    times = times or (peak,)
+    return Candidate(type_id=type_id, t_start=min(times), t_end=max(times), t_peak=peak, confidence=0.9,
+                     observation="пачка на столе", evidence_times=times, highlight_boxes=boxes)
+
+
+def brightness_frames(times, step=10):
+    """Synthetic decoded frames: brightness encodes the timestamp."""
+    return {t: np.full((120, 160, 3), int(t * step) % 255, np.uint8) for t in times}
 
 
 @pytest.fixture
@@ -26,16 +45,17 @@ def clip(tmp_path):
     return path
 
 
+# --- encoding and drawing ---------------------------------------------------------------------------
+
+
 def test_encode_returns_plain_base64_jpeg():
-    frame = np.zeros((48, 64, 3), np.uint8)
-    b64 = encode_jpeg_b64(frame)
+    b64 = encode_jpeg_b64(np.zeros((48, 64, 3), np.uint8))
     assert not b64.startswith("data:")
     assert decode(b64).shape == (48, 64, 3)
 
 
 def test_encode_respects_size_cap_on_noisy_large_frame():
-    rng = np.random.default_rng(0)
-    noise = rng.integers(0, 256, (1080, 1920, 3), dtype=np.uint8)  # worst case for JPEG
+    noise = np.random.default_rng(0).integers(0, 256, (1080, 1920, 3), dtype=np.uint8)  # worst case for JPEG
     b64 = encode_jpeg_b64(noise)
     assert len(b64) <= MAX_FRAME_BYTES  # the cap applies to the base64 text that goes into JSON
     h, w = decode(b64).shape[:2]
@@ -72,45 +92,96 @@ def test_draw_boxes_survives_edge_cases(box):
     assert out.shape == (100, 100, 3)
 
 
-def test_render_evidence_returns_frames_at_requested_times(clip):
-    frames = render_evidence(clip, [1.0, 2.0, 3.0], boxes=[(20.0, 20.0, 80.0, 80.0)])
-    assert [f["timestamp_sec"] for f in frames] == [1.0, 2.0, 3.0]
-    images = [decode(f["image_base64"]) for f in frames]
-    # later timestamps are brighter in the synthetic clip -> frames really come from those times
-    assert images[0].mean() < images[1].mean() < images[2].mean()
+# --- choosing frames ---------------------------------------------------------------------------------
 
 
-def test_render_evidence_clamps_times_beyond_video_end(clip):
-    frames = render_evidence(clip, [-1.0, 99.0])
-    assert len(frames) == 2
-    assert frames[0]["timestamp_sec"] == 0.0
-    assert 3.5 <= frames[1]["timestamp_sec"] <= 4.0
-    for f in frames:
-        decode(f["image_base64"])
+def test_wanted_times_cover_evidence_and_peak_neighbours_inside_video():
+    times = wanted_times([cand(peak=1.0, times=(1.0, 2.0)), cand(peak=3.9, times=(3.9,))], duration=4.0)
+    assert times == [0.5, 1.0, 1.5, 2.0, 3.4, 3.9, 4.0]
 
 
-def test_render_evidence_never_rounds_past_the_last_frame(tmp_path):
-    # 33 frames at 30 fps: last frame at 1.0667 s, which naive rounding turns into 1.1 s (no frame there)
-    path = tmp_path / "odd.mp4"
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30, (64, 48))
-    for _ in range(33):
-        writer.write(np.full((48, 64, 3), 128, dtype=np.uint8))
-    writer.release()
-    frames = render_evidence(path, [5.0])
-    assert len(frames) == 1
-    assert frames[0]["timestamp_sec"] <= 32 / 30
+def test_boxes_are_drawn_on_the_peak_frame_only():
+    c = cand(peak=1.0, times=(1.0, 2.0, 3.0))
+    frames = {t: np.zeros((120, 160, 3), np.uint8) for t in (1.0, 2.0, 3.0)}
+    rendered = frames_for(c, frames, duration=4.0)
+    assert [f["timestamp_sec"] for f in rendered] == [1.0, 2.0, 3.0]
+    peak, *others = (decode(f["image_base64"]) for f in rendered)
+    assert peak.max() > 100  # amber outline
+    assert all(img.max() < 30 for img in others)  # black frames stay black: no boxes off-peak
 
 
-def test_render_evidence_steps_back_when_seek_fails(clip, monkeypatch):
-    import ml.evidence as evidence
-
-    real_frame_at = evidence.frame_at
-    monkeypatch.setattr(evidence, "frame_at", lambda path, t: None if t > 2.0 else real_frame_at(path, t))
-    frames = render_evidence(clip, [2.4])
-    assert len(frames) == 1
-    assert frames[0]["timestamp_sec"] <= 2.0
+def test_missing_peak_frame_is_replaced_by_its_neighbour_not_by_interval_edges():
+    c = Candidate(type_id="x", t_start=0.0, t_end=4.0, t_peak=2.0, confidence=0.9, observation="пачка",
+                  evidence_times=(2.0, 3.0), highlight_boxes=(BOX,))
+    frames = brightness_frames([0.0, 1.5, 2.5, 3.0, 4.0])  # 2.0 itself failed to decode
+    rendered = frames_for(c, frames, duration=4.0)
+    assert [f["timestamp_sec"] for f in rendered] == [1.5, 3.0]
 
 
-def test_render_evidence_dedupes_and_caps_at_three(clip):
-    frames = render_evidence(clip, [1.0, 1.0, 2.0, 3.0, 3.5])
-    assert [f["timestamp_sec"] for f in frames] == [1.0, 2.0, 3.0]
+def test_unencodable_peak_frame_falls_back_to_neighbour(monkeypatch):
+    real_encode = evidence.encode_jpeg_b64
+    calls = []
+
+    def flaky(frame, max_bytes=MAX_FRAME_BYTES):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ValueError("does not fit")
+        return real_encode(frame, max_bytes)
+
+    monkeypatch.setattr(evidence, "encode_jpeg_b64", flaky)
+    rendered = frames_for(cand(peak=1.0), brightness_frames([0.5, 1.0, 1.5]), duration=4.0)
+    assert [f["timestamp_sec"] for f in rendered] == [0.5]
+
+
+def test_no_usable_frame_gives_empty_list():
+    assert frames_for(cand(peak=1.0), {}, duration=4.0) == []
+
+
+def test_render_candidates_returns_frames_from_the_right_times(clip):
+    c = cand(peak=1.0, times=(1.0, 2.0, 3.0))
+    [rendered] = render_candidates(clip, [c], duration=4.0).values()
+    assert [f["timestamp_sec"] for f in rendered] == [1.0, 2.0, 3.0]
+    images = [decode(f["image_base64"]) for f in rendered]
+    centre = [img[60:110, 90:150].mean() for img in images]  # away from the box drawn on the first frame
+    assert centre[0] < centre[1] < centre[2]  # later timestamps are brighter in the synthetic clip
+
+
+def test_render_candidates_decodes_the_video_once(clip, monkeypatch):
+    calls = []
+    real = evidence.frames_at
+    monkeypatch.setattr(evidence, "frames_at", lambda path, times: calls.append(times) or real(path, times))
+    render_candidates(clip, [cand(peak=1.0), cand(peak=3.0, type_id="door_left_open")], duration=4.0)
+    assert len(calls) == 1
+
+
+def test_render_candidates_clamps_times_to_the_analysed_part(clip):
+    [rendered] = render_candidates(clip, [cand(peak=3.9)], duration=2.05).values()
+    assert rendered[0]["timestamp_sec"] == 2.0
+
+
+def test_render_candidates_with_nothing_to_render_does_not_touch_the_video(tmp_path):
+    assert render_candidates(tmp_path / "missing.mov", [], duration=1.0) == {}
+
+
+# --- real video ---------------------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not X11.exists(), reason="data/open link is missing")
+def test_real_vfr_video_evidence_matches_sampled_frame():
+    t = 10.0
+    info = probe(X11)
+    target_idx = round(t * info.fps)
+    reference = next(frame for ts, frame in sample_frames(X11, info.fps) if round(ts * info.fps) == target_idx)
+    wrong = next(frame for ts, frame in sample_frames(X11, 1.0) if ts >= 18.5)  # where seeking used to land
+
+    [rendered] = render_candidates(X11, [cand(peak=t, boxes=())], duration=info.duration).values()
+    assert rendered[0]["timestamp_sec"] == t
+    got = decode(rendered[0]["image_base64"])
+
+    def diff(a, b):
+        small = (a.shape[1] // 4, a.shape[0] // 4)
+        return float(np.abs(cv2.resize(a, small).astype(int) - cv2.resize(b, small).astype(int)).mean())
+
+    assert diff(got, reference) < 4.0  # JPEG noise only
+    assert diff(got, reference) < diff(got, wrong)
