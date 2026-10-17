@@ -33,7 +33,6 @@ class JobRunner:
         self._pipeline = pipeline
         self._budget = time_budget_sec
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="job")
-        self._pipeline_pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="pipeline")
         self._futures: dict[str, Future] = {}
         self._lock = threading.Lock()
 
@@ -61,29 +60,42 @@ class JobRunner:
 
     def shutdown(self) -> None:
         self._pool.shutdown(wait=False, cancel_futures=True)
-        self._pipeline_pool.shutdown(wait=False, cancel_futures=True)
 
     def _run(self, job_id: str, video_path: Path) -> None:
         def on_progress(progress: float, stage: str) -> None:
             self._store.update(job_id, progress=round(max(0.0, min(1.0, progress)), 3), stage=stage)
 
-        try:
-            future = self._pipeline_pool.submit(
-                self._pipeline,
-                str(video_path),
-                on_progress=on_progress,
-                time_budget_sec=self._budget,
-            )
+        pipeline_result: list[dict[str, Any]] = []
+        pipeline_exc: list[Exception] = []
+
+        def target() -> None:
             try:
-                raw = future.result(timeout=self._budget)
-            except FutureTimeout:
-                # Cancel queued pipeline future so it does not run after timeout
-                future.cancel()
+                res = self._pipeline(
+                    str(video_path),
+                    on_progress=on_progress,
+                    time_budget_sec=self._budget,
+                )
+                pipeline_result.append(res)
+            except Exception as exc:  # noqa: BLE001
+                pipeline_exc.append(exc)
+
+        thread = threading.Thread(target=target, name=f"pipe-{job_id}", daemon=True)
+        thread.start()
+        thread.join(timeout=self._budget)
+
+        try:
+            if thread.is_alive():
                 log.warning(
                     "job %s: pipeline exceeded time budget %.1fs, returning fast fallback stage",
                     job_id,
                     self._budget,
                 )
+                raw = mock_pipeline.fast_fallback(str(video_path))
+            elif pipeline_exc:
+                raise pipeline_exc[0]
+            elif pipeline_result:
+                raw = pipeline_result[0]
+            else:
                 raw = mock_pipeline.fast_fallback(str(video_path))
 
             result = AnalysisResult.model_validate(raw)

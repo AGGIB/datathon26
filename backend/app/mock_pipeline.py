@@ -9,10 +9,11 @@ import logging
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .media import FFMPEG_SAFE_INPUT
-from .runner import ProgressFn
+
+ProgressFn = Callable[[float, str], None]
 
 log = logging.getLogger(__name__)
 
