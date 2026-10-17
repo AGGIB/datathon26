@@ -594,3 +594,27 @@ def test_malformed_xlsx_cli_failure_never_echoes_private_path_or_traceback(make_
     assert 'Traceback' not in captured.out + captured.err
     assert not (candidate.output / 'inventory.json').exists()
     assert not (candidate.output / 'adjudication.json').exists()
+
+
+def test_inventory_uses_shared_local_protocol_numeric_probe(make_case, monkeypatch):
+    import ml.eval as evaluator
+
+    candidate = make_case()
+    monkeypatch.setattr(pilot, '_probe', evaluator._probe)
+    calls = []
+
+    def local_metadata(command, **kwargs):
+        assert command[command.index('-protocol_whitelist') + 1] == 'file,pipe'
+        assert '-show_frames' not in command and '-show_packets' not in command
+        assert 'tags' not in command[command.index('-show_entries') + 1]
+        calls.append(command[-1])
+        return SimpleNamespace(returncode=0, stdout=json.dumps({
+            'format': {'duration': '10', 'size': '32'},
+            'streams': [{'codec_type': 'video', 'width': 16, 'height': 16}],
+        }).encode())
+
+    monkeypatch.setattr(evaluator.subprocess, 'run', local_metadata)
+    inventory = pilot.build_inventory(candidate.id_path, candidate.videos,
+                                      candidate.labels, ffprobe=sys.executable)
+    assert len(inventory['clips']) == 8
+    assert set(calls) == {str(path) for path in candidate.paths}

@@ -9,6 +9,31 @@ import tempfile
 from pathlib import Path
 
 
+def test_numeric_probe_disallows_network_protocols(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    import ml.eval as evaluator
+
+    commands = []
+
+    def numeric_only(command, **kwargs):
+        commands.append(command)
+        assert command[command.index('-protocol_whitelist') + 1] == 'file,pipe'
+        assert command[-1] == str(tmp_path / 'synthetic.mov')
+        assert '-show_frames' not in command and '-show_packets' not in command
+        assert 'tags' not in command[command.index('-show_entries') + 1]
+        assert kwargs == {'capture_output': True, 'timeout': 20}
+        return SimpleNamespace(returncode=0, stdout=json.dumps({
+            'format': {'duration': '2', 'size': '8'},
+            'streams': [{'codec_type': 'video', 'width': 16, 'height': 16,
+                         'avg_frame_rate': '1/1', 'time_base': '1/1000', 'nb_frames': '2'}],
+        }).encode())
+
+    monkeypatch.setattr(evaluator.subprocess, 'run', numeric_only)
+    result = evaluator._probe(tmp_path / 'synthetic.mov', 'synthetic-ffprobe')
+    assert result['status'] == 'ok' and result['duration_sec'] == 2.0
+    assert len(commands) == 1
+
+
 class ScoreTests(unittest.TestCase):
     def test_invalid_annotation_metadata_is_rejected_explicitly(self):
         from ml.eval import score
