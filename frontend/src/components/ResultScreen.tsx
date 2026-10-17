@@ -38,14 +38,28 @@ export function ResultScreen({ file, result, onReset }: ResultScreenProps) {
   return (
     <>
       <section className={`verdict ${hasViolations ? 'warning' : 'clear'}`} aria-live="polite">
-        <div>
+        <span className="verdict-mark" aria-hidden="true">
+          {hasViolations ? '!' : '✓'}
+        </span>
+        <div className="verdict-copy">
           <p className="eyebrow">{IS_DEMO ? 'Пример результата' : 'Проверка завершена'}</p>
           <h2>{result.verdict}</h2>
           <p>
             {hasViolations
-              ? `Эпизодов для проверки: ${result.violations.length}`
+              ? 'Проверьте отмеченные эпизоды на видеозаписи.'
               : 'Визуальных признаков нарушений не найдено.'}
           </p>
+        </div>
+        <div
+          className="verdict-total"
+          aria-label={`Количество эпизодов для проверки: ${result.violations.length}`}
+        >
+          <strong>{String(result.violations.length).padStart(2, '0')}</strong>
+          <span>
+            эпизодов
+            <br />
+            для проверки
+          </span>
         </div>
         <button className="secondary" onClick={onReset}>
           Новая проверка

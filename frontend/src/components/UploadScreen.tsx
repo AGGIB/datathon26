@@ -93,10 +93,17 @@ export function UploadScreen({
           />
         </div>
 
-        <div className="file-details" aria-live="polite">
-          <div>
-            <span className="field-caption">{file ? 'Выбранный файл' : 'Файл не выбран'}</span>
-            <p>{file ? file.name : 'Добавьте запись, чтобы продолжить'}</p>
+        <div className={`file-details ${file ? 'selected' : ''}`} aria-live="polite">
+          <div className="file-summary">
+            <span className="file-status-icon" aria-hidden="true">
+              {file ? '✓' : '＋'}
+            </span>
+            <div>
+              <span className="field-caption">
+                {file ? 'Видео готово к проверке' : 'Видео не выбрано'}
+              </span>
+              <p>{file ? file.name : 'Выберите файл, чтобы начать проверку'}</p>
+            </div>
           </div>
           {file && (
             <div className="file-actions">
