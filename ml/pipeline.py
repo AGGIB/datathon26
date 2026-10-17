@@ -31,8 +31,8 @@ from .events import extract_events
 from .evidence import render_evidence
 from .kb import ViolationType, catalog
 from .perception import SAMPLE_FPS, Perception, perceive
-from .shared_detector import SharedDetector
-from .video import VideoInfo, probe
+from .shared_detector import CALIBRATION_FRAMES, SharedDetector
+from .video import VideoInfo, frame_at, probe
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ HARD_MIN_FPS = 1.25  # consecutive samples still link (0.8 s); any miss splits t
 SMALL_INPUT_SIZE = 480  # ~0.55x the CPU cost of 640; on MPS it saves nothing
 # (input size, lowest acceptable fps) from best to cheapest
 PLAN_LADDER = ((INPUT_SIZE, SAFE_MIN_FPS), (SMALL_INPUT_SIZE, SAFE_MIN_FPS), (SMALL_INPUT_SIZE, HARD_MIN_FPS))
-PLAN_SHARE = 0.8  # share of the detection window the plan may fill; the rest absorbs decode and jitter
+PLAN_SHARE = 0.7  # share of the detection window the plan may fill; calibration on 2 frames runs ~30% optimistic
 FINISH_RESERVE_SEC = 15.0  # detection ends this long before the deadline so rules and evidence still run
 TAIL_TOLERANCE_SEC = 1.0  # missing video end beyond one sampling step + this is treated as undecodable
 RENDER_ERRORS = (ValueError, OSError, cv2.error)
@@ -136,8 +136,14 @@ def _perceive(video_path: str, info: VideoInfo, time_budget_sec: float | None, s
               report: ProgressFn) -> Perception:
     deadline = None if time_budget_sec is None else started + time_budget_sec - FINISH_RESERVE_SEC
     window = None if deadline is None else deadline - time.monotonic()
-    frame_hw = (info.height, info.width)
-    plan = plan_sampling(info.duration, window, lambda size: _SHARED.calibrate(frame_hw, size),
+    sample: list[np.ndarray] = []
+
+    def cost_at(size: int) -> float:
+        if not sample:
+            sample.extend(_calibration_frames(video_path, info))
+        return _SHARED.calibrate(sample, size)
+
+    plan = plan_sampling(info.duration, window, cost_at,
                          contention=max(1, _SHARED.active_jobs()))
     log.info("pipeline: %s %.1fs video, plan %.2f fps at %d px (%.3f s/frame expected, %d jobs)",
              Path(video_path).name, info.duration, plan.sample_fps, plan.input_size, plan.sec_per_frame,
@@ -149,6 +155,13 @@ def _perceive(video_path: str, info: VideoInfo, time_budget_sec: float | None, s
     )
     log.info("pipeline: %d frames detected in %.1fs", guard.processed, perception.elapsed_sec)
     return _finalize(perception, guard, plan)
+
+
+def _calibration_frames(video_path: str, info: VideoInfo) -> list[np.ndarray]:
+    """Real frames from inside the video (detection cost depends on content a little); blank if unreadable."""
+    times = [info.duration * (i + 1) / (CALIBRATION_FRAMES + 1) for i in range(CALIBRATION_FRAMES)]
+    frames = [f for f in (frame_at(video_path, t) for t in times) if f is not None]
+    return frames or [np.zeros((info.height, info.width, 3), np.uint8)] * CALIBRATION_FRAMES
 
 
 def _render(video_path: str, candidate: Candidate) -> list[dict]:

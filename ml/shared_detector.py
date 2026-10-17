@@ -18,7 +18,7 @@ from .detect import INPUT_SIZE, Detection, Detector
 log = logging.getLogger(__name__)
 
 SPEED_EMA_ALPHA = 0.3
-CALIBRATION_FRAMES = 2
+CALIBRATION_FRAMES = 2  # what callers should pass to calibrate(): cheap even at 1.6 s/frame
 CALIBRATION_CALLS = 2  # accelerators need one warm-up call per input shape before a fair measurement
 ACCELERATORS = frozenset({"mps", "cuda"})  # compile kernels per input shape on first use
 
@@ -111,12 +111,11 @@ class SharedDetector:
         """Measured inference time per frame (lock waiting excluded), None until measured."""
         return self._speed.get(input_size)
 
-    def calibrate(self, frame_hw: tuple[int, int], input_size: int = INPUT_SIZE) -> float:
-        """Per-frame cost at input_size on frames of this video's size; measured once, then kept up to date."""
+    def calibrate(self, frames: list[np.ndarray], input_size: int = INPUT_SIZE) -> float:
+        """Per-frame cost at input_size on real frames of the video; measured once, then kept up to date."""
         known = self.sec_per_frame(input_size)
         if known is not None:
             return known
-        frames = [np.zeros((*frame_hw, 3), np.uint8)] * CALIBRATION_FRAMES
         for _ in range(CALIBRATION_CALLS):
             self.detect(frames, input_size)
             known = self.sec_per_frame(input_size)

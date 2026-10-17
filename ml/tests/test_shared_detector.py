@@ -8,6 +8,7 @@ from ml.detect import INPUT_SIZE
 from ml.shared_detector import CALIBRATION_FRAMES, SharedDetector
 
 FRAME = np.zeros((48, 64, 3), np.uint8)
+SAMPLE = [FRAME] * CALIBRATION_FRAMES
 
 
 class TimedDetector:
@@ -52,8 +53,8 @@ def test_speed_is_unknown_until_measured():
 
 def test_calibration_measures_cost_per_input_size():
     shared = SharedDetector(factory=TimedDetector)
-    full = shared.calibrate((48, 64), INPUT_SIZE)
-    small = shared.calibrate((48, 64), 480)
+    full = shared.calibrate(SAMPLE, INPUT_SIZE)
+    small = shared.calibrate(SAMPLE, 480)
     assert full == pytest.approx(0.02, abs=0.01)
     assert small < full
 
@@ -61,16 +62,16 @@ def test_calibration_measures_cost_per_input_size():
 def test_calibration_reuses_known_speed():
     model = TimedDetector()
     shared = SharedDetector(factory=lambda: model)
-    shared.calibrate((48, 64), INPUT_SIZE)
+    shared.calibrate(SAMPLE, INPUT_SIZE)
     calls = len(model.sizes_used)
-    shared.calibrate((48, 64), INPUT_SIZE)
+    shared.calibrate(SAMPLE, INPUT_SIZE)
     assert len(model.sizes_used) == calls
 
 
 def test_accelerator_ignores_first_call_of_each_shape():
     model = TimedDetector(device="mps", first_call_extra_sec=0.3)  # kernel compilation on first use
     shared = SharedDetector(factory=lambda: model)
-    cost = shared.calibrate((48, 64), INPUT_SIZE)
+    cost = shared.calibrate(SAMPLE, INPUT_SIZE)
     assert cost < 0.05
     assert len(model.sizes_used) == 2  # warm-up call + measured call
 
@@ -78,7 +79,7 @@ def test_accelerator_ignores_first_call_of_each_shape():
 def test_cpu_measures_from_the_first_call():
     model = TimedDetector(device="cpu")
     shared = SharedDetector(factory=lambda: model)
-    shared.calibrate((48, 64), INPUT_SIZE)
+    shared.calibrate(SAMPLE, INPUT_SIZE)
     assert len(model.sizes_used) == 1
     assert CALIBRATION_FRAMES >= 1
 
