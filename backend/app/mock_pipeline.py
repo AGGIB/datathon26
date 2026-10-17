@@ -6,13 +6,15 @@ returns two demo violations so the UI can render multiple cards and timeline mar
 
 import base64
 import logging
+import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .media import FFMPEG_SAFE_INPUT
-from .runner import ProgressFn
+
+ProgressFn = Callable[[float, str], None]
 
 log = logging.getLogger(__name__)
 
@@ -21,10 +23,17 @@ FFMPEG_TIMEOUT_SEC = 15
 STAGES = ("decode", "detect", "rules", "verify")
 
 
+def _resolve_ffmpeg() -> str:
+    for candidate in ("ffmpeg", "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"):
+        if shutil.which(candidate):
+            return candidate
+    return "ffmpeg"
+
+
 def _frame_b64(video_path: str, t_sec: float) -> str:
     """Real frame from the uploaded video if ffmpeg can read it, placeholder otherwise."""
     cmd = [
-        "ffmpeg", "-v", "error", *FFMPEG_SAFE_INPUT, "-ss", f"{t_sec:.2f}", "-i", video_path,
+        _resolve_ffmpeg(), "-v", "error", *FFMPEG_SAFE_INPUT, "-ss", f"{t_sec:.2f}", "-i", video_path,
         "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "4", "-",
     ]
     try:
@@ -65,10 +74,11 @@ def analyze(
     time_budget_sec: float | None = None,
     delay_sec: float = 0.0,
 ) -> dict[str, Any]:
+    step_delay = delay_sec / len(STAGES) if STAGES else 0.0
     for i, stage in enumerate(STAGES):
         if on_progress:
             on_progress(i / len(STAGES), stage)
-        time.sleep(delay_sec / len(STAGES))
+        time.sleep(step_delay)
 
     if "clean" in Path(video_path).name.lower():
         return {"verdict": "no_violation", "violations": []}
