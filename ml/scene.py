@@ -25,6 +25,7 @@ How it works (no hard-coded pixel coordinates; everything is located per video):
 """
 
 import logging
+import math
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -456,7 +457,8 @@ def scene_states(
 
 
 def sample_times(duration: float, fps: float = SAMPLE_FPS) -> list[float]:
-    n = max(1, int(duration * fps))
+    """Evenly spaced times in [0, duration), always at least one."""
+    n = max(1, math.floor(duration * fps - 1e-9) + 1)
     return [round(i / fps, 3) for i in range(n)]
 
 

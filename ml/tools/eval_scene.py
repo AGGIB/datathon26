@@ -3,15 +3,18 @@
     python -m ml.tools.eval_scene                 # validation table
     python -m ml.tools.eval_scene --series X-20   # per-time signals of one or more videos
     python -m ml.tools.eval_scene --no-owl        # without the zero-shot model (COCO + statistics only)
+    python -m ml.tools.eval_scene --sweep         # every video: how often each state fires, items seen
 
 Perception runs are cached in var/cache/perception, OWLv2 hits in var/cache/scene_owl.
 Expected states come from kb/annotations.csv (time windows are the annotated intervals).
 """
 
 import argparse
+import csv
 import logging
 import sys
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +25,7 @@ from ml.scene_owl import OwlDetector
 from ml.tools.scene_cache import cached_perception, video_paths
 
 OWL_CACHE = Path("var/cache/scene_owl")
+ANNOTATIONS = Path("kb/annotations.csv")
 PASS_THRESHOLD = 0.5
 ITEM_PRESENT = 0.01
 
@@ -133,12 +137,34 @@ def print_table(results: list[tuple[Check, float | None]], timings: dict[str, fl
         print(f"scene time per video: mean {mean(timings.values()):.1f}s, max {max(timings.values()):.1f}s")
 
 
+def _share(scene: SceneAnalysis, field: str) -> str:
+    vals = [getattr(s, field) for s in scene.states]
+    seen = [v for v in vals if v is not None]
+    return "  -  " if not seen else f"{sum(v >= PASS_THRESHOLD for v in seen) / len(vals):5.2f}"
+
+
+def print_sweep(names: list[str], paths: dict[str, Path], owl: OwlDetector | None) -> None:
+    """Every video: share of time each state is on, item labels seen, next to the annotated type."""
+    notes = {r["video"]: r["type_id"] for r in csv.DictReader(open(ANNOTATIONS, encoding="utf-8"))}
+    print("\n| video | annotated type | safe_open | door_open | screen_on | screen_work | key | items | time, s |")
+    print("|---|---|---|---|---|---|---|---|---|")
+    for name in names:
+        scene = run_scene(name, paths[name], owl)
+        labels = Counter(i.label for s in scene.states for i in s.desk_items)
+        items = ", ".join(f"{k}×{v}" for k, v in labels.most_common()) or "—"
+        print(f"| {name} | {notes.get(name, '?')} | {_share(scene, 'safe_open')} | {_share(scene, 'door_open')} | "
+              f"{_share(scene, 'laptop_screen_on')} | {_share(scene, 'laptop_screen_work')} | "
+              f"{_share(scene, 'key_in_lock')} | {items} | {scene.elapsed_sec:.1f} |")
+        sys.stdout.flush()
+
+
 def main() -> None:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     ap = argparse.ArgumentParser()
     ap.add_argument("--series", default="", help="comma-separated videos to dump per-time signals for")
     ap.add_argument("--no-owl", action="store_true")
     ap.add_argument("--no-cache", action="store_true", help="re-run OWLv2 (honest timing)")
+    ap.add_argument("--sweep", action="store_true", help="state shares and items for every video")
     args = ap.parse_args()
     paths = video_paths()
     owl = None if args.no_owl else OwlDetector(cache_dir=None if args.no_cache else OWL_CACHE)
@@ -146,6 +172,9 @@ def main() -> None:
         started = time.monotonic()
         owl.load()  # one-off model load is not part of the per-video time
         print(f"OWLv2 loaded in {time.monotonic() - started:.1f}s")
+    if args.sweep:
+        print_sweep(sorted(paths, key=lambda n: int(n.split("-")[1])), paths, owl)
+        return
     if args.series:
         for name in (v.strip().upper() for v in args.series.split(",")):
             print_series(name, run_scene(name, paths[name], owl))
