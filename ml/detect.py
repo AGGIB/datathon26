@@ -52,8 +52,15 @@ def _nms(dets: list[Detection], iou_thr: float) -> list[Detection]:
     """Per-label NMS that also drops nested duplicates (e.g. an upper-body box inside a full-body box)."""
     from .track import iou  # local import keeps track.py free of torch
 
+    def area(b: Box) -> float:
+        return (b[2] - b[0]) * (b[3] - b[1])
+
     def duplicate(d: Detection, k: Detection) -> bool:
-        return d.label == k.label and (iou(d.box, k.box) >= iou_thr or _intersection_over_smaller(d.box, k.box) >= NESTED_IOS)
+        """d is weaker than the already kept k: drop it on overlap, or when it is a smaller box nested inside k."""
+        if d.label != k.label:
+            return False
+        nested = area(d.box) <= area(k.box) and _intersection_over_smaller(d.box, k.box) >= NESTED_IOS
+        return iou(d.box, k.box) >= iou_thr or nested
 
     kept: list[Detection] = []
     for d in sorted(dets, key=lambda d: d.score, reverse=True):

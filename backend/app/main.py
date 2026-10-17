@@ -12,6 +12,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import mock_pipeline
+from .config import Settings
+from .media import looks_like_isobmff
+from .runner import JobRunner, PipelineFn
+from .schemas import JobAccepted, JobView
+from .store import JobStore, new_job_id
+
 _FALLBACK_INDEX_HTML = """<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -63,12 +70,6 @@ _FALLBACK_INDEX_HTML = """<!DOCTYPE html>
 </html>
 """
 
-from . import mock_pipeline
-from .config import Settings
-from .media import looks_like_isobmff
-from .runner import JobRunner, PipelineFn
-from .schemas import JobAccepted, JobView
-from .store import JobStore, new_job_id
 
 log = logging.getLogger(__name__)
 

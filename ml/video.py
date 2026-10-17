@@ -92,7 +92,6 @@ def frames_at(path: Path | str, times: list[float]) -> dict[float, np.ndarray]:
         return {}
 
     found: dict[float, np.ndarray] = {}
-    last_frame: np.ndarray | None = None
     cap = _open(Path(path))
     try:
         idx = 0
@@ -101,19 +100,31 @@ def frames_at(path: Path | str, times: list[float]) -> dict[float, np.ndarray]:
             if idx in wanted:
                 ok, frame = cap.retrieve()
                 if ok:
-                    last_frame = frame
                     for t in wanted[idx]:
                         found[t] = frame
             idx += 1
     finally:
         cap.release()
-    # frame_count can overstate decodable frames: give unreachable tail requests the last decoded wanted frame
-    if last_frame is not None:
-        for target, ts in wanted.items():
-            if target >= idx:
-                for t in ts:
-                    found.setdefault(t, last_frame)
+    unreachable = [t for target, ts in wanted.items() if target >= idx for t in ts]
+    if unreachable and idx > 0:
+        # frame_count overstated the decodable frames: those requests get the real last frame (second pass, rare)
+        tail = _last_decodable_frame(Path(path), idx - 1)
+        if tail is not None:
+            for t in unreachable:
+                found[t] = tail
     return found
+
+
+def _last_decodable_frame(path: Path, last_idx: int) -> np.ndarray | None:
+    cap = _open(path)
+    try:
+        for _ in range(last_idx):
+            if not cap.grab():
+                return None
+        ok, frame = cap.read()
+    finally:
+        cap.release()
+    return frame if ok else None
 
 
 def frame_at(path: Path | str, t_sec: float) -> np.ndarray | None:

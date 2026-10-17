@@ -63,3 +63,11 @@ def test_partially_overlapping_second_person_is_kept():
     cashier = Detection(box=(0.0, 0.0, 100.0, 200.0), score=0.9, label="person")
     behind = Detection(box=(60.0, -20.0, 140.0, 150.0), score=0.8, label="person")  # half outside
     assert len(_nms([cashier, behind], iou_thr=0.6)) == 2
+
+
+def test_larger_weaker_box_around_a_smaller_stronger_one_is_kept():
+    from ml.detect import Detection, _nms
+
+    small_strong = Detection(box=(10.0, 5.0, 70.0, 110.0), score=0.9, label="person")
+    big_weak = Detection(box=(0.0, 0.0, 100.0, 200.0), score=0.6, label="person")
+    assert len(_nms([small_strong, big_weak], iou_thr=0.6)) == 2
