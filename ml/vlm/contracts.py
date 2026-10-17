@@ -82,4 +82,5 @@ class VerificationReport:
 
     @property
     def retained_candidates(self) -> list[dict[str, Any]]:
-        return [r.candidate for r in self.results if r.status != "rejected"]
+        # Rejection is advisory only: calibration has not authorized CV deletion.
+        return [r.candidate for r in self.results]

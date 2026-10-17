@@ -2,6 +2,7 @@
 import importlib
 import importlib.util
 import math
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -45,6 +46,8 @@ class SplitTests(unittest.TestCase):
             {"video_id": "камера_A_2.MOV", "angle_id": "ракурс_1", "label": 0},
             {"video_id": "camera_A.MOV", "angle_id": "angle_2", "label": 0},
         ]
+        for row in rows:
+            row["content_sha256"] = hashlib.sha256(row["video_id"].encode()).hexdigest()
         split = core.split_videos(rows, ["ракурс_1"], ["angle_2"])
         self.assertEqual([r["video_id"] for r in split["train"]],
                          ["камера_A.MOV", "камера_A_2.MOV"])
@@ -153,12 +156,16 @@ def training_fixture():
         {"video_id": "hold_нарушение.MOV", "angle_id": "hold_view", "label": 1,
          "positive_times_s": [2.12]},
         {"video_id": "hold_negative.MOV", "angle_id": "hold_view", "label": 0},
+        {"video_id": "validation.MOV", "angle_id": "validation_view", "label": 0},
     ]
+    for row in rows:
+        row["content_sha256"] = hashlib.sha256(row["video_id"].encode()).hexdigest()
     values = [[[1e6, 1], [8, 1]], [[-2, 1], [-3, 1]],
-              [[1000, 1], [2000, 1]], [[-1000, 1], [-2000, 1]]]
+              [[1000, 1], [2000, 1]], [[-1000, 1], [-2000, 1]], [[-100, 1], [-200, 1]]]
     caches = [{"video_id": row["video_id"], "timestamps_s": np.array([0.03, 2.12]),
                "embeddings": np.array(value, dtype=np.float32),
-               "metadata": {"schema_version": 1, "feature_spec": dict(core.FEATURE_SPEC)}}
+               "metadata": {"schema_version": 1, "feature_spec": dict(core.FEATURE_SPEC),
+                            "content_sha256": row["content_sha256"]}}
               for row, value in zip(rows, values)]
     return rows, caches
 
@@ -169,16 +176,17 @@ class ClassifierTests(unittest.TestCase):
         classifier = baseline_module("classifier")
         self.assertTrue(hasattr(classifier, "evaluate_holdout"), "grouped holdout reporting is missing")
         rows, caches = training_fixture()
-        model = classifier.train_classifier(caches, rows, ["train_view"], ["hold_view"], epochs=60)
-        report = classifier.evaluate_holdout(model, caches[2:], rows, ["train_view"], ["hold_view"])
+        model = classifier.train_classifier(caches, rows, ["train_view"], ["hold_view"], epochs=60,
+                                             validation_angles=["validation_view"])
+        report = classifier.evaluate_holdout(model, caches[2:4], rows, ["train_view"], ["hold_view"])
         self.assertEqual(report["n_videos"], 2)
         self.assertEqual({p["video_id"] for p in report["predictions"]},
-                         {r["video_id"] for r in rows[2:]})
-        for predictions in [caches[2:3], caches, caches[2:] + [caches[2]]]:
+                         {r["video_id"] for r in rows[2:4]})
+        for predictions in [caches[2:3], caches, caches[2:4] + [caches[2]]]:
             with self.assertRaises(ValueError):
                 classifier.evaluate_holdout(model, predictions, rows, ["train_view"], ["hold_view"])
         with self.assertRaises(ValueError):
-            classifier.evaluate_holdout(model, caches[2:], rows, [], [])
+            classifier.evaluate_holdout(model, caches[2:4], rows, [], [])
         with self.assertRaises(ValueError):
             classifier.evaluate_holdout(model, caches[:2], rows, ["hold_view"], ["train_view"])
         result = classifier.predict_cache(model, caches[2])
@@ -190,7 +198,8 @@ class ClassifierTests(unittest.TestCase):
         self.assertTrue(hasattr(classifier, "save_model"), "safe model persistence is missing")
         np = importlib.import_module("numpy")
         rows, caches = training_fixture()
-        model = classifier.train_classifier(caches, rows, ["train_view"], ["hold_view"], epochs=50)
+        model = classifier.train_classifier(caches, rows, ["train_view"], ["hold_view"], epochs=50,
+                                             validation_angles=["validation_view"])
         with tempfile.TemporaryDirectory(dir=SCRATCH) as tmp:
             path = Path(tmp) / "model.npz"
             classifier.save_model(path, model)
@@ -212,7 +221,8 @@ class ClassifierTests(unittest.TestCase):
         np = importlib.import_module("numpy")
         rows, caches = training_fixture()
         model = classifier.train_classifier(caches, rows, ["train_view"], ["hold_view"],
-                                            positive_radius_s=0.1, seed=17, epochs=600)
+                                            positive_radius_s=0.1, seed=17, epochs=600,
+                                            validation_angles=["validation_view"])
         np.testing.assert_allclose(model["mean"], [1, 1])
         self.assertEqual(model["scale"][1], 1)
         self.assertEqual(set(model["metadata"]["train_video_ids"]), {r["video_id"] for r in rows[:2]})
@@ -221,12 +231,14 @@ class ClassifierTests(unittest.TestCase):
         self.assertLess(scores[1], 0.1)
         caches[2]["embeddings"] *= -999  # held-out data must not affect fitting
         second = classifier.train_classifier(caches, rows, ["train_view"], ["hold_view"],
-                                             positive_radius_s=0.1, seed=17, epochs=600)
+                                             positive_radius_s=0.1, seed=17, epochs=600,
+                                             validation_angles=["validation_view"])
         for key in ("mean", "scale", "weights", "intercept"):
             np.testing.assert_array_equal(model[key], second[key])
         for bad_caches in [caches[:-1], caches + [caches[0]]]:
             with self.assertRaises(ValueError):
-                classifier.train_classifier(bad_caches, rows, ["train_view"], ["hold_view"])
+                classifier.train_classifier(bad_caches, rows, ["train_view"], ["hold_view"],
+                                             validation_angles=["validation_view"])
         with self.assertRaises(ValueError):
             classifier.train_classifier(caches, rows, [], [])
         with self.assertRaises(ValueError):
@@ -450,7 +462,8 @@ class CliTests(unittest.TestCase):
                 cache_args += ["--cache", str(path)]
             model, report = artifacts / "model.npz", artifacts / "report.json"
             base = [sys.executable, "-m", "ml.baseline", "--artifact-root", str(root)]
-            split = ["--manifest", str(manifest), "--train-angle", "train_view", "--holdout-angle", "hold_view"]
+            split = ["--manifest", str(manifest), "--train-angle", "train_view", "--holdout-angle", "hold_view",
+                     "--validation-angle", "validation_view"]
             train = subprocess.run(base + ["train"] + split + ["--model", str(model), "--report", str(report),
                                          "--positive-radius", "0.1", "--epochs", "60"] + cache_args,
                                    capture_output=True, text=True, encoding="utf-8")
@@ -464,7 +477,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(predict.returncode, 0, predict.stderr)
             self.assertEqual(core.read_json(target)["video_id"], rows[2]["video_id"])
             evaluate = subprocess.run(base + ["evaluate"] + split + ["--model", str(model), "--report", str(report)]
-                                      + cache_args[4:], capture_output=True, text=True, encoding="utf-8")
+                                      + cache_args[4:8], capture_output=True, text=True, encoding="utf-8")
             self.assertEqual(evaluate.returncode, 0, evaluate.stderr)
             refused = subprocess.run(base + predict_args + [str(root / "outside.json")],
                                      capture_output=True, text=True, encoding="utf-8")

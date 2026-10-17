@@ -117,7 +117,8 @@ def test_delayed_video_matches_baseline_and_selects_candidate_container_seconds(
     backend.infer.return_value = json.dumps({"candidate_id": "cv-delayed", "rule_id": "r1",
         "violation": True, "confidence": 0.9, "insufficient_evidence": False,
         "observations": [{"timestamp_s": 6, "text": "Artificial fixture only"}]})
-    report = api.verify_candidates(video, [candidate], [rule], backend=backend, frame_source=source)
+    report = api.verify_candidates(video, [candidate], [rule], backend=backend, frame_source=source,
+                                   budget_sec=10)
     assert report.results[0].status == "confirmed"
     request = backend.infer.call_args.args[0]
     assert [(frame.timestamp_s, frame.pts_s) for frame in request.frames] == [(6, 6)]
@@ -157,7 +158,8 @@ def test_malformed_shard_maps_fail_closed_and_preserve_cv_candidate(snapshot, we
         result = module.preflight(snapshot)
         assert not result.ready
         assert "weight_shards_invalid" in result.errors
-        report = api.verify_candidates("unused-fixture.mp4", [candidate], [rule], model_path=snapshot)
+        report = api.verify_candidates("unused-fixture.mp4", [candidate], [rule], model_path=snapshot,
+                                       budget_sec=5)
     assert report.results[0].status == "uncertain"
     assert report.results[0].reason == "model_unavailable"
     assert report.retained_candidates == [candidate]

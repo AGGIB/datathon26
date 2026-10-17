@@ -26,6 +26,43 @@ INSTRUCTIONS = (
 )
 
 
+def _bounded_call(operation, timeout_s: float):
+    """Bound trusted fixture seams even when they ignore the timeout argument."""
+    if timeout_s <= 0:
+        raise TimeoutError("operation_timeout")
+    deadline = time.monotonic() + timeout_s
+    result = queue.Queue(maxsize=1)
+
+    def run():
+        try:
+            result.put((True, operation()))
+        except Exception as exc:
+            result.put((False, exc))
+
+    threading.Thread(target=run, daemon=True).start()
+    try:
+        success, value = result.get(timeout=timeout_s)
+    except queue.Empty:
+        raise TimeoutError("operation_timeout") from None
+    if time.monotonic() >= deadline:
+        raise TimeoutError("operation_timeout")
+    if not success:
+        raise value
+    return value
+
+
+def _frames_call(source, method, args, timeout_s):
+    from .owner_frames import OwnerFrames
+    from .frames import FFmpegFrames
+    if timeout_s <= 0:
+        raise TimeoutError("frame_timeout")
+    # Production sources own killable work and must finish cancellation before
+    # temporary frames are cleaned. Only trusted custom fixtures use threads.
+    if isinstance(source, (OwnerFrames, FFmpegFrames)):
+        return getattr(source, method)(*args, timeout_s)
+    return _bounded_call(lambda: getattr(source, method)(*args, timeout_s), timeout_s)
+
+
 def _infer(backend: Backend, request: InferenceRequest, timeout_s: float) -> str:
     # Production backend owns a killable process. Fixture/custom backends also cannot
     # block the caller forever; a timed-out fixture thread is abandoned, never reused.
@@ -54,13 +91,27 @@ def _verify(video_path: str | Path, candidates: Sequence[Mapping[str, Any]],
                       rules: Sequence[Mapping[str, Any]], *, backend: Backend | None = None,
                       frame_source: FrameSource | None = None, max_calls: int = 6,
                       enable_open_checklist: bool = False, timeout_s: float = 60,
-                      video_timeout_s: float = 300) -> VerificationReport:
-    if not number(timeout_s) or timeout_s <= 0 or not number(video_timeout_s) or video_timeout_s <= 0:
+                      deadline: float) -> VerificationReport:
+    if not number(timeout_s) or timeout_s <= 0:
         raise ValueError("timeouts must be finite positive numbers")
-    deadline = time.monotonic() + video_timeout_s
     if type(max_calls) is not int or not 0 <= max_calls <= 6:
         raise ValueError("max_calls must be an integer in 0..6")
     report = VerificationReport()
+    info = None
+    probe_error = None
+
+    def probe_once():
+        nonlocal info, probe_error
+        if probe_error is not None:
+            raise probe_error
+        if info is None:
+            try:
+                info = _frames_call(frame_source, "probe", (video_path,), min(timeout_s, deadline - time.monotonic()))
+            except Exception as exc:
+                probe_error = exc
+                raise
+        return info
+
     catalog = {}
     seen = set()
     duplicates = set()
@@ -102,9 +153,10 @@ def _verify(video_path: str | Path, candidates: Sequence[Mapping[str, Any]],
             report.results.append(VerificationResult(original, "uncertain", "budget_exhausted"))
             continue
         try:
-            info = frame_source.probe(video_path, min(timeout_s, deadline - time.monotonic()))
-        except Exception:
-            report.results.append(VerificationResult(original, "uncertain", "frames_unavailable"))
+            info = probe_once()
+        except Exception as exc:
+            reason = "timeout" if isinstance(exc, TimeoutError) else "frames_unavailable"
+            report.results.append(VerificationResult(original, "uncertain", reason))
             continue
         if (not isinstance(candidate.get("candidate_id"), str) or not candidate["candidate_id"].strip()
             or not number(candidate.get("start_s")) or not number(candidate.get("end_s"))
@@ -118,7 +170,7 @@ def _verify(video_path: str | Path, candidates: Sequence[Mapping[str, Any]],
             continue
         with tempfile.TemporaryDirectory(prefix="vlm-") as directory:
             try:
-                frames = frame_source.extract(video_path, selected, Path(directory),
+                frames = _frames_call(frame_source, "extract", (video_path, selected, Path(directory)),
                     min(timeout_s, deadline - time.monotonic()))
                 if not frames:
                     raise ValueError("empty_frames")
@@ -163,14 +215,14 @@ def _verify(video_path: str | Path, candidates: Sequence[Mapping[str, Any]],
             report.checklist_status = "model_unavailable"
         else:
             try:
-                info = frame_source.probe(video_path, min(timeout_s, deadline - time.monotonic()))
+                info = probe_once()
             except Exception as exc:
                 report.checklist_status = "timeout" if isinstance(exc, TimeoutError) else "frames_unavailable"
                 return report
             selected = select_timestamps(info.frames, 6)
             with tempfile.TemporaryDirectory(prefix="vlm-") as directory:
                 try:
-                    frames = frame_source.extract(video_path, selected, Path(directory),
+                    frames = _frames_call(frame_source, "extract", (video_path, selected, Path(directory)),
                         min(timeout_s, deadline - time.monotonic()))
                     if not frames:
                         raise ValueError("empty_frames")
@@ -226,26 +278,31 @@ def verify_candidates(video_path: str | Path, candidates: Sequence[Mapping[str, 
                       rules: Sequence[Mapping[str, Any]], *, model_path: str | Path | None = None,
                       backend: Backend | None = None, frame_source: FrameSource | None = None,
                       max_calls: int = 6, enable_open_checklist: bool = False,
-                      timeout_s: float = 60, video_timeout_s: float = 300,
-                      device: str = "cpu") -> VerificationReport:
+                      timeout_s: float = 60, budget_sec: float | None = None,
+                      video_timeout_s: float | None = None,
+                      device: str = "cpu", _deadline: float | None = None) -> VerificationReport:
     """Verify one video's complete candidate set, sharing <=6 calls with checklist.
 
     All results are human-review advisories. Missing evidence never deletes a candidate.
     Injected backends are an explicit integration/testing seam, not the default runtime.
     """
-    from .preflight import enforce_offline, preflight
+    budget = remaining_budget(budget_sec, video_timeout_s)
+    deadline = time.monotonic() + budget
+    if _deadline is not None:
+        deadline = min(deadline, _deadline)
+    from .preflight import enforce_offline
     from .frames import FFmpegFrames
-    from .transformers_backend import LocalTransformersBackend
     enforce_offline()
-    owned_backend = None
-    if backend is None and model_path is not None and preflight(model_path).ready:
-        owned_backend = LocalTransformersBackend(model_path, device=device)
-        backend = owned_backend
-    try:
-        return _verify(video_path, candidates, rules, backend=backend,
-                       frame_source=frame_source or FFmpegFrames(), max_calls=max_calls,
-                       enable_open_checklist=enable_open_checklist, timeout_s=timeout_s,
-                       video_timeout_s=video_timeout_s)
-    finally:
-        if owned_backend is not None:
-            owned_backend.close()
+    # Legacy model_path/device keywords are inert: startup owns all model I/O.
+    return _verify(video_path, candidates, rules, backend=backend,
+                   frame_source=frame_source or FFmpegFrames(), max_calls=max_calls,
+                   enable_open_checklist=enable_open_checklist, timeout_s=timeout_s,
+                   deadline=deadline)
+
+
+def remaining_budget(budget_sec: float | None, video_timeout_s: float | None = None) -> float:
+    """Require K2's remaining budget; legacy explicit caps may only shorten it."""
+    values = [value for value in (budget_sec, video_timeout_s) if value is not None]
+    if budget_sec is None or any(not number(value) or value <= 0 for value in values):
+        raise ValueError("remaining budget must be a finite positive number")
+    return min(values)

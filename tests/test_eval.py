@@ -89,8 +89,8 @@ class ScoreTests(unittest.TestCase):
     def test_explicit_angle_holdout_filters_without_leakage(self):
         from ml.eval import score
         labels = [{'video': name, 'positive': True, 'timestamp': 1} for name in ('train_synthetic', 'test_synthetic')]
-        split = [{'video': 'train_synthetic', 'subset': 'train', 'angle_id': 'angle_a'},
-                 {'video': 'test_synthetic.mov', 'subset': 'test', 'angle_id': 'angle_b'}]
+        split = [{'video': 'train_synthetic', 'subset': 'train', 'angle_id': 'angle_a', 'content_sha256': 'a' * 64},
+                 {'video': 'test_synthetic.mov', 'subset': 'test', 'angle_id': 'angle_b', 'content_sha256': 'b' * 64}]
         predictions = [{'video': name, 'status': 'ok', 'verdict': 'violation', 'violations': []} for name in ('train_synthetic', 'test_synthetic')]
         report = score(labels, predictions, split=split)
         self.assertEqual(report['overall']['total'], 1)
@@ -128,7 +128,7 @@ class ScoreTests(unittest.TestCase):
         # The global assignment must beat greedily choosing the closest pair first.
         predictions['predictions'][0]['result']['violations'] = [{'t_peak': 3}, {'t_peak': 4}]
         annotations[0]['t_peak'], annotations[1]['t_peak'] = 0, 3
-        self.assertEqual(score(labels, predictions, annotations=annotations)['overall']['localization']['mae_sec'], 2)
+        self.assertEqual(score(labels, predictions, annotations=annotations, tolerance_sec=4)['overall']['localization']['mae_sec'], 2)
 
     def test_failures_abstain_and_missing_positives_reduce_end_to_end_recall(self):
         self.assertIsNotNone(importlib.util.find_spec('ml.eval'), 'evaluator missing')
@@ -172,7 +172,7 @@ class CLITests(unittest.TestCase):
             root = Path(folder)
             labels = root / 'labels.csv'
             with labels.open('w', encoding='utf-8', newline='') as stream:
-                csv.writer(stream).writerows([['video', 'timestamp', 'label'], ['X_synthetic', '22 секунда', 'нарушение'], ['Х_synthetic', '', 'без нарушения']])
+                csv.writer(stream).writerows([['video', 'timestamp', 'label'], ['X_synthetic', '22 секунда', 'нарушение'], ['Х_synthetic_n', '', 'без нарушения']])
             media = root / 'media'
             (media / 'nested').mkdir(parents=True)
             (media / 'nested' / 'X_synthetic.mov').write_bytes(b'')
@@ -188,9 +188,9 @@ class CLITests(unittest.TestCase):
             predictions.write_text(json.dumps({'results': [{'video': 'X_synthetic.mov', 'status': 'ok', 'elapsed_sec': 1,
                 'result': {'verdict': 'violation', 'violations': [{'type': 'synthetic', 't_peak': 23}]}}]}), encoding='utf-8')
             annotations = root / 'annotations.csv'
-            annotations.write_text('video,type,t_peak,angle_id\nX_synthetic,synthetic,22,angle_a\nХ_synthetic,,,angle_b\n', encoding='utf-8')
+            annotations.write_text('video,type,t_peak,angle_id\nX_synthetic,synthetic,22,angle_a\nХ_synthetic_n,,,angle_b\n', encoding='utf-8')
             split = root / 'split.json'
-            split.write_text(json.dumps({'train': [{'video': 'Х_synthetic', 'angle_id': 'angle_b'}], 'test': [{'video': 'X_synthetic', 'angle_id': 'angle_a'}]}), encoding='utf-8')
+            split.write_text(json.dumps({'train': [{'video': 'Х_synthetic_n', 'angle_id': 'angle_b', 'content_sha256': 'b' * 64}], 'test': [{'video': 'X_synthetic', 'angle_id': 'angle_a', 'content_sha256': 'a' * 64}]}), encoding='utf-8')
             result = self.run_cli('score', '--labels', labels, '--predictions', predictions, '--annotations', annotations, '--split', split, '--output', root / 'score')
             self.assertEqual(result.returncode, 0, result.stderr)
             for name in ('overall.json', 'per_video.json', 'per_video.csv', 'report.md'):

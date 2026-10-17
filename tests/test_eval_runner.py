@@ -75,6 +75,110 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertEqual(json.loads((self.output / 'predictions.json').read_text(encoding='utf-8')), records)
         self.assertEqual(sorted(path.name for path in self.output.iterdir()), ['predictions.json'])
 
+    def test_interrupt_at_second_worker_preserves_exact_first_checkpoint(self):
+        from ml.eval_runner import _run_worker
+        target = self.fixture('''
+            def analyze(video_path, on_progress=None, time_budget_sec=None):
+                return {'verdict': 'no_violation', 'violations': []}
+        ''')
+        self.output.mkdir()
+        predictions = self.output / 'predictions.json'
+        predictions.write_text('[{"video": "stale"}]', encoding='utf-8')
+        snapshots = []
+
+        def interrupt_second(command, env, timeout):
+            snapshots.append(json.loads(predictions.read_text(encoding='utf-8')))
+            if len(snapshots) == 2:
+                raise KeyboardInterrupt()
+            return _run_worker(command, env, timeout)
+
+        labels = [self.label('first'), self.label('interrupted')]
+        with patch('ml.eval_runner._run_worker', side_effect=interrupt_second), \
+                patch('ml.eval_runner.time.perf_counter', return_value=10), \
+                self.assertRaises(KeyboardInterrupt):
+            self.run_pipeline(labels, pipeline=target)
+        expected = [{'status': 'done', 'verdict': 'no_violation', 'violations': [],
+                     'video': 'first', 'elapsed_sec': 0}]
+        self.assertEqual(json.loads(predictions.read_text(encoding='utf-8')), expected)
+        self.assertEqual(snapshots, [[], expected])
+        self.assertEqual(sorted(path.name for path in self.output.iterdir()), ['predictions.json'])
+
+    def test_file_failures_are_checkpointed_before_next_worker_interrupt(self):
+        labels = [self.label('absent', present=False), self.label('duplicate'), self.label('next')]
+        nested = self.videos / 'nested'
+        nested.mkdir()
+        (nested / 'duplicate.mov').write_bytes(b'not-media')
+        expected = [{'video': 'absent', 'status': 'failed', 'error': 'MissingFile', 'elapsed_sec': 0},
+                    {'video': 'duplicate', 'status': 'failed', 'error': 'AmbiguousFile', 'elapsed_sec': 0}]
+        with patch('ml.eval_runner._run_worker', side_effect=KeyboardInterrupt), \
+                patch('ml.eval_runner.time.perf_counter', return_value=10), \
+                self.assertRaises(KeyboardInterrupt):
+            self.run_pipeline(labels)
+        self.assertEqual(json.loads((self.output / 'predictions.json').read_text(encoding='utf-8')), expected)
+
+    def test_request_failure_before_worker_is_checkpointed_and_processing_continues(self):
+        from ml.eval_runner import _dump
+        expected = [{'status': 'failed', 'error': 'PermissionError', 'video': 'first', 'elapsed_sec': 0}]
+
+        def fail_first_request(path, value):
+            if Path(path).name == '0-request.json':
+                raise PermissionError('PRIVATE_REQUEST_ERROR')
+            return _dump(path, value)
+
+        with patch('ml.eval_runner._dump', side_effect=fail_first_request), \
+                patch('ml.eval_runner._run_worker', side_effect=KeyboardInterrupt) as worker, \
+                patch('ml.eval_runner.time.perf_counter', return_value=10), \
+                self.assertRaises(KeyboardInterrupt):
+            self.run_pipeline([self.label('first'), self.label('next')])
+        worker.assert_called_once()
+        self.assertEqual(json.loads((self.output / 'predictions.json').read_text(encoding='utf-8')), expected)
+        self.assertEqual(sorted(path.name for path in self.output.iterdir()), ['predictions.json'])
+
+    def test_audit_failure_before_workers_replaces_previous_run_with_empty_snapshot(self):
+        self.output.mkdir()
+        predictions = self.output / 'predictions.json'
+        predictions.write_text('[{"video": "stale"}]', encoding='utf-8')
+        with patch('ml.eval_runner.audit', side_effect=ValueError('PRIVATE_AUDIT_ERROR')), \
+                patch('ml.eval_runner._run_worker') as worker, self.assertRaises(ValueError):
+            self.run_pipeline([])
+        worker.assert_not_called()
+        self.assertEqual(json.loads(predictions.read_text(encoding='utf-8')), [])
+        self.assertEqual(sorted(path.name for path in self.output.iterdir()), ['predictions.json'])
+
+    def test_checkpoint_publish_failure_keeps_previous_snapshot_and_removes_pending_file(self):
+        from ml.eval_runner import _checkpoint
+        self.output.mkdir()
+        predictions = self.output / 'predictions.json'
+        previous = b'[{"video":"completed","status":"failed","error":"ValueError","elapsed_sec":1}]\n'
+        predictions.write_bytes(previous)
+        with patch('ml.eval_runner.os.replace', side_effect=PermissionError), \
+                self.assertRaises(PermissionError):
+            _checkpoint(self.output, [])
+        self.assertEqual(predictions.read_bytes(), previous)
+        self.assertEqual(sorted(path.name for path in self.output.iterdir()), ['predictions.json'])
+
+    def test_parent_strips_extra_event_fields_from_worker_response_before_checkpoint(self):
+        target = self.fixture('''
+            import json
+            import os
+            import sys
+            from pathlib import Path
+            def analyze(video_path, on_progress=None, time_budget_sec=None):
+                response = {'status': 'done', 'verdict': 'violation', 'violations': [
+                    {'type': 'synthetic', 'timecode_sec': 2.5,
+                     'evidence_frames': [{'image_base64': 'PRIVATE_FRAME'}],
+                     'description': 'PRIVATE_DESCRIPTION', 'nested': {'raw': 'PRIVATE'}}]}
+                Path(sys.argv[-1]).write_text(json.dumps(response), encoding='utf-8')
+                os._exit(0)
+        ''')
+        records = self.run_pipeline([self.label()], pipeline=target)
+        self.assertEqual(records[0]['status'], 'done')
+        self.assertEqual(set(records[0]['violations'][0]), {'type', 'timecode_sec'})
+        self.assertEqual(records[0]['violations'], [{'type': 'synthetic', 'timecode_sec': 2.5}])
+        self.assertEqual(json.loads((self.output / 'predictions.json').read_text(encoding='utf-8')), records)
+        self.assertEqual(sorted(path.name for path in self.output.rglob('*')), ['predictions.json'])
+        self.assertFalse(b'PRIVATE' in (self.output / 'predictions.json').read_bytes())
+
     def test_missing_and_ambiguous_files_fail_without_skipping_later_labels(self):
         target = self.fixture('''
             def analyze(video_path, on_progress=None, time_budget_sec=None):
@@ -188,7 +292,8 @@ class EvalRunnerTests(unittest.TestCase):
                 self.assertRegex(record['error'], r'^[A-Za-z]+Error$')
         json.dumps(records, allow_nan=False)
 
-    def test_explicit_failure_statuses_stay_abstentions_and_evidence_uses_json_files(self):
+    def test_explicit_failures_abstain_and_large_evidence_never_reaches_worker_response(self):
+        from ml.eval_runner import _run_worker
         target = self.fixture('''
             from pathlib import Path
             def analyze(video_path, on_progress=None, time_budget_sec=None):
@@ -198,19 +303,40 @@ class EvalRunnerTests(unittest.TestCase):
                             'verdict': 'no_violation', 'violations': []}
                 return {'status': 'done', 'video_id': 'forged', 'verdict': 'violation',
                         'violations': [{'type': 'synthetic', 'timecode_sec': 2.5,
+                                        't_start': 1, 't_peak': 2.5, 't_end': 3,
                                         'description': 'PRIVATE_DESCRIPTION',
+                                        'observations': ['PRIVATE_OBSERVATION'],
+                                        'arbitrary': {'nested': {'raw': 'PRIVATE_NESTED'}},
                                         'evidence_frames': [{'timestamp_sec': 2.5,
                                                              'image_base64': 'A' * 2000000}]}]}
         ''')
-        records = self.run_pipeline([self.label(name) for name in ('failed', 'timed_out', 'positive')],
-                                    pipeline=target)
+        worker_payloads = []
+
+        def inspect_worker_response(command, env, timeout):
+            _run_worker(command, env, timeout)
+            worker_payloads.append(Path(command[-1]).read_bytes())
+
+        with patch('ml.eval_runner._run_worker', side_effect=inspect_worker_response):
+            records = self.run_pipeline([self.label(name) for name in ('failed', 'timed_out', 'positive')],
+                                        pipeline=target)
         self.assertEqual([r['status'] for r in records], ['failed', 'timed_out', 'done'])
         self.assertTrue(all('verdict' not in r for r in records[:2]))
         self.assertNotIn('SECRET', json.dumps(records[:2]))
         self.assertNotIn('video_id', records[2])
         event = records[2]['violations'][0]
-        self.assertEqual(event['timecode_sec'], 2.5)
-        self.assertEqual(len(event['evidence_frames'][0]['image_base64']), 2000000)
+        expected = {'type': 'synthetic', 'timecode_sec': 2.5, 't_start': 1, 't_peak': 2.5, 't_end': 3}
+        self.assertEqual(set(event), set(expected))
+        self.assertEqual(event, expected)
+        for payload in worker_payloads:
+            self.assertLess(len(payload), 4096)
+            self.assertFalse(b'PRIVATE_' in payload)
+            self.assertFalse(b'image_base64' in payload)
+        self.assertEqual(json.loads((self.output / 'predictions.json').read_text(encoding='utf-8')), records)
+        self.assertEqual(sorted(path.name for path in self.output.rglob('*')), ['predictions.json'])
+        persisted = (self.output / 'predictions.json').read_bytes()
+        self.assertLess(len(persisted), 4096)
+        self.assertFalse(b'PRIVATE_' in persisted)
+        self.assertFalse(b'image_base64' in persisted)
 
     def test_crashes_and_missing_or_corrupt_responses_do_not_reuse_stale_results(self):
         target = self.fixture('''
@@ -295,7 +421,7 @@ class EvalRunnerTests(unittest.TestCase):
         time.sleep(2.5)
         self.assertFalse((self.videos / 'child.escaped').exists())
 
-    def test_exact_identifiers_fresh_processes_private_requests_and_local_worker_temp(self):
+    def test_canonical_joins_preserve_literal_ids_fresh_processes_and_private_requests(self):
         target = self.fixture('''
             import json
             import sys
@@ -312,7 +438,8 @@ class EvalRunnerTests(unittest.TestCase):
                 assert data['pipeline'] not in sys.argv
                 return {'verdict': 'violation', 'violations': [{'timecode_sec': calls}]}
         ''')
-        labels = [self.label('LatinX'), self.label('LatinХ', positive=False)]
+        labels = [self.label('LatinХ'), self.label('OtherX', positive=False)]
+        (self.videos / 'LatinХ.mov').rename(self.videos / 'LatinX.mov')
         old_cwd = Path.cwd()
         try:
             os.chdir(self.base)
@@ -320,7 +447,7 @@ class EvalRunnerTests(unittest.TestCase):
             records = run_pipeline(labels, self.videos, pipeline=target, output_dir='output')
         finally:
             os.chdir(old_cwd)
-        self.assertEqual([r['video'] for r in records], ['LatinX', 'LatinХ'])
+        self.assertEqual([r['video'] for r in records], ['LatinХ', 'OtherX'])
         self.assertEqual([r['status'] for r in records], ['done', 'done'])
         self.assertEqual([r['violations'][0]['timecode_sec'] for r in records], [1, 1])
         self.assertFalse(any('positive' in r or 'timestamp' in r for r in records))

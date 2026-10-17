@@ -27,6 +27,16 @@ def _dump(path, value):
     Path(path).write_text(json.dumps(value, ensure_ascii=False, allow_nan=False) + '\n', encoding='utf-8')
 
 
+def _checkpoint(output, records):
+    with tempfile.NamedTemporaryFile(prefix='.predictions-', dir=output, delete=False) as stream:
+        pending = Path(stream.name)
+    try:
+        _dump(pending, records)
+        os.replace(pending, output / 'predictions.json')
+    finally:
+        pending.unlink(missing_ok=True)
+
+
 def _local_path(value):
     text = os.fspath(value)
     if not isinstance(text, str) or text.startswith(('\\\\', '//')) or (
@@ -84,6 +94,7 @@ def run_pipeline(labels, videos_dir, pipeline='ml.pipeline:analyze',
     directory = _local_path(videos_dir)
     output = _local_path(output_dir if output_dir is not None else _ROOT / 'artifacts' / 'eval-runner')
     output.mkdir(parents=True, exist_ok=True)
+    _checkpoint(output, [])
     rows = audit(labels, directory, use_ffprobe=False)['per_video']
     records = []
     with tempfile.TemporaryDirectory(prefix='run-', dir=output) as temporary:
@@ -94,17 +105,18 @@ def run_pipeline(labels, videos_dir, pipeline='ml.pipeline:analyze',
                 records.append({'video': row['video'], 'status': 'failed',
                                 'error': 'MissingFile' if row['file_status'] == 'missing' else 'AmbiguousFile',
                                 'elapsed_sec': time.perf_counter() - started})
+                _checkpoint(output, records)
                 continue
             request = temporary / (str(index) + '-request.json')
             response = temporary / (str(index) + '-response.json')
-            _dump(request, {'pipeline': pipeline, 'video_path': str(directory / row['matched_paths'][0]),
-                            'time_budget_sec': time_budget_sec})
-            env = os.environ.copy()
-            env.update({key: '1' for key in
-                        ('HF_HUB_OFFLINE', 'TRANSFORMERS_OFFLINE', 'HF_HUB_DISABLE_TELEMETRY')})
-            env['PYTHONPATH'] = str(_ROOT) + os.pathsep + env.get('PYTHONPATH', '')
-            env.update({key: str(temporary) for key in ('TMPDIR', 'TEMP', 'TMP')})
             try:
+                _dump(request, {'pipeline': pipeline, 'video_path': str(directory / row['matched_paths'][0]),
+                                'time_budget_sec': time_budget_sec})
+                env = os.environ.copy()
+                env.update({key: '1' for key in
+                            ('HF_HUB_OFFLINE', 'TRANSFORMERS_OFFLINE', 'HF_HUB_DISABLE_TELEMETRY')})
+                env['PYTHONPATH'] = str(_ROOT) + os.pathsep + env.get('PYTHONPATH', '')
+                env.update({key: str(temporary) for key in ('TMPDIR', 'TEMP', 'TMP')})
                 _run_worker([sys.executable, '-m', 'ml.eval_runner', '_worker', str(request), str(response)],
                             env, max(0.001, timeout_sec - (time.perf_counter() - started)))
                 result = _read_response(response)
@@ -113,9 +125,7 @@ def run_pipeline(labels, videos_dir, pipeline='ml.pipeline:analyze',
             except (OSError, subprocess.CalledProcessError, ValueError, TypeError) as error:
                 result = {'status': 'failed', 'error': type(error).__name__}
             records.append(dict(result, video=row['video'], elapsed_sec=time.perf_counter() - started))
-        pending = temporary / 'predictions.json'
-        _dump(pending, records)
-        os.replace(pending, output / 'predictions.json')
+            _checkpoint(output, records)
     return records
 
 
@@ -170,7 +180,10 @@ def _validated_result(result):
             raise ValueError()
     # Reject NaN, non-JSON data, cycles, etc., inside the worker's exception boundary.
     json.dumps(result, allow_nan=False)
-    return {'status': 'done', 'verdict': verdict, 'violations': events}
+    return {'status': 'done', 'verdict': verdict,
+            'violations': [{key: event[key] for key in
+                            ('type', 'timecode_sec', 't_start', 't_peak', 't_end') if key in event}
+                           for event in events]}
 
 
 def _read_response(path):

@@ -2,7 +2,9 @@
 import math
 import json
 import re
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+
+from ml.labels import normalize_video_name
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODEL_ID = "google/siglip-base-patch16-224"
@@ -53,25 +55,54 @@ def sample_timestamps(timestamps, fps=1.0, max_frames=3600):
     return selected
 
 
-def split_videos(rows, train_angles, holdout_angles):
-    """Require a complete, explicit angle partition; never infer unknown angles."""
+def canonical_video_id(value):
+    """Validate a literal filename/token BEFORE using the shared canonical join."""
+    if (not isinstance(value, str) or not value or value != value.strip() or value.endswith(".")
+            or any(c in value for c in '/\\:<>"|?*') or any(c.isspace() for c in value)
+            or any(ord(c) < 32 or ord(c) == 127 for c in value)
+            or value in {".", ".."} or PureWindowsPath(value).is_reserved()):
+        raise ValueError("video_id must be a well-formed literal filename or ID, not a path")
+    stem = Path(value).stem
+    if not stem or stem != stem.strip() or not stem.strip(". "):
+        raise ValueError("video_id must have a nonempty, unpadded stem")
+    return normalize_video_name(value)
+
+
+def content_sha256(value):
+    """Validate a digest token; this does not hash or authenticate source bytes."""
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise ValueError("Every video requires a literal lowercase content SHA256")
+    return value
+
+
+def split_videos(rows, train_angles, holdout_angles, validation_angles=None):
+    """Explicit content-isolated partition; two-way mode is diagnostic ONLY."""
     rows = list(rows)
-    require_hashes = any('content_sha256' in row for row in rows)
-    train, holdout = set(train_angles), set(holdout_angles)
-    if not train or not holdout or train & holdout:
-        raise ValueError("Explicit nonempty disjoint train/holdout angle IDs are required")
-    if any(not isinstance(a, str) or not a.strip() or a.strip().lower() in {"unknown", "неизвестно", "unassigned"}
-           for a in train | holdout):
+    groups = {"train": list(train_angles), "holdout": list(holdout_angles)}
+    if validation_angles is not None:
+        groups["validation"] = list(validation_angles)
+    if any(not isinstance(a, str) or not a or a != a.strip()
+           or a.lower() in {"unknown", "неизвестно", "unassigned"}
+           for values in groups.values() for a in values):
         raise ValueError("Unknown/empty angle IDs cannot define a holdout")
-    result = {"train": [], "holdout": []}
+    groups = {side: set(values) for side, values in groups.items()}
+    assigned = set()
+    for values in groups.values():
+        if not values or values & assigned:
+            raise ValueError("Explicit nonempty disjoint train/validation/holdout angle IDs are required")
+        assigned.update(values)
+    result = {side: [] for side in groups}
     seen, angles = set(), set()
-    content_partitions = {}
+    content_partitions, content_labels = {}, {}
     for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Every manifest row must be a video object")
         video_id, angle = row.get("video_id"), row.get("angle_id")
-        if not isinstance(video_id, str) or not video_id.strip() or video_id in seen:
-            raise ValueError("Every video_id must be a unique nonempty literal string")
-        seen.add(video_id)
-        if angle not in train | holdout:
+        key = canonical_video_id(video_id)
+        if key in seen:
+            raise ValueError("Every video_id must be unique under canonical normalization")
+        seen.add(key)
+        if not isinstance(angle, str) or angle not in assigned:
             raise ValueError("Every video needs an explicitly assigned angle_id: " + video_id)
         if type(row.get("label")) is not int or row["label"] not in (0, 1):
             raise ValueError("label must be integer 0 or 1: " + video_id)
@@ -83,17 +114,17 @@ def split_videos(rows, train_angles, holdout_angles):
         if row["label"] == 0 and times:
             raise ValueError("Negative videos cannot contain positive timecodes")
         angles.add(angle)
-        side = "train" if angle in train else "holdout"
-        digest = row.get("content_sha256")
-        if require_hashes:
-            if not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest):
-                raise ValueError("Every video requires a literal lowercase SHA256 when hashes are supplied")
-            if digest in content_partitions and content_partitions[digest] != side:
-                raise ValueError("Identical video content cannot cross train/holdout")
-            content_partitions[digest] = side
+        side = next(side for side, values in groups.items() if angle in values)
+        digest = content_sha256(row.get("content_sha256"))
+        if digest in content_partitions and content_partitions[digest] != side:
+            raise ValueError("Identical video content cannot cross train/validation/holdout")
+        if digest in content_labels and content_labels[digest] != row["label"]:
+            raise ValueError("Identical video content has conflicting binary labels")
+        content_partitions[digest] = side
+        content_labels[digest] = row["label"]
         result[side].append(dict(row))
-    if angles != train | holdout or not all(result.values()):
-        raise ValueError("Every requested angle must have videos; both split sides must be nonempty")
+    if angles != assigned or not all(result.values()):
+        raise ValueError("Every requested angle must have videos; all split partitions must be nonempty")
     return result
 
 

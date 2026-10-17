@@ -16,7 +16,7 @@ from .core import FEATURE_SPEC, artifact_path, read_json
 
 def extract_video(video, weights, output, video_id=None, fps=1.0, max_frames=3600,
                   batch_size=8, device="cpu", cpu_threads=2, seed=0, ffmpeg="ffmpeg",
-                  timeout_s=600.0, artifact_root=None):
+                  timeout_s=600.0, artifact_root=None, encoder=None):
     target = artifact_path(output, root=artifact_root)
     if type(batch_size) is not int or batch_size <= 0:
         raise ValueError("batch_size must be a positive integer")
@@ -25,7 +25,8 @@ def extract_video(video, weights, output, video_id=None, fps=1.0, max_frames=360
     identifier = source.name if video_id is None else video_id
     if not isinstance(identifier, str) or not identifier.strip():
         raise ValueError("video_id must be a nonempty literal string")
-    encoder = SiglipEncoder(weights, device=device, cpu_threads=cpu_threads, seed=seed)
+    if encoder is None:
+        encoder = SiglipEncoder(weights, device=device, cpu_threads=cpu_threads, seed=seed)
     with closing(decode_frames(source, fps=fps, max_frames=max_frames, ffmpeg=ffmpeg, timeout_s=timeout_s)) as frames:
         times, embeddings = embed_frames(frames, encoder, batch_size=batch_size, max_frames=max_frames)
         # Resume the generator once after the final yield to check ffmpeg's exit status.

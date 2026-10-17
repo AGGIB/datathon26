@@ -1,20 +1,60 @@
 """Strict local-only label readers; no third-party packages required."""
 import math
+import hashlib
 import re
 import csv
 import posixpath
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from xml.etree import ElementTree as ET
+
+from .labels import normalize_video_name
 
 
 def video_key(value):
-    """Only an exact optional lowercase .mov suffix is equivalent."""
-    if not isinstance(value, str) or not value or value != value.strip():
-        raise ValueError('video identifier must be a nonempty string without edge whitespace')
-    if '/' in value or '\\' in value:
-        raise ValueError('video identifier must not contain a path')
-    return value[:-4] if value.endswith('.mov') else value
+    """Validate the literal source ID before applying the team's canonical join."""
+    if not isinstance(value, str) or not value or any(char.isspace() for char in value):
+        raise ValueError('video identifier must be a nonempty string without whitespace')
+    if any(char in value for char in '/\\:<>"|?*') or any(ord(char) < 32 for char in value) or value in ('.', '..'):
+        raise ValueError('video identifier must not contain a path or malformed filename')
+    if value.endswith('.') or PureWindowsPath(value).is_reserved():
+        raise ValueError('video identifier must not be a malformed or reserved Windows filename')
+    key = normalize_video_name(value)
+    if not key or key in ('.', '..'):
+        raise ValueError('empty canonical video identifier')
+    return key
+
+
+def source_index(rows, source, repeated=False):
+    """Reject canonical alias collisions within one independently supplied source."""
+    indexed = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError(source + ' record must be an object')
+        literal = row.get('video', row.get('video_id'))
+        key = video_key(literal)
+        if 'video' in row and 'video_id' in row and video_key(row['video_id']) != key:
+            raise ValueError('conflicting video and video_id in ' + source)
+        if key in indexed and (not repeated or literal != indexed[key].get('video', indexed[key].get('video_id'))):
+            raise ValueError('canonical video collision in ' + source)
+        indexed[key] = row
+    return indexed
+
+
+def validate_content_sha256(value):
+    """Accept only a literal lowercase SHA256; never normalize provenance tokens."""
+    if not isinstance(value, str) or re.fullmatch(r'[0-9a-f]{64}', value) is None:
+        raise ValueError('content_sha256 must be a complete lowercase SHA256')
+    return value
+
+
+def file_sha256(path):
+    """Stream actual local bytes without decoding media or loading model libraries."""
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def read_table(path):
@@ -91,6 +131,11 @@ def load_labels(path):
         if len(found) != 1:
             raise ValueError('missing or duplicate label column: ' + name)
         columns[name] = found[0]
+    hash_columns = [i for i, name in enumerate(header) if name == 'content_sha256']
+    if len(hash_columns) > 1:
+        raise ValueError('duplicate label column: content_sha256')
+    if hash_columns:
+        columns['content_sha256'] = hash_columns[0]
     result, seen = [], set()
     for number, row in enumerate(rows[1:], 2):
         if not any(str(cell).strip() for cell in row):
@@ -111,6 +156,8 @@ def load_labels(path):
         timestamp = cell('timestamp')
         timestamp = None if timestamp is None or str(timestamp).strip() == '' else parse_timestamp(timestamp)
         result.append({'video': video, 'positive': label == 'нарушение', 'timestamp': timestamp})
+        if hash_columns:
+            result[-1]['content_sha256'] = validate_content_sha256(cell('content_sha256'))
     if not result:
         raise ValueError('no label records')
     return result

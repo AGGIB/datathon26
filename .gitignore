@@ -1,43 +1,72 @@
-# Local datasets, model weights, extracted evidence and private reports.
-/data/
+# data — never commit videos, frames or weights
+data/
 open/
+# video/image patterns are case-insensitive on purpose (Linux/CI/Docker are case-sensitive)
+*.[mM][oO][vV]
+*.[mM][pP]4
+*.[aA][vV][iI]
+*.[mM][kK][vV]
+*.[wW][eE][bB][mM]
+*.[mM]4[vV]
+*.3[gG][pP]
+*.[mM][tT][sS]
+*.[jJ][pP][gG]
+*.[jJ][pP][eE][gG]
+*.[pP][nN][gG]
+!backend/app/fixtures/placeholder.jpg
 weights/
-var/
+*.pt
+*.pth
 *.onnx
+*.safetensors
+*.bin
+*.ckpt
+*.gguf
+*.npz
+var/
+
+# keys and credentials
+*.pem
+*.key
+id_rsa*
+credentials*.json
+*.p12
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# node
+node_modules/
+frontend/dist/
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# os
+.DS_Store
+
+# agent worktrees
+.claude/
+.playwright-mcp/
+
+# ML-only additions; keep the team's protections above intact.
 /models/
 /artifacts/
 /reports/
 /evidence/
 open_labels.xlsx
-*.mov
-*.MOV
-*.mp4
-*.avi
-*.mkv
-*.safetensors
-*.gguf
-*.pt
-*.pth
-*.npz
-
-# Environments, caches and local credentials.
-.venv/
 venv/
-__pycache__/
 *.py[cod]
-.pytest_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-.env
-.env.*
-!.env.example
 *.log
-
-# Build products and editor state.
-node_modules/
 dist/
 build/
-.DS_Store
 .vscode/
 .idea/

@@ -25,7 +25,7 @@ CLI печатает агрегированную числовую таблиц�
 
 ```bash
 python -m ml.eval audit --labels "C:/path/open_labels.xlsx" --videos-dir "C:/path/videos" --output artifacts/ml-evaluation/audit
-python -m ml.eval score --labels "C:/path/open_labels.xlsx" --predictions artifacts/predictions.json --output artifacts/ml-evaluation/score
+python -m ml.eval score --labels "C:/path/open_labels.xlsx" --predictions artifacts/predictions.json --videos-dir "C:/path/videos" --output artifacts/ml-evaluation/score
 python -m ml.eval score --labels "C:/path/open_labels.xlsx" --predictions artifacts/predictions.json --annotations "C:/path/annotations.csv" --split "C:/path/split.json" --subset test --output artifacts/ml-evaluation/holdout
 python -m ml.eval run --labels "C:/path/open_labels.xlsx" --videos-dir "C:/path/videos" --annotations "C:/path/annotations.csv" --output artifacts/ml-evaluation/current
 python -m unittest discover -s tests -v
@@ -33,16 +33,24 @@ python -m unittest discover -s tests -v
 
 `audit`: рекурсивное сопоставление файлов, пропуски, неоднозначные дубликаты,
 число файлов без меток, исходное распределение классов, необязательные числовые метаданные,
-проверка, не выходит ли временной якорь за длительность видео.
+проверка, не выходит ли временной якорь за длительность видео. SHA256 считается потоково
+по настоящим локальным байтам для каждого однозначно найденного файла; `duplicate_groups`
+содержит буквальные ID, хеш, альтернативные якоря и флаги конфликтов меток/якорей.
 `.mov`, `.MOV` и файлы без расширения перечисляются, но расширения не исправляются автоматически.
 
-`score`: `--annotations` и `--split` необязательны.
+`score`: `--annotations`, `--split` и `--videos-dir` необязательны. Последний включает
+сверку хешей по настоящим файлам, без ffprobe. `run` всегда вычисляет эти хеши **до**
+валидации split и запуска workers и передаёт их в `score(..., content_hashes=...)`.
+Во всех трёх CLI-режимах `videos-dir` проходит общую проверку локального пути **до**
+чтения labels/annotations/split, аудита, хеширования и записи отчётов. UNC, URI и сетевые
+диски отклоняются; поздней проверки внутри runner недостаточно.
 Те же поля доступны у `run`. По умолчанию вызывается `ml.pipeline:analyze`; другой локальный target
 передаётся `--pipeline module:function`. Мягкий бюджет `--time-budget-sec 240`, жёсткий `--timeout-sec 300`.
 Подробности изоляции и cold-start измерений — в `ml-runner.md`.
 Нереализованный pipeline возвращает ошибки, а не фиктивные чистые результаты.
 Без split выбирается `all`; со split по умолчанию `test`.
-`--subset train|test` без split — ошибка. `--subset all` со split всё равно проверяет изоляцию ракурсов.
+`--subset train|validation|test` без split — ошибка. `--subset all` со split всё равно
+проверяет изоляцию всех ракурсов и exact-content групп.
 Ошибки входного формата дают код возврата 2; перед валидацией входов отчёт не создаётся.
 
 ## Исходные метки
@@ -64,12 +72,35 @@ CSV: UTF-8 / UTF-8 BOM, запятая, точка с запятой или та
 Значения метки: `нарушение`, `без нарушения` (регистр и краевые пробелы метки несущественны).
 Пустой timestamp — неизвестный якорь, не нулевая секунда. Неизвестные метки и дубликаты — ошибка.
 
-Идентификаторы сохраняются буквально: Latin `X` и Cyrillic `Х` различны.
-Только **точное необязательное конечное `.mov`** снимается при сопоставлении:
-`X_synthetic` соответствует `X_synthetic.mov`, но не `Х_synthetic.mov`,
-`X_synthetic.MOV` или `X_synthetic.mp4`. Регистр, Unicode, пробелы не нормализуются.
-Пути вместо идентификаторов и краевые пробелы запрещены. Два предсказания на один
-идентификатор, в том числе с/без `.mov`, запрещены.
+Исходные ID и имена файлов сохраняются буквально для provenance (`video`, `matched_paths`).
+Для соединений `video_key` сначала отвергает пути, любые пробелы и некорректные имена,
+включая завершающую точку и зарезервированные Windows-имена (`CON`, `aux.txt`, `COM¹.mov`),
+затем вызывает существующий командный `ml.labels.normalize_video_name`: stem без расширения,
+верхний регистр и командное соответствие Latin `X` / Cyrillic `Х`. Поэтому `Х-3.mov` и `X-3`
+соединяются, но исходный текст не переписывается. Два разных буквальных ID с одним ключом
+внутри **одного** источника (labels, annotations, predictions, split, local files) — ошибка,
+а не молчаливое слияние. Повторные строки annotations допустимы только для того же буквального ID.
+
+Необязательная колонка `content_sha256` принимается в CSV/XLSX и сохраняется в labels.
+Если колонка присутствует, каждое значение обязано быть ровно 64 символа `[0-9a-f]`:
+пробелы и регистр не исправляются. Программный `score` также принимает полное отображение
+`content_hashes={literal_or_canonical_video: actual_sha256}` из локального `audit`.
+Этот аргумент — доверенная граница вызывающего кода, который обязан хешировать реальные файлы:
+сам `score` не открывает видео. Несогласие label/split хешей с этим отображением — ошибка.
+Частичные/невалидные отображения не принимаются; полный actual-map может дополнить отдельные
+хеши labels, но не переопределить противоречащие значения.
+Уже известный canonical key не нормализуется повторно: для `fixture.part.mov`
+он равен `FIXTURE.PART`, а не `FIXTURE`. Каждый токен сначала проходит literal-syntax
+валидацию. Если токен одновременно обозначает один известный canonical ID и после
+нормализации другой известный ID, отображение отклоняется как неоднозначное;
+передайте исходные буквальные имена. Literal/canonical alias collision также ошибка.
+
+`audit` и CLI проверяют локальность корня до входного I/O, затем top-down `lstat`
+каждого предка/корня и `scandir` с no-follow metadata всех вложенных записей до
+ffprobe/SHA256. Symlinks и Windows reparse points запрещены, включая ссылки на
+каталоги и файлы; обычные вложенные локальные файлы поддерживаются. Это защита
+от существующих ссылок, не ОС-песочница и не гарантия против конкурентной подмены
+файлов другим процессом: используйте доверенный неизменяемый локальный каталог.
 
 Поддерживаемое время: число секунд; `22`; `1.5`; `22 секунда`;
 `1минута 8 секунда`; `01:08`; `01:02:03`; дробные секунды в последней компоненте.
@@ -133,14 +164,20 @@ CSV: UTF-8 / UTF-8 BOM, запятая, точка с запятой или та
 video,type_id,t_peak,angle_id
 X_synthetic,synthetic_type,22,synthetic_camera_a
 X_synthetic,synthetic_type,45,synthetic_camera_a
-Х_synthetic,,,synthetic_camera_b
+Х_synthetic_n,,,synthetic_camera_b
 ```
 
 Одна строка — одно известное событие; строка без type/time задаёт только ракурс.
 Поддерживается командная колонка `type_id`; старый алиас `type` также принимается.
 Строка отрицательного видео с `type_id=none` и пустым временем не создаёт событие.
 Для видео с событиями этот список заменяет одиночный якорь XLSX и считается предоставленным
-эталонным списком; его полноту необходимо проверить вручную.
+эталонным списком; его полноту необходимо проверить вручную. Исключение: одиночное событие
+с пустым/`unknown` типом точно на исходном бинарном timestamp считается повторением primary
+anchor, а не полным inventory; оно сохраняет `label_only_limited=true` и допускает альтернативные
+якоря exact-duplicates. У exact-duplicates однотипные одиночные typed-события, каждое точно
+на своём primary timestamp, также трактуются как альтернативные якоря одного события;
+тип сохраняется. Это явная интерпретация primary-anchor CSV, не слияние отдельных
+multi-event inventories. Разные типы и несовпадающие multi-event inventories отклоняются.
 Неизвестные ракурсы/типы не определяются по имени или изображению.
 Разные ракурсы для одного видео, дубли событий, события на отрицательном видео,
 тип без `t_peak`, некорректное время — ошибки.
@@ -148,29 +185,78 @@ X_synthetic,synthetic_type,45,synthetic_camera_a
 
 ## Изолированный angle holdout
 
-Split CSV содержит `video,subset,angle_id`, по одной строке на **каждое** размеченное видео.
-`subset`: только `train` или `test`. Альтернатива — JSON:
+Split CSV содержит `video,subset,angle_id,content_sha256`, по одной строке на **каждое**
+размеченное видео. Обязательны `train` и `test`; опциональная отдельная `validation`
+предназначена для калибровки. Альтернатива — JSON (хеши ниже только синтетические):
 
 ```json
 {
-  "train": [{"video_id": "X_synthetic", "angle_id": "synthetic_camera_a"}],
-  "test": [{"video_id": "Х_synthetic", "angle_id": "synthetic_camera_b"}]
+  "train": [{"video_id": "fixture_train", "angle_id": "camera_a", "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+  "validation": [{"video_id": "fixture_val", "angle_id": "camera_b", "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}],
+  "test": [{"video_id": "fixture_test", "angle_id": "camera_c", "content_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}]
 }
 ```
 
 Для совместимости с baseline ключ `holdout` вместо `test` поддерживается в JSON.
-Обе стороны обязательны и непусты. Все ID должны быть известны и уникальны;
-ракурсы train/test не пересекаются, unknown запрещён, split и annotations согласованы.
+Каждая заявленная сторона непуста. Все ID должны быть известны и уникальны;
+ракурсы **каждой пары** train/validation/test не пересекаются, unknown/unassigned/неизвестно
+запрещены без учёта регистра, split и annotations согласованы. Для каждого члена обязателен
+валидный lowercase SHA256; одинаковый контент не может пересекать стороны даже при разных
+camera ID. При наличии хешей labels/actual-map каждый split-хеш сверяется с ними.
 Валидация проверяется на **полном** наборе, до выбора подмножества.
 Ответы на известные видео вне выбранного подмножества не оцениваются;
 их количество видно в `split.excluded_predictions`.
 
-Проверка split предотвращает структурную утечку одинаковых ракурсов.
+`content_holdout_validated=true` означает структурную проверку предоставленных хешей;
+самостоятельный split без actual-map **не** подтверждает их соответствие файлам:
+`hashes_authoritatively_verified=false`. `calibration_partition_available` сообщает наличие
+отдельной непустой validation-группы. Проверка split предотвращает структурную утечку
+одинаковых ракурсов и заявленного exact-content.
 Она не доказывает, на каких видео действительно обучалась модель: не использовать test
 для обучения, подбора порога, отбора кадров или выбора модели; нужна отдельная validation-группа.
 При отсутствии split отчёт **не** заявляет проверенный angle holdout.
 
 ## Метрики и знаменатели
+
+При полном наборе хешей `overall.aggregation_unit=content_group`: каждый SHA256 учитывается
+**один раз**, а все буквальные видео остаются в `per_video` и `video_only_overall`
+(`aggregation_unit=video_diagnostic`). Например, синтетические 42 файла с двумя дополнительными
+копиями дают 42 диагностические строки и 40 единиц качества; это тест контракта, не измерение датасета.
+`per_content_group` сохраняет состав группы, member statuses, angle IDs и альтернативные якоря.
+Несколько известных ракурсов одной группы показываются как `multiple`, а не выбираются молча.
+
+У одинакового положительного контента без полного event inventory бинарные якоря 10/20 —
+**одно** ограниченно размеченное событие, которое удовлетворяет любой якорь в допуске.
+Выбирается минимальная ошибка по допустимым альтернативам; два predicted peaks не создают
+два truth events. Полные совпадающие explicit annotations считаются один раз как inventory.
+Разные бинарные метки, противоречивые/частичные explicit inventories и разные нормализованные
+успешные ответы (вердикт или события) exact-duplicates — ошибки, включая исключённые split-группы.
+Время обработки не входит в сравнение семантики ответа.
+Порядок событий в inventory не меняет его смысл: truth и predictions канонически
+сортируются по peak, типу, start/end с отдельной обработкой отсутствующих времён.
+Тот же порядок используется для сравнения дублей, выбора representative inventory и
+детерминированного matching при равных peak. Кратность событий сохраняется; перестановка
+не является конфликтом, но изменение типа, времени или числа событий — является.
+Это tie-break, не новая оптимизация совпадения типов вместо временной ошибки.
+
+Успех группы требует **всех** member outputs: missing/invalid/failed/timed_out нельзя заменить
+успешным ответом другой копии. Группа abstains; при нескольких отказах приоритет статуса:
+invalid, timed_out, failed, missing. Времена группы консервативны: максимум по всем членам,
+либо unknown, если хотя бы одно время неизвестно. Реальная построчная нагрузка остаётся
+в `video_only_overall.processing_time`; group sum не означает фактическое суммарное время workers.
+
+Без полных label/actual hashes `content_aggregation.available=false`, `per_content_group=[]`,
+а `overall` содержит **только video diagnostics**, не deduped quality. Split-хеши сами по себе
+не включают content aggregation, но известные по ним конфликты меток/ответов всё равно отклоняются.
+Если CLI с videos-dir обнаружил missing/ambiguous файлы,
+без split сохраняются failure/coverage diagnostics с причиной `actual_content_hashes_incomplete`;
+со split запуск отклоняется до workers. Нельзя подменять отсутствующий actual-hash label-хешем.
+Отсутствие одного хеша не отменяет доказанные равенства остальных: известные actual hashes
+всё равно проверяют конфликты бинарных меток и explicit inventories до workers, а конфликты
+успешных predictions — до записи оценочного отчёта. Частичный audit не включает content aggregation,
+даже если labels содержат полный набор заявленных хешей; missing/failed строки остаются в diagnostics.
+Хеши только из labels дают grouping, но не authoritative verification настоящих байтов.
+Все нижеуказанные знаменатели относятся к выбранной единице агрегации.
 
 - `confusion`: TP/TN/FP/FN **только валидных** ответов + `abstain_positive`, `abstain_negative`.
   Ошибка/таймаут/invalid/missing никогда не становятся TN.
@@ -189,16 +275,15 @@ Split CSV содержит `video,subset,angle_id`, по одной строке
   `unknown_elapsed` не считается успехом; `completed_late` показывает поздние ответы.
   Качество `end_to_end` отдельно от SLA: поздний завершённый ответ может быть правильным,
   но не увеличивает timely-correct. Явный timed_out не оценивается как завершённый ответ.
-- `localization`: минимальная суммарная абсолютная ошибка при максимальном числе
-  **взаимно-однозначных** пар событий одного видео. Динамическое программирование по
+- `localization`: сначала максимум числа **взаимно-однозначных** пар событий
+  **внутри включительного допуска**, затем минимум суммарной абсолютной ошибки. Динамическое программирование по
   отсортированным временам, а не жадный nearest neighbour. Один predicted peak нельзя
   засчитать дважды. Есть число эталонных, предсказанных, сопоставленных и несопоставленных
   событий, MAE в секундах. События без peak — несопоставленные predicted events.
 - По умолчанию допуск равен 2 секундам: `within_tolerance` и `within_tolerance_rate_truth`
   считают корректно локализованные события относительно всех эталонных событий, включая пропуски.
-  Даже далёкая пара входит в MAE, поэтому `matched_events`
-  **не является** числом корректных детекций. Пропуски не входят в MAE и видны в отдельном
-  счётчике; хороший MAE без покрытия недостаточен.
+  Далёкие пары не сопоставляются и не входят в MAE: они остаются unmatched truth/predicted.
+  `matched_events=within_tolerance`; хороший MAE без покрытия недостаточен.
 - Только XLSX-метка даёт максимум один якорь и не доказывает полный список событий:
   `label_only_limited=true`. Несопоставленные predicted events здесь нельзя трактовать
   как доказанные ложные события. Неизвестный peak не заменяется нулём.
@@ -215,6 +300,8 @@ Split CSV содержит `video,subset,angle_id`, по одной строке
 
 В обоих режимах: `overall.json` (агрегаты, режим, параметры split),
 `per_video.json`, `per_video.csv` (UTF-8 BOM для Excel) и `report.md` с пояснениями и агрегатами.
+В score/run `overall.json` также содержит `content_aggregation`, `video_only_overall`
+и `per_content_group`; `per_video` не сокращается при дедупликации.
 Вложенные списки/объекты в CSV — JSON. Настоящие файлы содержат приватную разметку:
 не публиковать даже при успешной проверке.
 
@@ -236,3 +323,35 @@ Split CSV содержит `video,subset,angle_id`, по одной строке
 он не подтверждает качество распознавания. Для реального `score` необходимы реальные
 предсказания разрешённого локального пайплайна. Без ручной разметки типов/ракурсов нельзя
 заявлять качество по категориям или на отложенном ракурсе.
+
+После ревью PR #30 evaluator/labels/split/final-review regression-набор: **188 passed**, Ruff clean.
+Дополнительный typed-primary-anchor RED: 2 failed / 1 passed → GREEN.
+На настоящих локальных входах audit подтвердил 42/42 сопоставления, 40 SHA256-групп и две
+группы дублей. Проверка `score` с командным `kb/annotations.csv`, actual hashes и **пустым**
+списком predictions сохранила 42 диагностические строки и 40 content groups.
+Это проверка joins/знаменателей, не качество: настоящие предсказания не подставлялись.
+
+Дополнительное независимое evaluator-ревью проверено только на синтетических fixtures,
+без чтения настоящих labels, media или model outputs. Каждый behavioral fix выполнен после RED:
+
+| Регрессия в `tests/test_eval_review.py` | RED | GREEN |
+|---|---:|---:|
+| `test_cli_rejects_nonlocal_videos_before_any_input_io` (audit/score/run) | 12 failed | 12 passed |
+| `test_tied_typed_events_are_invariant_to_source_and_representative_order` | 8 failed | 8 passed |
+| `test_permuted_successful_duplicate_predictions_are_the_same_inventory` | 3 failed | 3 passed |
+| `test_windows_literal_aliases_are_rejected_before_normalization` + `test_trailing_dot_cannot_join_a_valid_identifier_across_sources` | 13 failed | 13 passed |
+| `test_incomplete_audit_keeps_known_duplicate_integrity` (labels/annotations/predictions, score/run) | 6 failed | 6 passed |
+
+Защитный тест кратности predictions оставался GREEN; допроверены incomplete diagnostics с полными
+заявленными label-хешами. Финальная команда:
+`python -m pytest -q tests/test_eval.py tests/test_eval_review.py tests/test_labels.py tests/test_data_split.py tests/test_final_review_regressions.py`
+— **233 passed** под `.venv/Scripts/python.exe` (Python 3.10). Ruff по evaluator/labels/owned tests и
+`git diff --check` прошли. Это не полный запуск repository suite и не измерение качества модели.
+
+После дополнительного fixcycle проверены symlink/reparse root/ancestor/nested
+file/directory без обращения к targets, CLI до labels-I/O и canonical multi-dot
+hash keys с ambiguity/collision/syntax guards. Parent полный pytest:
+**675 passed, 2 skipped**, scoped Ruff/diff clean. Повторный offline аудит реальных
+входов и 42 кэшей подтвердил 42/42 joins/hashes и 40 содержимых; пустые predictions
+снова дали 0 scored, а не фиктивное качество. Финальное независимое code-only v3
+ревью — `passed=true`, security/logic/suggestions пусты; это не GitHub approval.

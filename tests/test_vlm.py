@@ -80,7 +80,7 @@ class VLMTests(unittest.TestCase):
         candidate = {"candidate_id": "cv-1", "violation_type": "fixture_action",
                      "start_s": 0.0, "end_s": 1.0, "rule_id": "r1",
                      "cv_metadata": {"score": 0.81}}
-        report = api.verify_candidates("absent-fixture.mp4", [candidate], [])
+        report = api.verify_candidates("absent-fixture.mp4", [candidate], [], budget_sec=2.0)
         self.assertEqual(report.results[0].status, "uncertain")
         self.assertEqual(report.results[0].candidate, candidate)
         self.assertEqual(report.retained_candidates, [candidate])
@@ -89,7 +89,7 @@ class VLMTests(unittest.TestCase):
     def test_confirmation_uses_only_verified_catalog_citation_and_visible_frames(self):
         api = self.api()
         backend = ScriptedFixtureBackend(response())
-        report = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE],
+        report = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE], budget_sec=2.0,
                                        backend=backend, frame_source=FixtureFrames())
         result = report.results[0]
         self.assertEqual(result.status, "confirmed")
@@ -120,7 +120,7 @@ class VLMTests(unittest.TestCase):
                    response() + " trailing"]
         for raw in invalid:
             with self.subTest(raw=raw):
-                report = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE],
+                report = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE], budget_sec=2.0,
                     backend=ScriptedFixtureBackend(raw), frame_source=FixtureFrames())
                 self.assertEqual(report.results[0].status, "uncertain")
                 self.assertEqual(report.retained_candidates, [CANDIDATE])
@@ -134,15 +134,12 @@ class VLMTests(unittest.TestCase):
                  (response(violation=False, confidence=0.69), "uncertain")]
         for raw, expected in cases:
             with self.subTest(expected=expected, raw=raw):
-                report = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE],
+                report = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE], budget_sec=2.0,
                     backend=ScriptedFixtureBackend(raw), frame_source=FixtureFrames())
                 self.assertEqual(report.results[0].status, expected)
                 self.assertEqual(report.results[0].candidate, CANDIDATE)
-                if expected == "uncertain":
-                    self.assertEqual(report.retained_candidates, [CANDIDATE])
-                    self.assertIsNone(report.results[0].citation)
-                else:
-                    self.assertEqual(report.retained_candidates, [])
+                self.assertEqual(report.retained_candidates, [CANDIDATE])
+                self.assertIsNone(report.results[0].citation)
     def test_only_unique_verified_matching_catalog_rules_enable_inference(self):
         api = self.api()
         invalid_catalogs = [[], [{**RULE, "verified": False}], [{**RULE, "verified": "true"}],
@@ -152,7 +149,7 @@ class VLMTests(unittest.TestCase):
         for catalog in invalid_catalogs:
             with self.subTest(catalog=catalog):
                 backend = ScriptedFixtureBackend(response())
-                report = api.verify_candidates("fixture.mp4", [CANDIDATE], catalog,
+                report = api.verify_candidates("fixture.mp4", [CANDIDATE], catalog, budget_sec=2.0,
                     backend=backend, frame_source=FixtureFrames())
                 self.assertEqual(report.results[0].status, "uncertain")
                 self.assertEqual(report.results[0].reason, "no_verified_rule")
@@ -162,7 +159,7 @@ class VLMTests(unittest.TestCase):
         api = self.api()
         candidates = [{**CANDIDATE, "candidate_id": f"cv-{i}"} for i in range(8)]
         backend = ScriptedFixtureBackend(*(response(candidate_id=c["candidate_id"]) for c in candidates))
-        report = api.verify_candidates("fixture.mp4", candidates, [RULE], backend=backend,
+        report = api.verify_candidates("fixture.mp4", candidates, [RULE], budget_sec=2.0, backend=backend,
                                        frame_source=FixtureFrames(), enable_open_checklist=True)
         self.assertEqual(report.calls_used, 6)
         self.assertEqual(len(backend.requests), 6)
@@ -174,7 +171,7 @@ class VLMTests(unittest.TestCase):
         finding = json.loads(response())
         finding.pop("candidate_id")
         backend = ScriptedFixtureBackend(response(), json.dumps({"findings": [finding]}))
-        report = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE], backend=backend,
+        report = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE], budget_sec=2.0, backend=backend,
             frame_source=FixtureFrames(), enable_open_checklist=True, max_calls=2)
         self.assertEqual(report.calls_used, 2)
         self.assertEqual(report.checklist_status, "completed")
@@ -192,7 +189,7 @@ class VLMTests(unittest.TestCase):
         for error in (RuntimeError("private fixture description"), TimeoutError("fixture")):
             with self.subTest(error=type(error).__name__):
                 try:
-                    report = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE],
+                    report = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE], budget_sec=2.0,
                         backend=ScriptedFixtureBackend(error), frame_source=FixtureFrames())
                 except Exception:
                     self.fail("Backend failure escaped instead of preserving uncertain candidate")
@@ -216,7 +213,7 @@ class VLMTests(unittest.TestCase):
         for candidate, frames, reason in cases:
             with self.subTest(reason=reason, candidate=candidate):
                 try:
-                    report = api.verify_candidates("fixture.mp4", [candidate], [RULE],
+                    report = api.verify_candidates("fixture.mp4", [candidate], [RULE], budget_sec=2.0,
                         backend=ScriptedFixtureBackend(response()), frame_source=frames)
                 except Exception:
                     self.fail("Input/frame failure must preserve candidate")
@@ -245,7 +242,7 @@ class VLMTests(unittest.TestCase):
             self.assertTrue(all(f.path.is_file() and f.path.stat().st_size > 0 for f in extracted))
             backend = ScriptedFixtureBackend(response(observations=[
                 {"timestamp_s": 1.5, "text": "Artificial fixture only"}]))
-            report = api.verify_candidates(video, [{**CANDIDATE, "end_s": 2.5}], [RULE],
+            report = api.verify_candidates(video, [{**CANDIDATE, "end_s": 2.5}], [RULE], budget_sec=2.0,
                 backend=backend, frame_source=source)
             self.assertEqual(report.results[0].status, "confirmed")
             self.assertEqual([f.timestamp_s for f in backend.requests[0].frames], [0, 1.5, 2.5])
@@ -342,7 +339,7 @@ class VLMTests(unittest.TestCase):
             messages = next(event[1] for event in events if event[0] == "messages")
             self.assertEqual(sum(c["type"] == "image" for m in messages for c in m["content"]), 1)
             self.assertFalse(any(c["type"] == "audio" for m in messages for c in m["content"]))
-    def test_real_worker_timeout_terminates_process_including_model_load(self):
+    def test_real_worker_startup_timeout_terminates_process_including_model_load(self):
         api = self.api()
         self.assertTrue(hasattr(api.LocalTransformersBackend, "close"), "killable runtime worker missing")
         module = importlib.import_module("ml.vlm.transformers_backend")
@@ -353,7 +350,7 @@ class VLMTests(unittest.TestCase):
             start = time.monotonic()
             with patch.object(module, "_worker_main", sleeping_worker_fixture):
                 with self.assertRaises(TimeoutError):
-                    backend.infer(request, timeout_s=0.05)
+                    backend.validate(timeout_s=0.05)
             self.assertLess(time.monotonic() - start, 2)
             self.assertIsNone(backend._process)
             backend.close()
@@ -371,7 +368,7 @@ class VLMTests(unittest.TestCase):
         start = time.monotonic()
         report = api.verify_candidates("fixture.mp4", candidates, [RULE],
             backend=SlowFixtureBackend(), frame_source=FixtureFrames(), timeout_s=0.01,
-            video_timeout_s=0.015, enable_open_checklist=True)
+            budget_sec=0.015, video_timeout_s=0.015, enable_open_checklist=True)
         self.assertEqual([r.status for r in report.results], ["uncertain", "uncertain"])
         self.assertTrue(all(r.reason in ("timeout", "video_timeout") for r in report.results))
         self.assertEqual(report.retained_candidates, candidates)
@@ -383,7 +380,7 @@ class VLMTests(unittest.TestCase):
              patch("socket.create_connection", side_effect=AssertionError("network forbidden")), \
              patch("socket.getaddrinfo", side_effect=AssertionError("network forbidden")), \
              patch.dict(os.environ, {"HF_HUB_OFFLINE": "0", "TRANSFORMERS_OFFLINE": "0"}):
-            report = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE],
+            report = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE], budget_sec=2.0,
                 model_path="absent-local-weights", frame_source=FixtureFrames(),
                 enable_open_checklist=True)
             self.assertEqual(report.results[0].status, "uncertain")
@@ -391,7 +388,7 @@ class VLMTests(unittest.TestCase):
             self.assertEqual(report.retained_candidates, [CANDIDATE])
             self.assertEqual(os.environ["HF_HUB_OFFLINE"], "1")
             self.assertEqual(os.environ["TRANSFORMERS_OFFLINE"], "1")
-            scripted = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE],
+            scripted = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE], budget_sec=2.0,
                 backend=ScriptedFixtureBackend(response()), frame_source=FixtureFrames())
             self.assertEqual(scripted.results[0].status, "confirmed")
     def test_preprocessing_failure_keeps_original_in_both_modes_without_sensitive_prompts(self):
@@ -401,7 +398,7 @@ class VLMTests(unittest.TestCase):
                 raise RuntimeError("private frame description")
         for frames in (BrokenExtract(),):
             try:
-                report = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE],
+                report = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE], budget_sec=2.0,
                     backend=ScriptedFixtureBackend(response()), frame_source=frames,
                     enable_open_checklist=True)
             except Exception:
@@ -413,7 +410,7 @@ class VLMTests(unittest.TestCase):
             self.assertEqual(report.calls_used, 0)
         backend = ScriptedFixtureBackend(response())
         original = {**CANDIDATE, "cv_metadata": {"private": "DO_NOT_FORWARD_FIXTURE"}}
-        report = api.verify_candidates("fixture.mp4", [original], [RULE],
+        report = api.verify_candidates("fixture.mp4", [original], [RULE], budget_sec=2.0,
                                        backend=backend, frame_source=FixtureFrames())
         self.assertEqual(report.results[0].candidate, original)
         self.assertNotIn("DO_NOT_FORWARD_FIXTURE", backend.requests[0].prompt)
@@ -437,6 +434,7 @@ class VLMTests(unittest.TestCase):
             process = subprocess.run([sys.executable, "-B", "-m", "ml.vlm", "verify",
                 "--video", str(root / "artificial-absent.mp4"), "--model", str(root / "missing-model"),
                 "--candidates", str(candidates), "--rules", str(rules), "--output", str(output),
+                "--budget-sec", "2", "--startup-timeout", "5",
                 "--open-checklist"], capture_output=True, text=True, timeout=10)
             self.assertEqual(process.returncode, 0, process.stderr)
             data = json.loads(output.read_text(encoding="utf-8"))
@@ -464,7 +462,7 @@ class VLMTests(unittest.TestCase):
         for candidates in cases:
             with self.subTest(candidates=candidates):
                 try:
-                    report = api.verify_candidates("fixture.mp4", candidates, [RULE],
+                    report = api.verify_candidates("fixture.mp4", candidates, [RULE], budget_sec=2.0,
                         backend=ScriptedFixtureBackend(response(), response()), frame_source=FixtureFrames())
                 except Exception:
                     self.fail("Malformed candidates must be explicitly uncertain")
@@ -475,7 +473,7 @@ class VLMTests(unittest.TestCase):
         api = self.api()
         finding = json.loads(response(confidence=0.5, insufficient_evidence=True))
         finding.pop("candidate_id")
-        report = api.verify_candidates("fixture.mp4", [], [RULE],
+        report = api.verify_candidates("fixture.mp4", [], [RULE], budget_sec=2.0,
             backend=ScriptedFixtureBackend(json.dumps({"findings": [finding]})),
             frame_source=FixtureFrames(), enable_open_checklist=True)
         self.assertEqual(len(report.results), 1, "Uncertain supported checklist suggestion must not vanish")
@@ -486,7 +484,7 @@ class VLMTests(unittest.TestCase):
         for change in ({"rule_id": "invented"}, {"citation": "invented"},
                        {"observations": [{"timestamp_s": 3, "text": "fixture"}]}):
             with self.subTest(change=change):
-                report = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE],
+                report = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE], budget_sec=2.0,
                     backend=ScriptedFixtureBackend(response(), json.dumps({"findings": [{**finding, **change}]})),
                     frame_source=FixtureFrames(), enable_open_checklist=True)
                 self.assertEqual(len(report.results), 1)
@@ -496,7 +494,7 @@ class VLMTests(unittest.TestCase):
         api = self.api()
         for text in ("Fixture action under Article 999", "Fixture §999", "Нарушение статьи 999 закона"):
             with self.subTest(text=text):
-                report = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE],
+                report = api.verify_candidates("fixture.mp4", [CANDIDATE], [RULE], budget_sec=2.0,
                     backend=ScriptedFixtureBackend(response(observations=[{"timestamp_s": 0.5, "text": text}])),
                     frame_source=FixtureFrames())
                 self.assertEqual(report.results[0].status, "uncertain")

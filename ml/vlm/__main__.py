@@ -6,8 +6,8 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from .preflight import enforce_offline, preflight
 from .transformers_backend import LocalTransformersBackend
-from .validation import strict_json
-from .verifier import verify_candidates
+from .validation import number, strict_json
+from .verifier import remaining_budget, verify_candidates
 
 
 def main(argv=None) -> int:
@@ -25,7 +25,9 @@ def main(argv=None) -> int:
     verify.add_argument("--device", default="cpu")
     verify.add_argument("--max-calls", type=int, default=6)
     verify.add_argument("--timeout", type=float, default=60)
-    verify.add_argument("--video-timeout", type=float, default=300)
+    verify.add_argument("--budget-sec", type=float, required=True, help="Remaining positive finite K2 budget")
+    verify.add_argument("--video-timeout", type=float, default=None, help="Optional legacy cap; never a fresh budget")
+    verify.add_argument("--startup-timeout", type=float, default=120)
     verify.add_argument("--open-checklist", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "preflight":
@@ -42,7 +44,11 @@ def main(argv=None) -> int:
                 backend.close()
         print(json.dumps(asdict(result), ensure_ascii=True, allow_nan=False))
         return 0 if result.ready else 2
+    backend = None
     try:
+        remaining_budget(args.budget_sec, args.video_timeout)
+        if not number(args.startup_timeout) or args.startup_timeout <= 0:
+            raise ValueError("invalid_startup_timeout")
         output = Path(args.output).resolve()
         if output in {Path(args.candidates).resolve(), Path(args.rules).resolve(), Path(args.video).resolve()}:
             raise ValueError("output_overlaps_input")
@@ -52,9 +58,15 @@ def main(argv=None) -> int:
             isinstance(item, dict) for item in candidates + rules
         ):
             raise ValueError("invalid_input")
-        report = verify_candidates(args.video, candidates, rules, model_path=args.model,
+        backend = LocalTransformersBackend(args.model, device=args.device)
+        try:
+            backend.validate(args.startup_timeout)
+        except Exception:
+            backend.close()
+            backend = None
+        report = verify_candidates(args.video, candidates, rules, backend=backend,
             max_calls=args.max_calls, enable_open_checklist=args.open_checklist,
-            timeout_s=args.timeout, video_timeout_s=args.video_timeout, device=args.device)
+            timeout_s=args.timeout, budget_sec=args.budget_sec, video_timeout_s=args.video_timeout)
         data = asdict(report)
         data["retained_candidates"] = report.retained_candidates
         output.write_text(json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
@@ -66,6 +78,9 @@ def main(argv=None) -> int:
     except Exception:
         print(json.dumps({"status": "error", "reason": "invalid_input_or_output"}))
         return 2
+    finally:
+        if backend is not None:
+            backend.close()
 
 
 if __name__ == "__main__":

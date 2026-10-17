@@ -1,13 +1,21 @@
 """Actual local Transformers multimodal adapter; never a cloud API client."""
+from contextlib import contextmanager
 import json
 import logging
 import multiprocessing
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any
 from .contracts import InferenceRequest
 from .preflight import ModelUnavailable, enforce_offline, _validated_model_directory
+
+
+def _token_limit(value: int) -> int:
+    if type(value) is not int or not 1 <= value <= 128:
+        raise ValueError("max_new_tokens must be an integer in 1..128")
+    return value
 
 
 class _LocalRuntime:
@@ -20,7 +28,7 @@ class _LocalRuntime:
         import transformers
         self.torch = torch
         self.Image = Image
-        self.max_new_tokens = max_new_tokens
+        self.max_new_tokens = _token_limit(max_new_tokens)
         config = json.loads((directory / "config.json").read_text(encoding="utf-8"))
         self.processor = transformers.AutoProcessor.from_pretrained(
             str(directory), local_files_only=True, trust_remote_code=False)
@@ -86,36 +94,70 @@ def _worker_main(connection, model_path, device, max_new_tokens):
 
 
 class LocalTransformersBackend:
-    """One cached model in a killable local process. Not safe for concurrent callers."""
-    def __init__(self, model_path: str | Path, *, device: str = "cpu", max_new_tokens: int = 512):
+    """One cached model in a killable process; concurrent callers fail closed busy."""
+    def __init__(self, model_path: str | Path, *, device: str = "cpu", max_new_tokens: int = 128):
         enforce_offline()
         self.model_path = model_path
         self.device = device
-        self.max_new_tokens = max_new_tokens
+        self.max_new_tokens = _token_limit(max_new_tokens)
         self._process = None
+        self._started = False
         self._connection = None
 
+        self._ready = False
+        self._closed = False
+        self._lock = threading.Lock()
+
+    @contextmanager
+    def _exclusive(self):
+        # Never queue a job behind another video's inference or touch its Pipe.
+        if not self._lock.acquire(blocking=False):
+            raise ModelUnavailable("runtime_busy")
+        try:
+            yield
+        finally:
+            self._lock.release()
+
     def validate(self, timeout_s: float = 60) -> None:
-        """Actually load local model/processor; no inference or accuracy claim."""
-        self._exchange(None, timeout_s)
+        """Startup only. A failed/closed worker requires a new backend instance."""
+        with self._exclusive():
+            if self._closed:
+                raise ModelUnavailable("runtime_not_prepared")
+            if self._ready:
+                self._require_ready()
+                return
+            self._exchange(None, timeout_s)
+            self._ready = True
+
+    def _require_ready(self) -> None:
+        if not self._ready:
+            raise ModelUnavailable("runtime_not_prepared")
+        if self._process is None or not self._process.is_alive():
+            self._close()
+            raise ModelUnavailable("runtime_not_prepared")
 
     def infer(self, request: InferenceRequest, timeout_s: float) -> str:
-        return self._exchange(request, timeout_s)
+        with self._exclusive():
+            self._require_ready()
+            return self._exchange(request, timeout_s)
 
     def _exchange(self, request: InferenceRequest | None, timeout_s: float) -> str:
         enforce_offline()
-        directory = _validated_model_directory(self.model_path)
         deadline = time.monotonic() + timeout_s
         if timeout_s <= 0:
             raise TimeoutError("inference_timeout")
         try:
             if self._process is None:
+                directory = _validated_model_directory(self.model_path)
                 context = multiprocessing.get_context("spawn")
                 self._connection, child = context.Pipe()
-                self._process = context.Process(target=_worker_main,
-                    args=(child, str(directory), self.device, self.max_new_tokens), daemon=True)
-                self._process.start()
-                child.close()
+                try:
+                    self._process = context.Process(target=_worker_main,
+                        args=(child, str(directory), self.device, self.max_new_tokens), daemon=True)
+                    self._process.start()
+                    self._started = True
+                finally:
+                    child.close()
             assert self._connection is not None
             self._connection.send(request)
             remaining = deadline - time.monotonic()
@@ -126,22 +168,35 @@ class LocalTransformersBackend:
                 raise ModelUnavailable("model_unavailable")
             return result
         except TimeoutError:
-            self.close()
+            self._close()
             raise
         except (OSError, EOFError, ModelUnavailable):
-            self.close()
+            self._close()
             raise ModelUnavailable("model_unavailable") from None
 
     def close(self) -> None:
-        if self._process is not None:
-            if self._process.is_alive():
-                self._process.terminate()
-            self._process.join(timeout=0.5)
-            if self._process.is_alive():
-                self._process.kill()
-                self._process.join(timeout=0.5)
-            self._process.close()
-            self._process = None
-        if self._connection is not None:
-            self._connection.close()
-            self._connection = None
+        with self._exclusive():
+            self._close()
+
+    def _close(self) -> None:
+        """Cleanup while holding the exclusive worker lease."""
+        self._closed = True
+        self._ready = False
+        process, self._process = self._process, None
+        connection, self._connection = self._connection, None
+        started, self._started = self._started, False
+        try:
+            if process is not None:
+                try:
+                    if started:
+                        if process.is_alive():
+                            process.terminate()
+                        process.join(timeout=0.5)
+                        if process.is_alive():
+                            process.kill()
+                            process.join(timeout=0.5)
+                finally:
+                    process.close()
+        finally:
+            if connection is not None:
+                connection.close()

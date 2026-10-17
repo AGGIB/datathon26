@@ -60,7 +60,7 @@ class LabelTests(unittest.TestCase):
             synthetic_workbook(path, [['video', 'timestamp', 'label']])
             with zipfile.ZipFile(path) as source:
                 contents = {name: source.read(name) for name in source.namelist()}
-            contents['xl/sharedStrings.xml'] = '<sst xmlns="%s"><si><t>X_synthetic</t></si><si><t>нарушение</t></si><si><t>Х_synthetic</t></si><si><t>без нарушения</t></si></sst>' % ns
+            contents['xl/sharedStrings.xml'] = '<sst xmlns="%s"><si><t>X_synthetic</t></si><si><t>нарушение</t></si><si><t>Х_synthetic_n</t></si><si><t>без нарушения</t></si></sst>' % ns
             contents['xl/worksheets/sheet1.xml'] = '<worksheet xmlns="%s"><sheetData><row><c r="A1" t="inlineStr"><is><t>video</t></is></c><c r="B1" t="inlineStr"><is><t>timestamp</t></is></c><c r="C1" t="inlineStr"><is><t>label</t></is></c></row><row><c r="A2" t="s"><v>0</v></c><c r="B2"><v>1E+2</v></c><c r="C2" t="s"><v>1</v></c></row><row><c r="A3" t="s"><v>2</v></c><c r="C3" t="s"><v>3</v></c></row></sheetData></worksheet>' % ns
             with zipfile.ZipFile(path, 'w') as archive:
                 for name, content in contents.items():
@@ -68,12 +68,12 @@ class LabelTests(unittest.TestCase):
             rows = load_labels(path)
             self.assertEqual(rows[0]['timestamp'], 100)
             self.assertIsNone(rows[1]['timestamp'])
-            self.assertEqual(rows[1]['video'], 'Х_synthetic')
+            self.assertEqual(rows[1]['video'], 'Х_synthetic_n')
 
     def test_csv_and_xlsx_preserve_identifiers_and_truth(self):
         import ml.evaluation_labels as labels
         self.assertTrue(hasattr(labels, 'load_labels'), 'label loader missing')
-        rows = [['наименование файла', 'таймстемп', 'нарушение / без нарушения'], ['X_synthetic.mov', '1минута 8 секунда', 'нарушение'], ['Х_synthetic', '', 'без нарушения']]
+        rows = [['наименование файла', 'таймстемп', 'нарушение / без нарушения'], ['X_synthetic.mov', '1минута 8 секунда', 'нарушение'], ['Х_synthetic_n', '', 'без нарушения']]
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
             with (folder / 'labels.csv').open('w', encoding='utf-8-sig', newline='') as stream:
@@ -81,13 +81,13 @@ class LabelTests(unittest.TestCase):
             synthetic_workbook(folder / 'labels.xlsx', rows)
             csv_labels = labels.load_labels(folder / 'labels.csv')
             self.assertEqual(csv_labels, labels.load_labels(folder / 'labels.xlsx'))
-            self.assertEqual([row['video'] for row in csv_labels], ['X_synthetic.mov', 'Х_synthetic'])
+            self.assertEqual([row['video'] for row in csv_labels], ['X_synthetic.mov', 'Х_synthetic_n'])
             self.assertEqual([row['positive'] for row in csv_labels], [True, False])
             self.assertEqual(csv_labels[0]['timestamp'], 68)
             self.assertIsNone(csv_labels[1]['timestamp'])
-            self.assertEqual(labels.video_key('X_synthetic.mov'), 'X_synthetic')
-            self.assertNotEqual(labels.video_key('X_synthetic'), labels.video_key('Х_synthetic'))
-            self.assertEqual(labels.video_key('X_synthetic.mp4'), 'X_synthetic.mp4')
+            self.assertEqual(labels.video_key('X_synthetic.mov'), 'X_SYNTHETIC')
+            self.assertEqual(labels.video_key('X_synthetic'), labels.video_key('Х_synthetic'))
+            self.assertEqual(labels.video_key('X_synthetic.mp4'), 'X_SYNTHETIC')
             with (folder / 'bad.csv').open('w', encoding='utf-8', newline='') as stream:
                 csv.writer(stream).writerows([rows[0], ['same', '', 'без нарушения'], ['same.mov', '', 'нарушение']])
             with self.assertRaises(ValueError):
