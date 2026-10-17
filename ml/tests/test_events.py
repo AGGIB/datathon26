@@ -1,0 +1,65 @@
+from ml.events import Event, extract_events, occupancy
+from ml.track import Track, TrackPoint
+
+BOX = (0.0, 0.0, 10.0, 20.0)
+
+
+def track(tid, t0, t1, step=0.5, score=0.9):
+    n = int(round((t1 - t0) / step)) + 1
+    pts = tuple(TrackPoint(t=round(t0 + i * step, 3), box=BOX, score=score) for i in range(n))
+    return Track(track_id=tid, points=pts)
+
+
+def kinds(events):
+    return [(e.kind, e.t) for e in events]
+
+
+def test_occupancy_counts_tracks_alive_at_each_time():
+    tracks = [track(1, 0.0, 4.0), track(2, 2.0, 3.0)]
+    occ = occupancy(tracks, times=[0.0, 1.0, 2.0, 2.5, 3.5])
+    assert occ == [1, 1, 2, 2, 1]
+
+
+def test_person_entering_mid_video_is_an_enter_event():
+    events = extract_events([track(1, 0.0, 10.0), track(2, 4.0, 10.0)], duration=10.0)
+    assert ("enter", 4.0) in kinds(events)
+
+
+def test_track_present_from_start_is_not_an_enter():
+    events = extract_events([track(1, 0.0, 10.0)], duration=10.0)
+    assert not [e for e in events if e.kind == "enter"]
+
+
+def test_person_leaving_before_end_is_an_exit():
+    events = extract_events([track(1, 0.0, 6.0)], duration=10.0)
+    assert ("exit", 6.0) in kinds(events)
+
+
+def test_room_empty_event_when_everyone_left():
+    events = extract_events([track(1, 0.0, 6.0)], duration=10.0, min_empty_sec=1.0)
+    empty = [e for e in events if e.kind == "room_empty"]
+    assert len(empty) == 1 and empty[0].t == 6.0 and empty[0].t_end == 10.0
+
+
+def test_short_dropout_is_not_room_empty():
+    events = extract_events([track(1, 0.0, 6.0), track(2, 6.5, 10.0)], duration=10.0, min_empty_sec=1.0)
+    assert not [e for e in events if e.kind == "room_empty"]
+
+
+def test_crowd_event_when_three_people_present():
+    tracks = [track(1, 0.0, 10.0), track(2, 0.0, 10.0), track(3, 3.0, 6.0)]
+    events = extract_events(tracks, duration=10.0)
+    crowd = [e for e in events if e.kind == "crowd"]
+    assert crowd and crowd[0].t == 3.0 and crowd[0].count == 3
+
+
+def test_short_or_weak_tracks_are_ignored_as_noise():
+    tracks = [track(1, 0.0, 10.0), track(2, 4.0, 4.5), track(3, 5.0, 8.0, score=0.4)]
+    events = extract_events(tracks, duration=10.0, min_track_sec=1.0, min_track_score=0.6)
+    assert not [e for e in events if e.kind == "enter"]
+
+
+def test_events_are_sorted_by_time():
+    events = extract_events([track(1, 0.0, 6.0), track(2, 2.0, 9.0)], duration=10.0)
+    assert [e.t for e in events] == sorted(e.t for e in events)
+    assert all(isinstance(e, Event) for e in events)
