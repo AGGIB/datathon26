@@ -24,7 +24,7 @@
 ```bash
 uv venv --python 3.12 .venv && source .venv/bin/activate
 uv pip install -r requirements-dev.txt
-cp .env.example .env            # поменять ключи
+cp .env.example .env
 set -a && source .env && set +a
 uvicorn --factory backend.app.main:app_from_env --host 0.0.0.0 --port 8000
 ```
@@ -33,8 +33,8 @@ uvicorn --factory backend.app.main:app_from_env --host 0.0.0.0 --port 8000
 
 ```bash
 curl -s localhost:8000/health
-curl -s -X POST localhost:8000/api/v1/analyze -H "X-API-Key: change-me-jury-key" -F "file=@data/open/videos/X-1.mov"
-curl -s localhost:8000/api/v1/jobs/<job_id> -H "X-API-Key: change-me-jury-key"
+curl -s -X POST localhost:8000/api/v1/analyze -F "file=@data/open/videos/X-1.mov"
+curl -s localhost:8000/api/v1/jobs/<job_id>
 ```
 
 Как ведёт себя mock:

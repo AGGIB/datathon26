@@ -98,6 +98,8 @@ def create_app(settings: Settings, pipeline_fn: PipelineFn | None = None) -> Fas
         return await call_next(request)
 
     def require_key(x_api_key: str | None = Header(default=None)) -> None:
+        if not settings.require_api_key:
+            return
         if not x_api_key or not any(secrets.compare_digest(x_api_key, k) for k in settings.api_keys):
             raise HTTPException(401, "Неверный или отсутствующий X-API-Key")
 

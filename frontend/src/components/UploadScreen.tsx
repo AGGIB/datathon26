@@ -3,20 +3,16 @@ import { IS_DEMO } from '../config';
 
 interface UploadScreenProps {
   file?: File;
-  apiKey: string;
   showClearDemo: boolean;
   onSelectFile: (file?: File) => void;
-  onApiKeyChange: (value: string) => void;
   onDemoScenarioChange: (value: boolean) => void;
   onStart: () => void;
 }
 
 export function UploadScreen({
   file,
-  apiKey,
   showClearDemo,
   onSelectFile,
-  onApiKeyChange,
   onDemoScenarioChange,
   onStart,
 }: UploadScreenProps) {
@@ -116,7 +112,7 @@ export function UploadScreen({
         </div>
 
         <div className="analysis-settings">
-          {IS_DEMO ? (
+          {IS_DEMO && (
             <label>
               Пример результата
               <select
@@ -127,20 +123,6 @@ export function UploadScreen({
                 <option value="events">Два эпизода для проверки</option>
                 <option value="clear">Нарушение не обнаружено</option>
               </select>
-            </label>
-          ) : (
-            <label>
-              Ключ доступа
-              <input
-                name="apiKey"
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-                value={apiKey}
-                onChange={(event) => onApiKeyChange(event.target.value)}
-                placeholder="Введите UI API-ключ"
-              />
-              <small>Хранится в памяти этой вкладки.</small>
             </label>
           )}
           <button className="start-button" disabled={!file} onClick={onStart}>

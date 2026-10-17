@@ -71,10 +71,8 @@ export default function App() {
         {analysis.phase === 'upload' && (
           <UploadScreen
             file={analysis.file}
-            apiKey={analysis.apiKey}
             showClearDemo={analysis.showClearDemo}
             onSelectFile={analysis.selectFile}
-            onApiKeyChange={analysis.setApiKey}
             onDemoScenarioChange={analysis.setShowClearDemo}
             onStart={analysis.startAnalysis}
           />

@@ -11,6 +11,7 @@ PIPELINES = frozenset({"mock", "real"})
 class Settings:
     api_keys: frozenset[str]
     data_dir: Path
+    require_api_key: bool = False
     max_upload_mb: int = 200
     workers: int = 2
     pipeline: str = "mock"
@@ -20,8 +21,8 @@ class Settings:
     frontend_dist: Path | None = None
 
     def __post_init__(self) -> None:
-        if not self.api_keys:
-            raise ValueError("At least one API key is required")
+        if self.require_api_key and not self.api_keys:
+            raise ValueError("API_KEYS must be set when REQUIRE_API_KEY is enabled")
         if self.pipeline not in PIPELINES:
             raise ValueError(f"PIPELINE must be one of {sorted(PIPELINES)}, got {self.pipeline!r}")
         if self.workers < 1:
@@ -30,12 +31,11 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         keys = frozenset(k.strip() for k in os.environ.get("API_KEYS", "").split(",") if k.strip())
-        if not keys:
-            raise RuntimeError("API_KEYS is not set (comma-separated list, e.g. JURY_KEY,UI_KEY)")
         dist = os.environ.get("FRONTEND_DIST")
         return cls(
             api_keys=keys,
             data_dir=Path(os.environ.get("DATA_DIR", "./var")).resolve(),
+            require_api_key=os.environ.get("REQUIRE_API_KEY", "false").lower() == "true",
             max_upload_mb=int(os.environ.get("MAX_UPLOAD_MB", "200")),
             workers=int(os.environ.get("WORKERS", "2")),
             pipeline=os.environ.get("PIPELINE", "mock"),

@@ -7,7 +7,6 @@ import type { AnalysisPhase, AnalysisResult } from '../types';
 
 export function useAnalysis() {
   const [file, setFile] = useState<File>();
-  const [apiKey, setApiKey] = useState('');
   const [phase, setPhase] = useState<AnalysisPhase>('upload');
   const [uploadProgress, setUploadProgress] = useState(0);
   const [stage, setStage] = useState('');
@@ -47,11 +46,6 @@ export function useAnalysis() {
 
   async function startAnalysis() {
     if (!file) return;
-    const trimmedKey = apiKey.trim();
-    if (!IS_DEMO && !trimmedKey) {
-      setError('Введите UI API-ключ, полученный от команды.');
-      return;
-    }
 
     controllerRef.current?.abort();
     const controller = new AbortController();
@@ -73,7 +67,7 @@ export function useAnalysis() {
         return;
       }
 
-      const jobId = await uploadVideo(file, trimmedKey, setUploadProgress, signal);
+      const jobId = await uploadVideo(file, setUploadProgress, signal);
       signal.throwIfAborted();
       setPhase('processing');
       setStage('Видео в очереди обработки');
@@ -86,7 +80,7 @@ export function useAnalysis() {
           );
         }
 
-        const job = await getJob(jobId, trimmedKey, signal);
+        const job = await getJob(jobId, signal);
         signal.throwIfAborted();
         if (job.status === 'failed') {
           throw new Error(job.error || 'Не удалось обработать видео. Попробуйте другой файл.');
@@ -110,7 +104,6 @@ export function useAnalysis() {
 
   return {
     file,
-    apiKey,
     phase,
     uploadProgress,
     processingProgress,
@@ -118,7 +111,6 @@ export function useAnalysis() {
     error,
     result,
     showClearDemo,
-    setApiKey,
     setShowClearDemo,
     selectFile,
     reset,

@@ -17,6 +17,7 @@ def settings(tmp_path):
     return Settings(
         api_keys=frozenset({API_KEY}),
         data_dir=tmp_path,
+        require_api_key=True,
         max_upload_mb=5,
         workers=1,
         pipeline="mock",
@@ -63,6 +64,15 @@ def test_analyze_with_wrong_key_is_rejected(client):
 
 def test_jobs_endpoint_requires_key(client):
     assert client.get("/api/v1/jobs/whatever").status_code == 401
+
+
+def test_api_works_without_key_when_auth_is_disabled(tmp_path):
+    settings = Settings(api_keys=frozenset(), data_dir=tmp_path, workers=1, mock_delay_sec=0.0)
+    with TestClient(create_app(settings)) as client:
+        accepted = _upload(client, key=None)
+        assert accepted.status_code == 200
+        job_id = accepted.json()["job_id"]
+        assert client.get(f"/api/v1/jobs/{job_id}").status_code == 200
 
 
 def test_rejects_non_video_extension(client):

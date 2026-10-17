@@ -11,7 +11,7 @@ function getHttpErrorMessage(status: number): string {
     case 411:
       return 'Сервер не смог определить размер загрузки. Повторите отправку.';
     case 401:
-      return 'Неверный API-ключ. Проверьте ключ доступа.';
+      return 'Сервис отклонил запрос. Обратитесь к команде API.';
     case 413:
       return 'Сервер отклонил файл: превышен размер.';
     case 415:
@@ -24,7 +24,6 @@ function getHttpErrorMessage(status: number): string {
 
 export function uploadVideo(
   file: File,
-  apiKey: string,
   onProgress: (percent: number) => void,
   signal: AbortSignal,
 ): Promise<string> {
@@ -32,7 +31,6 @@ export function uploadVideo(
     signal.throwIfAborted();
     const request = new XMLHttpRequest();
     request.open('POST', `${API_BASE_URL}/api/v1/analyze`);
-    request.setRequestHeader('X-API-Key', apiKey);
     request.timeout = 120_000;
 
     const handleAbort = () => request.abort();
@@ -82,16 +80,11 @@ export function uploadVideo(
   });
 }
 
-export async function getJob(
-  jobId: string,
-  apiKey: string,
-  signal: AbortSignal,
-): Promise<AnalysisJob> {
+export async function getJob(jobId: string, signal: AbortSignal): Promise<AnalysisJob> {
   let response: Response;
 
   try {
     response = await fetch(`${API_BASE_URL}/api/v1/jobs/${encodeURIComponent(jobId)}`, {
-      headers: { 'X-API-Key': apiKey },
       signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
     });
   } catch (error) {
