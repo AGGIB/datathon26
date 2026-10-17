@@ -31,3 +31,20 @@ frontend/dist/
 
 # os
 .DS_Store
+
+# Local intake and case-insensitive video exclusions
+tmp/
+*.py[cod]
+*.[mM][pP]4
+*.[mM][oO][vV]
+*.[aA][vV][iI]
+*.[mM][kK][vV]
+*.[wW][eE][bB][mM]
+*.[mM]4[vV]
+*.[mM][tT][sS]
+*.[mM]2[tT][sS]
+*.3[gG][pP]
+*.[wW][mM][vV]
+*.[fF][lL][vV]
+*.[mM][pP][gG]
+*.[mM][pP][eE][gG]
