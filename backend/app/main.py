@@ -115,6 +115,7 @@ def create_app(settings: Settings, pipeline_fn: PipelineFn | None = None) -> Fas
         pipeline_fn or load_pipeline(settings),
         workers=settings.workers,
         time_budget_sec=settings.job_timeout_sec,
+        soft_budget_sec=getattr(settings, "pipeline_timeout_sec", None),
     )
 
     @asynccontextmanager

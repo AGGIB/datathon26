@@ -150,11 +150,11 @@ def test_finished_job_survives_restart(settings):
     assert resp.json()["status"] == "done"
 
 
-def test_pipeline_timeout_returns_fast_fallback_not_failed(settings):
+def test_pipeline_hard_timeout_marks_job_failed(settings):
     import time
 
     def hanging_pipeline(video_path, on_progress=None, time_budget_sec=None):
-        time.sleep(5)
+        time.sleep(2)
         return {"verdict": "no_violation", "violations": []}
 
     short_budget = Settings(
@@ -164,16 +164,39 @@ def test_pipeline_timeout_returns_fast_fallback_not_failed(settings):
         workers=1,
         pipeline="mock",
         mock_delay_sec=0.0,
-        job_timeout_sec=0.1,  # 100ms watchdog
+        job_timeout_sec=0.1,  # 100ms hard watchdog
     )
     app = create_app(short_budget, pipeline_fn=hanging_pipeline)
     with TestClient(app) as c:
         job_id = _upload(c).json()["job_id"]
-        resp = _wait_done(c, job_id)
+        c.app.state.runner.wait(job_id, timeout=2)
+        resp = c.get(f"/api/v1/jobs/{job_id}", headers={"X-API-Key": API_KEY})
         assert resp.status_code == 200
         body = resp.json()
-        assert body["status"] == "done"
-        assert body["verdict"] in {"violation", "no_violation"}
+        assert body["status"] == "failed"
+        assert "Превышено" in body["error"]
+
+
+def test_damaged_job_json_does_not_crash_store_or_startup(settings, tmp_path):
+    # Corrupt job.json (0 bytes) should not cause unhandled crash loop on restart
+    job_dir = tmp_path / "jobs" / "badjob123456"
+    job_dir.mkdir(parents=True)
+    (job_dir / "job.json").write_text("", encoding="utf-8")
+
+    damaged_settings = Settings(
+        api_keys=settings.api_keys,
+        data_dir=tmp_path,
+        max_upload_mb=settings.max_upload_mb,
+        workers=1,
+        pipeline="mock",
+        mock_delay_sec=0.0,
+        job_timeout_sec=settings.job_timeout_sec,
+    )
+    app = create_app(damaged_settings)
+    with TestClient(app) as c:
+        assert c.get("/health").status_code == 200
+        assert c.get("/api/v1/jobs/badjob123456", headers={"X-API-Key": API_KEY}).status_code == 404
+
 
 
 def test_late_progress_callback_does_not_overwrite_completed_job(settings):
@@ -305,5 +328,27 @@ def test_header_only_ftyp_without_media_rejected(client):
     resp = _upload(client, name="header-only.mov", content=content)
     assert resp.status_code == 415
     assert "не похож на видео" in resp.json()["detail"]
+
+
+def test_queue_timeout_marks_job_failed(client, tmp_path):
+    import time
+    from pathlib import Path
+    runner = client.app.state.runner
+    store = client.app.state.store
+
+    video_path = tmp_path / "dummy.mov"
+    video_path.write_bytes(b"\x00" * 32)
+    record = store.create("aabbccddee11", video_path, "dummy.mov")
+    # Simulate job created 300 seconds ago (exceeds 30s budget)
+    store.update("aabbccddee11", created_at=time.time() - 300)
+
+    runner.submit("aabbccddee11", video_path)
+    runner.wait("aabbccddee11", timeout=5)
+
+    res = store.get("aabbccddee11")
+    assert res is not None
+    assert res["status"] == "failed"
+    assert "очереди" in res["error"]
+
 
 

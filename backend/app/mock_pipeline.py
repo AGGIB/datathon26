@@ -73,24 +73,12 @@ def analyze(
     on_progress: ProgressFn | None = None,
     time_budget_sec: float | None = None,
     delay_sec: float = 0.0,
-    stop_event: Any | None = None,
 ) -> dict[str, Any]:
     step_delay = delay_sec / len(STAGES) if STAGES else 0.0
     for i, stage in enumerate(STAGES):
-        if stop_event is not None and stop_event.is_set():
-            return fast_fallback(video_path)
         if on_progress:
             on_progress(i / len(STAGES), stage)
-        sleep_done = 0.0
-        while sleep_done < step_delay:
-            if stop_event is not None and stop_event.is_set():
-                return fast_fallback(video_path)
-            chunk = min(0.05, step_delay - sleep_done)
-            time.sleep(chunk)
-            sleep_done += chunk
-
-    if stop_event is not None and stop_event.is_set():
-        return fast_fallback(video_path)
+        time.sleep(step_delay)
 
     if "clean" in Path(video_path).name.lower():
         return {"verdict": "no_violation", "violations": []}
@@ -99,40 +87,5 @@ def analyze(
         "violations": [
             _demo_violation(video_path, "ДЕМО: тип нарушения A", 3.0, 2.0),
             _demo_violation(video_path, "ДЕМО: тип нарушения B", 8.0, 4.0),
-        ],
-    }
-
-
-def fast_fallback(video_path: str) -> dict[str, Any]:
-    """Fast fallback compliant with K1/K2 when pipeline exceeds time budget (Issue #11).
-
-    Instant 0ms non-blocking fallback without invoking ffmpeg subprocesses.
-    """
-    if "clean" in Path(video_path).name.lower():
-        return {"verdict": "no_violation", "violations": []}
-
-    b64 = base64.b64encode(PLACEHOLDER_JPEG.read_bytes()).decode("ascii")
-    return {
-        "verdict": "violation",
-        "violations": [
-            {
-                "type": "Быстрая стадия: предварительное обнаружение нарушения",
-                "type_id": "fast_heuristic",
-                "timecode_sec": 3.0,
-                "t_start": 2.0,
-                "t_end": 4.0,
-                "confidence": 0.8,
-                "description": (
-                    "Быстрое обнаружение по эвристике (превышен бюджет времени). "
-                    "Основание: Правила ведения кассовых операций (Постановление НБРК № 144, п. 24)."
-                ),
-                "evidence_frames": [{"timestamp_sec": 3.0, "image_base64": b64}],
-                "rule": {
-                    "document": "Постановление Правления НБРК № 144",
-                    "clause": "п. 24",
-                    "quote": "Купюры оставлены на клиентской полке без контроля.",
-                    "url": "https://adilet.zan.kz/",
-                },
-            }
         ],
     }

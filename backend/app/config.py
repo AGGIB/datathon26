@@ -15,8 +15,9 @@ class Settings:
     workers: int = 2
     pipeline: str = "mock"
     mock_delay_sec: float = 2.0
-    # Jury hard limit is 300 s per video; leave margin for upload and queueing.
-    job_timeout_sec: float = 240.0
+    # Soft pipeline budget (K2 returns best effort result) and hard watchdog limit
+    pipeline_timeout_sec: float = 200.0
+    job_timeout_sec: float = 270.0
     frontend_dist: Path | None = None
 
     def __post_init__(self) -> None:
@@ -28,12 +29,18 @@ class Settings:
             raise ValueError("WORKERS must be >= 1")
 
     @classmethod
-    def from_env(cls) -> "Settings":
-        for candidate in (Path(".env"), Path(__file__).resolve().parent.parent.parent / ".env"):
-            if candidate.is_file():
+    def from_env(cls, env_path: Path | None = None) -> "Settings":
+        candidates = [env_path] if env_path is not None else [Path(".env"), Path(__file__).resolve().parent.parent.parent / ".env"]
+        for candidate in candidates:
+            if candidate and candidate.is_file():
                 for line in candidate.read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if line and not line.startswith("#") and "=" in line:
+                    # Strip comments and export prefixes
+                    line = line.split("#", 1)[0].strip()
+                    if not line:
+                        continue
+                    if line.startswith("export "):
+                        line = line[7:].strip()
+                    if "=" in line:
                         k, v = line.split("=", 1)
                         k, v = k.strip(), v.strip().strip("'\"")
                         if k and k not in os.environ:
@@ -55,6 +62,7 @@ class Settings:
             workers=int(os.environ.get("WORKERS", "2")),
             pipeline=os.environ.get("PIPELINE", "mock"),
             mock_delay_sec=float(os.environ.get("MOCK_DELAY_SEC", "2.0")),
-            job_timeout_sec=float(os.environ.get("JOB_TIMEOUT_SEC", "240")),
+            pipeline_timeout_sec=float(os.environ.get("PIPELINE_TIMEOUT_SEC", "200")),
+            job_timeout_sec=float(os.environ.get("JOB_TIMEOUT_SEC", "270")),
             frontend_dist=Path(dist).resolve() if dist else None,
         )

@@ -29,13 +29,23 @@ class PipelineFn(Protocol):
 
 
 class JobRunner:
-    def __init__(self, store: JobStore, pipeline: PipelineFn, workers: int, time_budget_sec: float) -> None:
+    def __init__(
+        self,
+        store: JobStore,
+        pipeline: PipelineFn,
+        workers: int,
+        time_budget_sec: float = 270.0,
+        soft_budget_sec: float | None = None,
+    ) -> None:
         self._store = store
         self._pipeline = pipeline
-        self._budget = time_budget_sec
+        self._hard_timeout = float(time_budget_sec)
+        self._soft_budget = float(soft_budget_sec) if soft_budget_sec is not None else min(200.0, self._hard_timeout * 0.75)
+        self._workers = workers
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="job")
         self._futures: dict[str, Future] = {}
         self._lock = threading.Lock()
+        self._sem = threading.Semaphore(workers)
 
     def submit(self, job_id: str, video_path: Path) -> None:
         future = self._pool.submit(self._run, job_id, video_path)
@@ -63,6 +73,18 @@ class JobRunner:
         self._pool.shutdown(wait=False, cancel_futures=True)
 
     def _run(self, job_id: str, video_path: Path) -> None:
+        try:
+            self._run_internal(job_id, video_path)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("job %s: unhandled exception in _run", job_id)
+            self._store.update(
+                job_id,
+                status="failed",
+                stage="failed",
+                error=f"Ошибка обработки видео ({type(exc).__name__})",
+            )
+
+    def _run_internal(self, job_id: str, video_path: Path) -> None:
         def on_progress(progress: float, stage: str) -> None:
             # Atomically updates progress only while job status is still 'processing'
             self._store.update_progress(
@@ -75,81 +97,105 @@ class JobRunner:
         created_at = record.get("created_at")
         if created_at is not None:
             elapsed = time.time() - float(created_at)
-            if elapsed >= self._budget:
-                log.warning("job %s: queue wait (%.1fs) exceeded budget %.1fs, returning fast fallback", job_id, elapsed, self._budget)
-                raw = mock_pipeline.fast_fallback(str(video_path))
-                result = AnalysisResult.model_validate(raw)
+            hard_remaining = self._hard_timeout - elapsed
+            if hard_remaining <= 0:
+                log.warning("job %s: queue wait (%.1fs) exceeded hard timeout %.1fs", job_id, elapsed, self._hard_timeout)
                 self._store.update(
                     job_id,
-                    status="done",
-                    stage="done",
-                    progress=1.0,
-                    result=result.model_dump(mode="json", exclude_none=True),
+                    status="failed",
+                    stage="failed",
+                    error="Время ожидания в очереди превысило лимит",
                 )
                 return
-            remaining = self._budget - elapsed
-            effective_budget = min(self._budget, max(0.0, remaining))
         else:
-            effective_budget = self._budget
+            hard_remaining = self._hard_timeout
+
+        # Dual budgets: soft budget passed to pipeline, hard timeout enforced by watchdog
+        grace_sec = max(10.0, self._hard_timeout - self._soft_budget)
+        pipeline_budget = max(1.0, min(self._soft_budget, hard_remaining - grace_sec))
+
+        # Concurrency guard: ensure active ML executions do not exceed workers
+        if not self._sem.acquire(timeout=max(0.001, hard_remaining)):
+            log.warning("job %s: could not acquire compute slot within %.1fs", job_id, hard_remaining)
+            self._store.update(
+                job_id,
+                status="failed",
+                stage="failed",
+                error="Не удалось выделить вычислительные ресурсы (очередь перегружена)",
+            )
+            return
 
         pipeline_result: list[dict[str, Any]] = []
         pipeline_exc: list[Exception] = []
-        stop_event = threading.Event()
-
-        def target() -> None:
-            try:
-                import inspect
-                kwargs: dict[str, Any] = {
-                    "on_progress": on_progress,
-                    "time_budget_sec": effective_budget,
-                }
-                try:
-                    sig = inspect.signature(self._pipeline)
-                    if "stop_event" in sig.parameters:
-                        kwargs["stop_event"] = stop_event
-                except (ValueError, TypeError):
-                    pass
-                res = self._pipeline(str(video_path), **kwargs)
-                pipeline_result.append(res)
-            except Exception as exc:  # noqa: BLE001
-                pipeline_exc.append(exc)
-
-        thread = threading.Thread(target=target, name=f"pipe-{job_id}", daemon=True)
-        thread.start()
-        thread.join(timeout=effective_budget)
 
         try:
+            def target() -> None:
+                try:
+                    res = self._pipeline(
+                        str(video_path),
+                        on_progress=on_progress,
+                        time_budget_sec=pipeline_budget,
+                    )
+                    pipeline_result.append(res)
+                except Exception as exc:  # noqa: BLE001
+                    pipeline_exc.append(exc)
+
+            thread = threading.Thread(target=target, name=f"pipe-{job_id}", daemon=True)
+            thread.start()
+            thread.join(timeout=hard_remaining)
+
             if thread.is_alive():
                 log.warning(
-                    "job %s: pipeline exceeded time budget %.1fs (effective %.1fs), returning fast fallback stage",
+                    "job %s: pipeline exceeded hard timeout %.1fs (allocated %.1fs)",
                     job_id,
-                    self._budget,
-                    effective_budget,
+                    self._hard_timeout,
+                    pipeline_budget,
                 )
-                stop_event.set()
-                fallback_fn = getattr(self._pipeline, "fast_fallback", None) or mock_pipeline.fast_fallback
-                raw = fallback_fn(str(video_path))
-            elif pipeline_exc:
-                raise pipeline_exc[0]
-            elif pipeline_result:
-                raw = pipeline_result[0]
-            else:
-                raw = mock_pipeline.fast_fallback(str(video_path))
+                self._store.update(
+                    job_id,
+                    status="failed",
+                    stage="failed",
+                    error="Превышено максимальное время обработки видео (таймаут)",
+                )
+                return
 
-            result = AnalysisResult.model_validate(raw)
-        except ValidationError as exc:
-            log.exception("job %s: pipeline returned an invalid result", job_id)
-            self._store.update(job_id, status="failed", stage="failed", error=f"Некорректный результат анализа: {exc.error_count()} ошибок схемы")
-            return
-        except Exception as exc:  # noqa: BLE001 — any pipeline failure must end as a failed job, not a hung one
-            log.exception("job %s: pipeline failed", job_id)
-            self._store.update(job_id, status="failed", stage="failed", error=f"Не удалось обработать видео ({type(exc).__name__})")
-            return
+            if pipeline_exc:
+                log.exception("job %s: pipeline raised exception", job_id, exc_info=pipeline_exc[0])
+                self._store.update(
+                    job_id,
+                    status="failed",
+                    stage="failed",
+                    error=f"Не удалось обработать видео ({type(pipeline_exc[0]).__name__})",
+                )
+                return
 
-        self._store.update(
-            job_id,
-            status="done",
-            stage="done",
-            progress=1.0,
-            result=result.model_dump(mode="json", exclude_none=True),
-        )
+            if not pipeline_result:
+                self._store.update(
+                    job_id,
+                    status="failed",
+                    stage="failed",
+                    error="Пайплайн не вернул результат",
+                )
+                return
+
+            try:
+                result = AnalysisResult.model_validate(pipeline_result[0])
+            except ValidationError as exc:
+                log.exception("job %s: pipeline returned invalid schema", job_id)
+                self._store.update(
+                    job_id,
+                    status="failed",
+                    stage="failed",
+                    error=f"Некорректный результат анализа: {exc.error_count()} ошибок схемы",
+                )
+                return
+
+            self._store.update(
+                job_id,
+                status="done",
+                stage="done",
+                progress=1.0,
+                result=result.model_dump(mode="json", exclude_none=True),
+            )
+        finally:
+            self._sem.release()

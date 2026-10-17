@@ -25,13 +25,12 @@
 
 | Переменная | По умолчанию | Описание |
 |---|---|---|
-| `API_KEYS` | `jury_forte26_7f9c2d1b8e,ui_forte26_4a6e8b0d2c` | Список разрешённых ключей авторизации через запятую |
-| `JURY_KEY` | `jury_forte26_7f9c2d1b8e` | Ключ доступа для жюри (`X-API-Key`) |
-| `UI_KEY` | `ui_forte26_4a6e8b0d2c` | Ключ доступа для UI фронтенда |
+| `API_KEYS` | *обязательная* | Список разрешённых ключей авторизации через запятую |
 | `DATA_DIR` | `./var` | Директория сохранения заданий, загруженных видео и артефактов |
 | `WORKERS` | `2` | Количество параллельных воркеров обработки очереди |
 | `PIPELINE` | `mock` | Режим работы: `mock` (быстрое тестирование контракта) или `real` (ML) |
-| `JOB_TIMEOUT_SEC`| `240` | Сторож времени: при превышении отдаётся быстрый результат вместо `failed` |
+| `PIPELINE_TIMEOUT_SEC` | `200` | Мягкий бюджет времени ML (по К2 пайплайн возвращает лучший результат) |
+| `JOB_TIMEOUT_SEC` | `270` | Жёсткий сторож времени от `created_at` (при превышении ставится `failed`) |
 | `FRONTEND_DIST` | Автопоиск `frontend/dist` | Директория статики UI (при отсутствии отдаётся встроенная витрина на `/`) |
 | `MAX_UPLOAD_MB` | `200` | Максимальный размер загружаемого видеофайла в мегабайтах |
 
@@ -46,7 +45,7 @@ brew install ffmpeg  # macOS (или sudo apt install -y ffmpeg на Linux)
 
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-cp .env.example .env
+cp .env.example .env            # задать свои ключи
 uvicorn --factory backend.app.main:app_from_env --host 0.0.0.0 --port 8000
 ```
 
@@ -61,7 +60,7 @@ curl -s http://localhost:8000/health
 **Отправка видео на анализ (Контракт К1):**
 ```bash
 curl -s -X POST http://localhost:8000/api/v1/analyze \
-  -H "X-API-Key: jury_forte26_7f9c2d1b8e" \
+  -H "X-API-Key: change-me-jury-key" \
   -F "file=@data/open/videos/X-1.mov"
 # Ответ: {"job_id":"a1b2c3d4e5f6","status":"processing"}
 ```
@@ -69,7 +68,7 @@ curl -s -X POST http://localhost:8000/api/v1/analyze \
 **Получение результатов анализа:**
 ```bash
 curl -s http://localhost:8000/api/v1/jobs/a1b2c3d4e5f6 \
-  -H "X-API-Key: jury_forte26_7f9c2d1b8e"
+  -H "X-API-Key: change-me-jury-key"
 ```
 
 Пример успешного ответа (`status: "done"`):
@@ -82,7 +81,7 @@ curl -s http://localhost:8000/api/v1/jobs/a1b2c3d4e5f6 \
     {
       "type": "Оставление денег в лотке или на стойке без присмотра",
       "timecode_sec": 42.5,
-      "description": "Купюры оставлены на клиентской полке без контроля. Нарушение п. 24 Правил ведения кассовых операций (Постановление НБРК № 144).",
+      "description": "Купюры оставлены на клиентской полке без контроля.",
       "rule": {
         "document": "Постановление Правления НБРК № 144",
         "clause": "п. 24",
@@ -100,6 +99,10 @@ curl -s http://localhost:8000/api/v1/jobs/a1b2c3d4e5f6 \
 }
 ```
 
+Как ведёт себя mock:
+- если в имени файла есть `clean`, вердикт будет `no_violation`;
+- любой другой файл даёт два демо-нарушения с настоящими кадрами из загруженного видео.
+
 ---
 
 ## Запуск в Docker (включая офлайн-режим)
@@ -110,19 +113,21 @@ docker compose up --build
 ```
 
 ### Запуск в полностью изолированной сети (без интернета):
-Контейнер сконфигурирован с `HF_HUB_OFFLINE=1` и `TRANSFORMERS_OFFLINE=1` (согласно ТЗ п. 7, полная переносимость). Используется внутренняя сеть Docker (`--internal`), блокирующая внешний интернет, но сохраняющая доступность API на хосте:
+Контейнер сконфигурирован с `HF_HUB_OFFLINE=1` и `TRANSFORMERS_OFFLINE=1` (согласно ТЗ п. 7, полная переносимость). Для проверки автономности создаётся внутренняя сеть Docker без шлюза в интернет:
 ```bash
 # 1. Создать изолированную сеть без внешнего шлюза в интернет
 docker network create --internal offline_net
 
-# 2. Запустить контейнер в изолированной сети
-docker run --rm \
+# 2. Запустить контейнер API в изолированной сети
+docker run -d --name datathon-api \
   --network offline_net \
-  -p 8000:8000 \
   --env-file .env \
   -e DATA_DIR=/data \
   -v $(pwd)/var:/data \
   datathon26-api:latest
+
+# 3. Проверить доступность API клиентом из этой же изолированной сети
+docker run --rm --network offline_net curlimages/curl:latest -s http://datathon-api:8000/health
 ```
 
 ---
@@ -138,7 +143,7 @@ docker run --rm \
 
 ## Тестирование
 
-Полный набор тестов API (К1), валидации схемы JPEG/base64, многопоточной очереди, сторожа времени и нагрузочных тестов (53 теста всего, 40 backend-тестов):
+Полный набор тестов API (К1), валидации схемы JPEG/base64, многопоточной очереди, сторожа времени и нагрузочных тестов (56 тестов всего, 43 backend-теста):
 ```bash
 pytest -v
 ```
@@ -148,6 +153,15 @@ pytest -v
 ## Данные для жюри (M6 / Сдача)
 
 - **Публичный HTTPS URL:** `https://usgs-transcripts-tactics-scott.trycloudflare.com`
-- **X-API-Key жюри:** `jury_forte26_7f9c2d1b8e`
+- **X-API-Key жюри:** передаётся жюри конфиденциально перед сдачей (в репозитории не хранится)
 - **Swagger / OpenAPI схема:** `https://usgs-transcripts-tactics-scott.trycloudflare.com/docs`
 - **Healthcheck:** `https://usgs-transcripts-tactics-scott.trycloudflare.com/health`
+
+---
+
+## Правила
+
+- Ветка `main` всегда должна деплоиться. Работаем в своих ветках, в `main` попадаем через PR.
+- Договорённости из [docs/contracts.md](docs/contracts.md) меняем только через Агыбая.
+- Модели берём только с лицензиями Apache-2.0, MIT или BSD. Ultralytics (AGPL) и веса с NC-лицензией не используем. Каждую модель записываем в `docs/licenses.md`.
+- Видео и кадры не загружаем ни в какие облачные сервисы.

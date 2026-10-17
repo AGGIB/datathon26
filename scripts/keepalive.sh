@@ -31,14 +31,16 @@ echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Monitor active. Pinging every ${INTERVA
 
 while true; do
     TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    HTTP_CODE=$(curl -s --connect-timeout 5 --max-time 10 -o "$RESP_TMP" -w "%{http_code}" "$URL" || echo "000")
+    HTTP_CODE=$(curl -s --connect-timeout 5 --max-time 10 -o "$RESP_TMP" -w "%{http_code}" "$URL" 2>/dev/null || true)
+    HTTP_CODE="${HTTP_CODE:-000}"
 
     if [ "$HTTP_CODE" = "200" ]; then
-        STATUS=$(grep -o '"status":"[^"]*"' "$RESP_TMP" 2>/dev/null || echo "status: ok")
+        STATUS=$(grep -o '"status":"[^"]*"' "$RESP_TMP" 2>/dev/null || echo 'status: ok')
         echo "[$TIMESTAMP] OK ($HTTP_CODE, public tunnel): $STATUS" | tee -a "$LOG_FILE"
     else
         # Try local fallback to distinguish tunnel vs server issue
-        LOCAL_CODE=$(curl -s --connect-timeout 3 --max-time 5 -w "%{http_code}" "$LOCAL_URL" 2>/dev/null || echo "000")
+        LOCAL_CODE=$(curl -s --connect-timeout 3 --max-time 5 -o /dev/null -w "%{http_code}" "$LOCAL_URL" 2>/dev/null || true)
+        LOCAL_CODE="${LOCAL_CODE:-000}"
         echo "[$TIMESTAMP] WARNING: Public healthcheck returned HTTP $HTTP_CODE (local: $LOCAL_CODE)!" | tee -a "$LOG_FILE"
     fi
 
