@@ -42,9 +42,16 @@ def looks_like_isobmff(path: Path) -> bool:
 
     if atom_type == b"ftyp":
         # Standard ftyp box is at least 16 bytes (size + type + major_brand + minor_version)
-        if box_size not in (0, 1) and box_size < 16:
+        # Extended-size ftyp box (box_size == 1) is at least 24 bytes (4 + 4 + 8 + 4 + 4)
+        brand_offset = 16 if box_size == 1 else 8
+        min_box_len = 24 if box_size == 1 else 16
+        if box_size == 1 and extended_size < min_box_len:
             return False
-        major_brand = head[8:12]
+        if box_size not in (0, 1) and box_size < min_box_len:
+            return False
+        if len(head) < brand_offset + 4:
+            return False
+        major_brand = head[brand_offset : brand_offset + 4]
         if not all(32 <= b <= 126 for b in major_brand):
             return False
 

@@ -281,3 +281,21 @@ def test_upload_clean_file_returns_no_violation(client):
     assert body["verdict"] == "no_violation"
     assert body["violations"] == []
 
+
+def test_extended_64bit_ftyp_box_accepted(client):
+    import struct
+    # 64-bit extended size box: size=1, atom='ftyp', extended_size=24, brand='qt  ', minor=0
+    hdr = struct.pack(">I4sQ4sI", 1, b"ftyp", 24, b"qt  ", 0) + b"\x00" * 32
+    resp = _upload(client, name="extended.mov", content=hdr)
+    assert resp.status_code == 200
+
+
+def test_extended_64bit_ftyp_box_too_short_rejected(client):
+    import struct
+    # 64-bit extended size box claims size=16, but minimum for extended ftyp is 24
+    hdr = struct.pack(">I4sQ4sI", 1, b"ftyp", 16, b"qt  ", 0) + b"\x00" * 32
+    resp = _upload(client, name="extended_short.mov", content=hdr)
+    assert resp.status_code == 415
+    assert "не похож на видео" in resp.json()["detail"]
+
+

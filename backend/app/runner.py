@@ -87,7 +87,8 @@ class JobRunner:
                     result=result.model_dump(mode="json", exclude_none=True),
                 )
                 return
-            effective_budget = max(0.001, min(self._budget, self._budget - elapsed))
+            remaining = self._budget - elapsed
+            effective_budget = min(self._budget, max(0.0, remaining))
         else:
             effective_budget = self._budget
 
