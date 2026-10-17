@@ -25,7 +25,7 @@ ANCHOR_START_BONUS = 1.2  # ... which breaks near-ties with a visitor who also s
 ANCHOR_MAX_POINTS = 400  # subsample long tracks for the O(n^2) stillness count
 HOME_RADIUS = 0.25  # in box heights: foot points this close are "the same place" when finding the seat
 AT_WORK_DIST = 0.6  # cashier widths from the seat: standing up, reaching the safe next to it is still "at work"
-AT_WORK_MIN_SCORE = 0.7  # a weak box over the seat is someone behind the glass, not the cashier
+AT_WORK_MIN_SCORE = 0.7  # seat occupancy at the reference clarity; scaled down with cashier confidence
 
 # in-room test for non-cashier tracks
 NEAR_DIST = 2.5  # cashier widths from the seat
@@ -64,6 +64,7 @@ class Workplace:
     height: float
     signature: Signature
     desk: tuple[float, float] | None = None  # centre of static desk objects, when they are detected
+    clarity: float = INROOM_SCORE_CAP  # same cashier-relative confidence for roles and role events
 
     def distance(self, box: Box) -> float:
         fx, fy = foot(box)
@@ -71,7 +72,11 @@ class Workplace:
 
     def occupied_by(self, box: Box, score: float = 1.0) -> bool:
         """Someone is at the cashier's working place (seat and its immediate surroundings)."""
-        return score >= AT_WORK_MIN_SCORE and self.distance(box) <= AT_WORK_DIST
+        # Keep the seat's weaker confidence allowance proportional to the cashier's confidence.
+        # Subtracting another fixed margin would let dimmer footage join previously separate stays.
+        relative_score = (self.clarity + INROOM_SCORE_MARGIN) / (INROOM_SCORE_CAP + INROOM_SCORE_MARGIN)
+        min_score = max(MIN_INROOM_SCORE, AT_WORK_MIN_SCORE * relative_score)
+        return score >= min_score and self.distance(box) <= AT_WORK_DIST
 
     def toward_desk(self, box: Box) -> float | None:
         """How far the foot point lies in the direction of the desk, in cashier widths (None: desk unknown)."""
@@ -159,6 +164,7 @@ def workplace_of(anchor: Track) -> Workplace:
         width=float(np.median(boxes[:, 2] - boxes[:, 0])),
         height=float(np.median(boxes[:, 3] - boxes[:, 1])),
         signature=mean_signature([p.signature for p in seated if p.signature]),
+        clarity=inroom_score(anchor),
     )
 
 
@@ -303,7 +309,7 @@ def assign_roles(tracks: Sequence[Track], duration: float | None = None) -> Role
     if anchor is None:
         return Roles(None, (), (), tuple(short))
     wp = workplace_of(anchor)
-    clarity = inroom_score(anchor)
+    clarity = wp.clarity
     cashier, visitors, kinds = [anchor], [], {}
     for tr in sorted((t for t in long_enough if t is not anchor), key=lambda t: t.mean_score, reverse=True):
         kinds[tr.track_id] = _classify(tr, cashier, wp, clarity)

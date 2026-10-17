@@ -1,5 +1,7 @@
+import pytest
+
 from ml.events import extract_role_events
-from ml.roles import Roles, Workplace
+from ml.roles import Roles, Workplace, assign_roles
 from ml.track import Track, TrackPoint
 
 SEAT = (40.0, 100.0, 80.0, 160.0)  # cashier seated: foot (60, 160), width 40, height 60
@@ -187,3 +189,32 @@ def test_thresholds_on_the_sampling_lattice_do_not_depend_on_float_noise():
     seated = [TrackPoint(t, SEAT, 0.9) for t in ts if t <= 5.0 + 1e-6 or t >= 8.0 - 1e-6]
     ev = extract_role_events(roles([Track(1, tuple(seated))]), ts, duration=20.0)
     assert [round(e.t, 2) for e in kinds(ev, "cashier_left")] == [5.0]
+
+
+@pytest.mark.parametrize("score_scale", [1.0, 0.95, 0.9, 0.85])
+def test_role_events_share_the_cashier_relative_clarity(score_scale):
+    # The same camera becomes less clear. A brief dropout must not become a departure,
+    # and a real person behind the cashier must remain visible to the rules stage.
+    before = trk(1, 0, 8, SEAT, score=0.9 * score_scale)
+    after = Track(1, tuple(TrackPoint(p.t, p.box, (0.72 if p.t == 11.5 else 0.83) * score_scale)
+                           for p in trk(1, 9.5, 30, SEAT).points))
+    cashier = Track(1, before.points + after.points)
+    intruder = trk(9, 12, 18, BEHIND, score=0.86 * score_scale)
+    assigned = assign_roles([cashier, intruder], duration=30.0)
+    ev = extract_role_events(assigned, times(30), duration=30.0)
+    assert assigned.cashier_ids == (1,) and assigned.visitor_ids == (9,)
+    assert not kinds(ev, "cashier_left")
+    assert [(e.t, e.t_end) for e in kinds(ev, "person_behind_cashier")] == [(12.0, 18.0)]
+
+
+def test_dim_camera_still_rejects_a_weak_ghost_as_a_return_or_person_behind():
+    cashier = Track(1, trk(1, 0, 8, SEAT, score=0.72).points + trk(1, 12, 20, SEAT, score=0.55).points)
+    assigned = assign_roles([cashier], duration=20.0)
+    # The relative threshold has a floor, even when the cashier is poorly detected.
+    assert assigned.workplace.clarity == 0.6
+    assert not assigned.workplace.occupied_by(SEAT, score=0.55)
+    assigned = Roles(assigned.workplace, assigned.cashier, (trk(9, 12, 20, BEHIND, score=0.55),), ())
+    ev = extract_role_events(assigned, times(20), duration=20.0)
+    assert [(e.t, e.t_end) for e in kinds(ev, "cashier_left")] == [(8.0, None)]
+    assert not kinds(ev, "cashier_returned")
+    assert not kinds(ev, "person_behind_cashier")

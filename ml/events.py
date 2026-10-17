@@ -105,7 +105,6 @@ CASHIER_MIN_AWAY_AT_END_SEC = 1.5
 # Being back at work needs a clear, full-width figure (through the glass door right behind the seat the cashier,
 # or a passer-by, shows up weak or as a narrow sliver). After a real absence (>= CASHIER_MIN_AWAY_SEC) she must
 # also settle in her usual posture for RETURN_MIN_SEC.
-STAY_MIN_SCORE = 0.8
 STAY_MIN_WIDTH = 0.7  # median box width relative to the usual one
 RETURN_MIN_SEC = 2.0
 SETTLED_HEIGHT = (0.6, 1.35)  # box height relative to the usual one at the workplace
@@ -114,7 +113,6 @@ MIN_OVERLAP_SEC = 2.0
 BEHIND_DIST = 1.3  # cashier widths from the seat
 BEHIND_DIST_AWAY_FROM_DESK = 2.0  # ... further is fine when the person is on the far side of the seat from the desk
 BEHIND_MIN_HEIGHT = 0.9  # standing person next to a seated cashier is at least about as tall
-BEHIND_MIN_SCORE = 0.8
 BEHIND_MAX_TOWARD_DESK = 0.8  # further than this toward the desk is the visitor side
 MIN_BEHIND_SEC = 1.0
 RUN_GAP_SEC = 1.0
@@ -155,7 +153,7 @@ def _runs(flags: Sequence[bool], value: bool = False) -> list[tuple[int, int]]:
 def _clear_stay(points: Sequence[TrackPoint], wp: Workplace) -> bool:
     widths = sorted((p.box[2] - p.box[0]) / max(wp.width, 1.0) for p in points)
     mean_score = sum(p.score for p in points) / len(points)
-    return mean_score >= STAY_MIN_SCORE and widths[len(widths) // 2] >= STAY_MIN_WIDTH
+    return mean_score >= wp.clarity and widths[len(widths) // 2] >= STAY_MIN_WIDTH
 
 
 def _slack(times: Sequence[float]) -> float:
@@ -253,7 +251,7 @@ def _overlap_events(visitors: Sequence[Track], slack: float) -> list[Event]:
 
 
 def _is_behind(p: TrackPoint, wp: Workplace) -> bool:
-    if p.score < BEHIND_MIN_SCORE or (p.box[3] - p.box[1]) < BEHIND_MIN_HEIGHT * wp.height:
+    if p.score < wp.clarity or (p.box[3] - p.box[1]) < BEHIND_MIN_HEIGHT * wp.height:
         return False
     toward = wp.toward_desk(p.box)
     reach = BEHIND_DIST_AWAY_FROM_DESK if toward is not None and toward <= 0 else BEHIND_DIST

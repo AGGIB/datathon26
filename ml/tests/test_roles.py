@@ -109,6 +109,13 @@ def test_in_room_clarity_is_relative_to_how_clearly_the_camera_sees_the_cashier(
     assert assign_roles(sharp_camera).visitor_ids == ()
 
 
+@pytest.mark.parametrize("score_scale", [1.0, 0.95, 0.9, 0.85])
+def test_seat_confidence_changes_proportionally_with_camera_clarity(score_scale):
+    wp = workplace_of(trk(1, 0, 20, SEAT, score=0.88 * score_scale))
+    assert wp.occupied_by(SEAT, score=0.72 * score_scale)
+    assert not wp.occupied_by(SEAT, score=0.67 * score_scale)
+
+
 def test_bigger_visitor_present_longer_does_not_take_the_cashier_role():
     seated = trk(1, 2, 30, SEAT, score=0.86)
     big = (90.0, 0.0, 230.0, 300.0)  # 1.4x the cashier's box, across the desk
