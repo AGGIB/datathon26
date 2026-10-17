@@ -11,6 +11,13 @@ from ml.labels import normalize_video_name, parse_timestamp
         ("1минута 8 секунда", 68.0),
         ("1 минута 8 секунд", 68.0),
         ("2 минуты", 120.0),
+        ("8.5 секунд", 8.5),
+        ("1,5 секунды", 1.5),
+        ("1 мин 5 сек", 65.0),
+        ("01:08", 68.0),
+        ("0:57", 57.0),
+        (57, 57.0),
+        (12.5, 12.5),
         (None, None),
         ("", None),
     ],
@@ -19,9 +26,10 @@ def test_parse_timestamp(raw, expected):
     assert parse_timestamp(raw) == expected
 
 
-def test_parse_timestamp_rejects_garbage():
+@pytest.mark.parametrize("raw", ["где-то в середине", "1 минута 60 секунд", "-3 секунды"])
+def test_parse_timestamp_rejects_garbage(raw):
     with pytest.raises(ValueError):
-        parse_timestamp("где-то в середине")
+        parse_timestamp(raw)
 
 
 @pytest.mark.parametrize(

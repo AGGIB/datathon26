@@ -4,8 +4,10 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-_MIN_RE = re.compile(r"(\d+)\s*минут\w*")
-_SEC_RE = re.compile(r"(\d+)\s*секунд\w*")
+_NUM = r"(\d+(?:[.,]\d+)?)"
+_MIN_RE = re.compile(_NUM + r"\s*мин\w*")
+_SEC_RE = re.compile(_NUM + r"\s*сек\w*")
+_CLOCK_RE = re.compile(r"^\s*(\d{1,2}):(\d{2}(?:[.,]\d+)?)\s*$")
 _CYRILLIC_X = str.maketrans({"Х": "X", "х": "X", "x": "X"})
 
 
@@ -16,16 +18,32 @@ class Label:
     t_sec: float | None
 
 
-def parse_timestamp(raw: str | None) -> float | None:
-    """'22 секунда' -> 22.0, '1минута 8 секунда' -> 68.0, empty -> None."""
-    if raw is None or not str(raw).strip():
+def _num(text: str) -> float:
+    return float(text.replace(",", "."))
+
+
+def parse_timestamp(raw: str | float | int | None) -> float | None:
+    """'22 секунда' -> 22.0, '1минута 8 секунда' -> 68.0, '8,5 секунды' -> 8.5, '01:08' -> 68.0, 57 -> 57.0."""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
         return None
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        if raw < 0:
+            raise ValueError(f"negative timestamp: {raw!r}")
+        return float(raw)
     text = str(raw).lower()
-    minutes = _MIN_RE.search(text)
-    seconds = _SEC_RE.search(text)
-    if not minutes and not seconds:
-        raise ValueError(f"unrecognized timestamp: {raw!r}")
-    return float((int(minutes.group(1)) if minutes else 0) * 60 + (int(seconds.group(1)) if seconds else 0))
+    clock = _CLOCK_RE.match(text)
+    if clock:
+        minutes, seconds = int(clock.group(1)), _num(clock.group(2))
+    else:
+        if "-" in text:
+            raise ValueError(f"negative timestamp: {raw!r}")
+        m, s = _MIN_RE.search(text), _SEC_RE.search(text)
+        if not m and not s:
+            raise ValueError(f"unrecognized timestamp: {raw!r}")
+        minutes, seconds = (_num(m.group(1)) if m else 0), (_num(s.group(1)) if s else 0.0)
+    if minutes and seconds >= 60:
+        raise ValueError(f"seconds out of range in {raw!r}")
+    return float(minutes * 60 + seconds)
 
 
 def normalize_video_name(raw: str) -> str:
