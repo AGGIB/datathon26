@@ -17,7 +17,8 @@ import logging
 import math
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -26,11 +27,12 @@ import numpy as np
 
 from . import rules
 from .assemble import assemble
+from .candidates import Candidate
 from .detect import Detection, Detector
 from .events import extract_events
 from .evidence import render_candidate
 from .perception import SAMPLE_FPS, Perception, perceive
-from .video import probe
+from .video import VideoInfo, probe
 
 log = logging.getLogger(__name__)
 
@@ -57,8 +59,24 @@ class SharedDetector:
         self._model: Detector | None = None
         self._init_lock = threading.Lock()
         self._infer_lock = threading.Lock()
+        self._jobs_lock = threading.Lock()
+        self._active_jobs = 0
         self._warmed_up = False
         self._sec_per_frame: float | None = None
+
+    @contextmanager
+    def job(self) -> Iterator[None]:
+        """Marks a running analysis, so planners know how many jobs compete for the model."""
+        with self._jobs_lock:
+            self._active_jobs += 1
+        try:
+            yield
+        finally:
+            with self._jobs_lock:
+                self._active_jobs -= 1
+
+    def active_jobs(self) -> int:
+        return self._active_jobs
 
     def model(self) -> Detector:
         with self._init_lock:
@@ -149,10 +167,11 @@ def _reporter(on_progress: ProgressFn | None) -> ProgressFn:
 
 
 def _perceive_within(
-    video_path: str, deadline: float | None, budget_left: float | None, report: ProgressFn
+    video_path: str, info: VideoInfo, deadline: float | None, budget_left: float | None, report: ProgressFn
 ) -> Perception:
-    info = probe(video_path)
-    fps = plan_sample_fps(info.duration, budget_left, _SHARED.sec_per_frame())
+    # inference is serialised, so every job running in parallel slows this one down proportionally
+    cost = _SHARED.sec_per_frame() * max(1, _SHARED.active_jobs())
+    fps = plan_sample_fps(info.duration, budget_left, cost)
     guard = _DeadlineDetector(_SHARED, deadline)
     perception = perceive(
         video_path, guard, sample_fps=fps,
@@ -167,7 +186,7 @@ def _perceive_within(
     return perception
 
 
-def _find_candidates(perception: Perception) -> Sequence:
+def _find_candidates(perception: Perception) -> Sequence[Candidate]:
     if not perception.frames:
         log.warning("pipeline: no frames were analysed, nothing to judge")
         return []
@@ -179,15 +198,19 @@ def analyze(
     on_progress: ProgressFn | None = None,
     time_budget_sec: float | None = None,
 ) -> dict[str, Any]:
+    with _SHARED.job():
+        return _analyze(video_path, _reporter(on_progress), time_budget_sec)
+
+
+def _analyze(video_path: str, report: ProgressFn, time_budget_sec: float | None) -> dict[str, Any]:
     started = time.monotonic()
-    report = _reporter(on_progress)
     report(0.0, "detect")
-    probe(video_path)  # unreadable input fails here, before the model is touched
+    info = probe(video_path)  # unreadable input fails here, before the model is touched
     _SHARED.model()
 
     deadline = None if time_budget_sec is None else started + time_budget_sec - FINISH_RESERVE_SEC
     budget_left = None if time_budget_sec is None else time_budget_sec - (time.monotonic() - started)
-    perception = _perceive_within(video_path, deadline, budget_left, report)
+    perception = _perceive_within(video_path, info, deadline, budget_left, report)
 
     report(PROGRESS_DETECT_END, "rules")
     candidates = _find_candidates(perception)

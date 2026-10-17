@@ -105,6 +105,21 @@ def test_shared_detector_learns_speed_after_warmup():
     assert model.sec_per_frame() < pipeline.SEC_PER_FRAME_PRIOR["cpu"]
 
 
+def test_plan_accounts_for_jobs_running_in_parallel(tmp_path, shared, monkeypatch):
+    video = make_video(tmp_path / "v.mp4", seconds=4.0)
+    seen = []
+    real_plan = pipeline.plan_sample_fps
+    monkeypatch.setattr(pipeline, "plan_sample_fps", lambda d, b, spf: seen.append(spf) or real_plan(d, b, spf))
+    monkeypatch.setattr(pipeline._SHARED, "sec_per_frame", lambda: 0.2)
+
+    pipeline.analyze(str(video), time_budget_sec=240.0)
+    with pipeline._SHARED.job():  # another worker is busy with its own video
+        pipeline.analyze(str(video), time_budget_sec=240.0)
+
+    assert seen == pytest.approx([0.2, 0.4])
+    assert pipeline._SHARED.active_jobs() == 0
+
+
 def test_analyze_with_stub_rules_is_no_violation(clip, shared):
     result = pipeline.analyze(str(clip))
     assert result == {"verdict": "no_violation", "violations": []}
