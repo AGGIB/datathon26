@@ -1,0 +1,206 @@
+{
+  "schema_version": 1,
+  "provenance": "Public Hugging Face metadata, revision-pinned; not proof of a local download or inference quality.",
+  "models": [
+    {
+      "model_id": "google/siglip-base-patch16-224",
+      "revision": "7fd15f0689c79d79e38b1c2e2e2370a7bf2761ed",
+      "license": "Apache-2.0",
+      "metadata_source": "https://huggingface.co/api/models/google/siglip-base-patch16-224/revision/7fd15f0689c79d79e38b1c2e2e2370a7bf2761ed?blobs=true",
+      "model_card": "https://huggingface.co/google/siglip-base-patch16-224/blob/7fd15f0689c79d79e38b1c2e2e2370a7bf2761ed/README.md",
+      "weight_manifest_sha256": "e2cab2e993abd41a16b595a6091bbbd78ad6b2c305a27278fad9ec8fb8558243",
+      "weights": [
+        {
+          "path": "model.safetensors",
+          "sha256": "2c63cb7d1f2e95ba501893cbb8faeb4ea9a3af295498d35097126228659c2af8",
+          "size_bytes": 812672320
+        }
+      ]
+    },
+    {
+      "model_id": "HuggingFaceTB/SmolVLM-256M-Instruct",
+      "revision": "7e3e67edbbed1bf9888184d9df282b700a323964",
+      "license": "Apache-2.0",
+      "metadata_source": "https://huggingface.co/api/models/HuggingFaceTB/SmolVLM-256M-Instruct/revision/7e3e67edbbed1bf9888184d9df282b700a323964?blobs=true",
+      "model_card": "https://huggingface.co/HuggingFaceTB/SmolVLM-256M-Instruct/blob/7e3e67edbbed1bf9888184d9df282b700a323964/README.md",
+      "weight_manifest_sha256": "3348252813f6f1781fd453edfe332ce00b7193b0255057c4a6f087bda49d92c0",
+      "weights": [
+        {
+          "path": "model.safetensors",
+          "sha256": "74dea5904032e5ae99a2e0eef5179e6ac0f1dedc3ab0c7c2a5d4d387c843203e",
+          "size_bytes": 513028808
+        }
+      ]
+    },
+    {
+      "model_id": "HuggingFaceTB/SmolVLM-500M-Instruct",
+      "revision": "a7da5b986cb59b408707209984f360a5f4ad7e47",
+      "license": "Apache-2.0",
+      "metadata_source": "https://huggingface.co/api/models/HuggingFaceTB/SmolVLM-500M-Instruct/revision/a7da5b986cb59b408707209984f360a5f4ad7e47?blobs=true",
+      "model_card": "https://huggingface.co/HuggingFaceTB/SmolVLM-500M-Instruct/blob/a7da5b986cb59b408707209984f360a5f4ad7e47/README.md",
+      "weight_manifest_sha256": "fb22af8ad2c193a0511bfc79b7b91e14e3abd497f6e8ea557d818e35ce541ea4",
+      "weights": [
+        {
+          "path": "model.safetensors",
+          "sha256": "d05b567eeaf534e83d375551f068ed57b5f52d37c657197f644af5ef9db091a2",
+          "size_bytes": 1015025832
+        }
+      ]
+    },
+    {
+      "model_id": "HuggingFaceTB/SmolVLM2-2.2B-Instruct",
+      "revision": "482adb537c021c86670beed01cd58990d01e72e4",
+      "license": "Apache-2.0",
+      "metadata_source": "https://huggingface.co/api/models/HuggingFaceTB/SmolVLM2-2.2B-Instruct/revision/482adb537c021c86670beed01cd58990d01e72e4?blobs=true",
+      "model_card": "https://huggingface.co/HuggingFaceTB/SmolVLM2-2.2B-Instruct/blob/482adb537c021c86670beed01cd58990d01e72e4/README.md",
+      "weight_manifest_sha256": "338ebe780ccdb9cca90d447e24c2046b4574c4a49c3937f51b0a64373102946c",
+      "weights": [
+        {
+          "path": "model-00001-of-00002.safetensors",
+          "sha256": "7c88a90e78f567460b2369a0369cc4dafbfda5607c9cb090b30fa4437b0282f2",
+          "size_bytes": 4959390584
+        },
+        {
+          "path": "model-00002-of-00002.safetensors",
+          "sha256": "cf3d0958a8240f71054a6812038f2a6bfbe2e5124573a3b363f6b120c9a52657",
+          "size_bytes": 4027833472
+        }
+      ]
+    },
+    {
+      "model_id": "Qwen/Qwen2.5-VL-7B-Instruct",
+      "revision": "cc594898137f460bfe9f0759e9844b3ce807cfb5",
+      "license": "Apache-2.0",
+      "metadata_source": "https://huggingface.co/api/models/Qwen/Qwen2.5-VL-7B-Instruct/revision/cc594898137f460bfe9f0759e9844b3ce807cfb5?blobs=true",
+      "model_card": "https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct/blob/cc594898137f460bfe9f0759e9844b3ce807cfb5/README.md",
+      "weight_manifest_sha256": "f9367b8189fb42030e2ae9d0be188527b844227cdc537fba443a96b8fb8b95fe",
+      "weights": [
+        {
+          "path": "model-00001-of-00005.safetensors",
+          "sha256": "e97b877e47fde53a6c6e77aafb36e58e91ee9d95c4a3eeac6f1b5c0e6a1c986e",
+          "size_bytes": 3900233256
+        },
+        {
+          "path": "model-00002-of-00005.safetensors",
+          "sha256": "a9a300a43b4724eee2abe7c18ceb26768d0ab011eb0cad19d9bfd2476a24d024",
+          "size_bytes": 3864726320
+        },
+        {
+          "path": "model-00003-of-00005.safetensors",
+          "sha256": "111223d173e00bbee81cba1216fad28668df3476706b7fd26f4d5b50f8b3a507",
+          "size_bytes": 3864726424
+        },
+        {
+          "path": "model-00004-of-00005.safetensors",
+          "sha256": "ef47f634fa57d46ee134edcc09f34085a47da1e16c12a2abe0d67118be6d72ed",
+          "size_bytes": 3864733680
+        },
+        {
+          "path": "model-00005-of-00005.safetensors",
+          "sha256": "0c859795ad3a627a9b95bcb762e059d5b768a4a36fdd4affeff269d93fdecc67",
+          "size_bytes": 1089994880
+        }
+      ]
+    },
+    {
+      "model_id": "Qwen/Qwen2.5-VL-32B-Instruct",
+      "revision": "7cfb30d71a1f4f49a57592323337a4a4727301da",
+      "license": "Apache-2.0",
+      "metadata_source": "https://huggingface.co/api/models/Qwen/Qwen2.5-VL-32B-Instruct/revision/7cfb30d71a1f4f49a57592323337a4a4727301da?blobs=true",
+      "model_card": "https://huggingface.co/Qwen/Qwen2.5-VL-32B-Instruct/blob/7cfb30d71a1f4f49a57592323337a4a4727301da/README.md",
+      "weight_manifest_sha256": "b4fb47de6923b3078b996c29fd4afa13624159bb87a2e0f92e08627c76f8f78a",
+      "weights": [
+        {
+          "path": "model-00001-of-00018.safetensors",
+          "sha256": "64c2a870b88b235da239b0eee9360810d162c2eaa6c0a6318f33969d3e653e8f",
+          "size_bytes": 2755409624
+        },
+        {
+          "path": "model-00002-of-00018.safetensors",
+          "sha256": "d58b007f2a2a3104e243949b5533209087fb71528a801719a7ff87e1c5402a13",
+          "size_bytes": 3916519128
+        },
+        {
+          "path": "model-00003-of-00018.safetensors",
+          "sha256": "e4102551d61285941d4c628ef34beeeb2ecb66713b37756c4be31542b03c5546",
+          "size_bytes": 3900847488
+        },
+        {
+          "path": "model-00004-of-00018.safetensors",
+          "sha256": "20a6ff2c6b6ea5d7199ea0da7c39787f694d04068a1b5090c56e1b2cd2c8279c",
+          "size_bytes": 3900847488
+        },
+        {
+          "path": "model-00005-of-00018.safetensors",
+          "sha256": "3af4c2e3274e045d9b08bc92dda78b615c2e21aead1159f8193fe6d01b49b62c",
+          "size_bytes": 3900847536
+        },
+        {
+          "path": "model-00006-of-00018.safetensors",
+          "sha256": "8a47aa90e2e685110e9c82b4f468eac4116286c98090a1461275130ac5ac42ea",
+          "size_bytes": 3900847536
+        },
+        {
+          "path": "model-00007-of-00018.safetensors",
+          "sha256": "dcd94eb28bee42e2697dda0497eeafd04a6d10f686d966a18b77ec1b62c95cb9",
+          "size_bytes": 3900847536
+        },
+        {
+          "path": "model-00008-of-00018.safetensors",
+          "sha256": "5ed4aee864b479c6dfcafcfa10d11d511aaf8fefd95618325d03a6662aacf7ae",
+          "size_bytes": 3900847536
+        },
+        {
+          "path": "model-00009-of-00018.safetensors",
+          "sha256": "bd7a7666f7246c3bf5dae7b4709a3032deab6970ccbb3d4de9853e18dccd0a4f",
+          "size_bytes": 3900847536
+        },
+        {
+          "path": "model-00010-of-00018.safetensors",
+          "sha256": "23e22a974e698e049e0abf917747aa270b6f11202a4ef23feffba18534bdbb0d",
+          "size_bytes": 3900847536
+        },
+        {
+          "path": "model-00011-of-00018.safetensors",
+          "sha256": "2d9900a158e75ed10c9d271063283f356c998c9e94792eda2d5cf4eb1fd49bff",
+          "size_bytes": 3900847536
+        },
+        {
+          "path": "model-00012-of-00018.safetensors",
+          "sha256": "7d0005e8ea7c058a1a1c03f9b76937836fcfded52ae41876d2d6f8c0657343a9",
+          "size_bytes": 3900847536
+        },
+        {
+          "path": "model-00013-of-00018.safetensors",
+          "sha256": "792a18eb6999f1d0b9716292a894fe480ee0393d66c71468263b46d795e669ea",
+          "size_bytes": 3900847536
+        },
+        {
+          "path": "model-00014-of-00018.safetensors",
+          "sha256": "d3ef548f5c10161749d6833e8cfa45fb68785617c60b3babeaf6803359cb6640",
+          "size_bytes": 3900847536
+        },
+        {
+          "path": "model-00015-of-00018.safetensors",
+          "sha256": "f99201514697986e5a5408f7f42f0fecc45916385614f6af8eab37a64a0e0e06",
+          "size_bytes": 3900847536
+        },
+        {
+          "path": "model-00016-of-00018.safetensors",
+          "sha256": "e366d738ecd99a3f66d01a7a9bbaf8355cd70a9450c4d58f0f4f9b16159be1e4",
+          "size_bytes": 3900847536
+        },
+        {
+          "path": "model-00017-of-00018.safetensors",
+          "sha256": "92e355aac688513437bd1c087a855808e7cb83aea8f31d1ec0f08d31ce3bb29e",
+          "size_bytes": 3900847536
+        },
+        {
+          "path": "model-00018-of-00018.safetensors",
+          "sha256": "87d7dddef2c079610e409a4372f29453382c6218687a9e1b9c04ae0359a880c2",
+          "size_bytes": 3098609680
+        }
+      ]
+    }
+  ]
+}

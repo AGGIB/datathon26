@@ -1,0 +1,8 @@
+# Optional local VLM runtime only. No automatic install/download in ml.vlm.
+# Use Python >=3.10; choose a torch wheel for the owner's physical CPU/GPU.
+# ffmpeg and ffprobe must be installed separately on the local machine/PATH.
+torch>=2.6,<3
+transformers>=4.51,<5
+accelerate>=1,<2
+Pillow>=10.4,<13
+safetensors>=0.5,<1

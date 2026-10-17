@@ -4,6 +4,7 @@
 import argparse
 import copy
 import importlib.util
+import json
 import logging
 import sys
 from pathlib import Path
@@ -47,6 +48,9 @@ def check_ml_loader(loader_path, catalog):
         rendered = item.template.format_map(values)
         assert 'Синтетическое наблюдение' in rendered and '12.5' in rendered
         assert '{' not in rendered and '}' not in rendered
+        if item.rule:
+            assert rendered.endswith(f"Основание: {item.rule.number_date}, {item.rule.clause}.")
+            assert item.rule.number_date != item.rule.document
     print("OK: pinned ML loader: 27 types / 26 rules / T04 enabled without rule / 0 fallbacks / 27 renders / 5 excluded inactive")
 
 
@@ -64,11 +68,18 @@ def main():
         raw = path.read_text(encoding="utf-8")
         clean = load_yaml(path)
         assert validate(base / "legal") == (8, 14, 32, 27, 5)
+        by_code = {row["codex_code"]: row for row in clean["violations"]}
+        assert "не возвращать клиенту банкноты и монеты с признаками подделки, если их статус подтверждён" in by_code["Т01"]["description_template"]
+        assert "приёме банкнот с полистным пересчётом" in by_code["Т05"]["description_template"]
+        assert "обязательность пересчёта на наблюдаемой стадии" in by_code["Т05"]["description_template"]
+        assert "хранении ранее принятых наличных денег" in by_code["Т12"]["description_template"]
+        assert "завершени" not in by_code["Т12"]["description_template"].casefold()
         assert not (Path(temp) / "data").exists()
         assert not list(base.rglob('*.html')), 'isolated text KB must work without HTML mirrors'
         door = next(row for row in clean["violations"] if row["codex_code"] == "Т06")
         rendered = [door["description_template"].format_map({**branch["template_values"], 't': '12.5',
-                     'rule_document': door['rule']['document'], 'rule_clause': door['rule']['clause']})
+                     'rule_document': door['rule']['document'], 'rule_clause': door['rule']['clause'],
+                     'rule_number_date': door['rule']['number_date']})
                     for branch in door["criterion_branches"]]
         assert "остаётся открытой" in rendered[0] and "после ухода" not in rendered[0]
         assert "после ухода" in rendered[1] and "остаётся открытой" not in rendered[1]
@@ -96,9 +107,18 @@ def main():
             ("editorial_clause", "clause содержит только номер"),
             ("missing_intro", "вводная фраза"),
             ("changed_source_text", "text_sha256"),
+            ("document_title_mismatch", "официальное название"),
+            ("number_date_mismatch", "number_date"),
+            ("title_basis_ending", "окончание description_template"),
+            ("unspaced_clause", "clause содержит только номер"),
+            ("missing_d04_intro", "вводная фраза"),
+            ("categorical_counterfeit", "description_template"),
+            ("incomplete_act_reference", "number_date требует"),
         ]
         for case, message in cases:
             catalog = copy.deepcopy(clean)
+            manifest_path = base / "legal/manifest.json"
+            manifest_raw = manifest_path.read_text(encoding="utf-8")
             entries = {row["codex_code"]: row for row in catalog["violations"]}
             if case == "altered_quote":
                 entries["Т08"]["rule"]["quote"] += " ВСТАВЛЕННАЯ НЕСУЩЕСТВУЮЩАЯ ФРАЗА."
@@ -138,6 +158,22 @@ def main():
                 entries['Т03']['rule']['clause'] += ', оба абзаца'
             elif case == 'missing_intro':
                 entries['Т02']['rule']['quote'] = '1)' + entries['Т02']['rule']['quote'].split('1)', 1)[1]
+            elif case == 'document_title_mismatch':
+                entries['Т03']['rule']['document'] = 'Сокращённое неофициальное название'
+            elif case == 'number_date_mismatch':
+                entries['Т03']['rule']['number_date'] = 'Постановление Правления НБРК от 29.11.2019 № 999 (Иные правила)'
+            elif case == 'title_basis_ending':
+                entries['Т03']['description_template'] = entries['Т03']['description_template'].replace('{rule_number_date}', '{rule_document}')
+            elif case == 'unspaced_clause':
+                entries['Т03']['rule']['clause'] = 'п.20'
+            elif case == 'missing_d04_intro':
+                entries['Д04']['rule']['quote'] = '1)' + entries['Д04']['rule']['quote'].split('1)', 1)[1]
+            elif case == 'categorical_counterfeit':
+                entries['Т01']['description_template'] = entries['Т01']['description_template'].replace('{observation}', 'Возвращены поддельные банкноты: {observation}')
+            elif case == 'incomplete_act_reference':
+                manifest = json.loads(manifest_raw)
+                next(row for row in manifest['sources'] if row['id'] == 'NBRK-231')['number_date'] = 'Постановление Правления НБРК от 29.11.2019 № 231'
+                manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
             source_path = base / 'legal/NBRK-231/2026-10-17/text.md'
             source_raw = source_path.read_bytes()
             if case == 'changed_source_text':
@@ -156,6 +192,7 @@ def main():
             else:
                 raise AssertionError(f"invalid catalog accepted: {case}")
             source_path.write_bytes(source_raw)
+            manifest_path.write_text(manifest_raw, encoding="utf-8")
             print(f"REJECTED: {case}")
         path.write_text(raw, encoding="utf-8")
         assert validate(base / "legal") == (8, 14, 32, 27, 5)
