@@ -11,6 +11,13 @@ from ml.labels import normalize_video_name, parse_timestamp
         ("1минута 8 секунда", 68.0),
         ("1 минута 8 секунд", 68.0),
         ("2 минуты", 120.0),
+        ("8.5 секунд", 8.5),
+        ("1,5 секунды", 1.5),
+        ("1 мин 5 сек", 65.0),
+        ("01:08", 68.0),
+        ("0:57", 57.0),
+        (57, 57.0),
+        (12.5, 12.5),
         (None, None),
         ("", None),
     ],
@@ -19,9 +26,10 @@ def test_parse_timestamp(raw, expected):
     assert parse_timestamp(raw) == expected
 
 
-def test_parse_timestamp_rejects_garbage():
+@pytest.mark.parametrize("raw", ["где-то в середине", "1 минута 60 секунд", "-3 секунды"])
+def test_parse_timestamp_rejects_garbage(raw):
     with pytest.raises(ValueError):
-        parse_timestamp("где-то в середине")
+        parse_timestamp(raw)
 
 
 @pytest.mark.parametrize(
@@ -56,3 +64,47 @@ def test_load_labels_reads_organizer_format(tmp_path):
         Label("X-3", False, None),
         Label("X-47", True, 68.0),
     ]
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("кассир-операционист 12 секунда", 12.0),
+        ("22 секунда - нарушение", 22.0),
+        ("1 минута - 8 секунд", 68.0),
+        ("X-47: 22 секунда", 22.0),
+        ("нарушение на 22 секунде (кадр 660)", 22.0),
+        (float("nan"), None),
+    ],
+)
+def test_parse_timestamp_tolerates_text_around(raw, expected):
+    assert parse_timestamp(raw) == expected
+
+
+def test_parse_timestamp_accepts_numpy_numbers():
+    np = pytest.importorskip("numpy")
+    assert parse_timestamp(np.int64(57)) == 57.0
+    assert parse_timestamp(np.float32(5.5)) == 5.5
+
+
+@pytest.mark.parametrize(
+    "raw", ["–3 секунды", "−3 секунды", "5 секретов", "23 минималь", "0:60", "0:75", "10-15 секунд",
+            float("inf"), True],
+)
+def test_parse_timestamp_rejects_ambiguous_or_invalid(raw):
+    with pytest.raises(ValueError):
+        parse_timestamp(raw)
+
+
+def test_load_labels_error_names_the_video(tmp_path):
+    from openpyxl import Workbook
+
+    from ml.labels import load_labels
+
+    wb = Workbook()
+    wb.active.append(["file", "ts", "flag"])
+    wb.active.append(["Х-9", "где-то", "нарушение"])
+    path = tmp_path / "l.xlsx"
+    wb.save(path)
+    with pytest.raises(ValueError, match="X-9"):
+        load_labels(path)
