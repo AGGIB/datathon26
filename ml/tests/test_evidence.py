@@ -37,7 +37,7 @@ def test_encode_respects_size_cap_on_noisy_large_frame():
     rng = np.random.default_rng(0)
     noise = rng.integers(0, 256, (1080, 1920, 3), dtype=np.uint8)  # worst case for JPEG
     b64 = encode_jpeg_b64(noise)
-    assert len(base64.b64decode(b64)) <= MAX_FRAME_BYTES
+    assert len(b64) <= MAX_FRAME_BYTES  # the cap applies to the base64 text that goes into JSON
     h, w = decode(b64).shape[:2]
     assert w / h == pytest.approx(1920 / 1080, rel=0.02)
 

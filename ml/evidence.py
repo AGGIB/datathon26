@@ -20,7 +20,7 @@ from .video import frame_at, probe
 log = logging.getLogger(__name__)
 
 MAX_FRAMES = 3
-MAX_FRAME_BYTES = 150 * 1024
+MAX_FRAME_BYTES = 150 * 1024  # of the base64 text, i.e. ~112 KB of JPEG
 MAX_SIDE_PX = 1280
 JPEG_QUALITIES = (85, 70, 55, 40)
 DOWNSCALE_STEPS = (1.0, 0.75, 0.5, 0.35, 0.25)
@@ -70,7 +70,8 @@ def _resize_to(frame: np.ndarray, scale: float) -> np.ndarray:
 
 
 def encode_jpeg_b64(frame: np.ndarray, max_bytes: int = MAX_FRAME_BYTES) -> str:
-    """Base64 JPEG (no data: prefix) not larger than max_bytes, lowering quality, then resolution."""
+    """Base64 JPEG (no data: prefix) whose text fits max_bytes, lowering quality, then resolution."""
+    max_jpeg_bytes = max_bytes * 3 // 4  # base64 turns every 3 bytes into 4 characters
     if frame.size == 0:
         raise ValueError("cannot encode an empty frame")
     base_scale = min(1.0, MAX_SIDE_PX / max(frame.shape[:2]))
@@ -78,7 +79,7 @@ def encode_jpeg_b64(frame: np.ndarray, max_bytes: int = MAX_FRAME_BYTES) -> str:
         resized = _resize_to(frame, base_scale * step)
         for quality in JPEG_QUALITIES:
             ok, buf = cv2.imencode(".jpg", resized, [cv2.IMWRITE_JPEG_QUALITY, quality])
-            if ok and buf.size <= max_bytes:
+            if ok and buf.size <= max_jpeg_bytes:
                 return base64.b64encode(buf.tobytes()).decode("ascii")
     raise ValueError(f"frame {frame.shape} does not fit into {max_bytes} bytes as JPEG")
 
