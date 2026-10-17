@@ -137,6 +137,7 @@ class DiscoveryDecision:
     confidence: float | None = None
     observations: tuple[Mapping, ...] = ()
     advisory_only: bool = True
+    validation_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -436,7 +437,8 @@ def discover_types(video_path: str | Path, originals: Sequence[Candidate],
             except Exception as exc:
                 reason = ("invalid_response" if isinstance(exc, InvalidResponse) else
                           "video_timeout" if isinstance(exc, TimeoutError) else "backend_error")
-                decisions.append(DiscoveryDecision(index, "uncertain", reason))
+                code = str(exc) if isinstance(exc, InvalidResponse) and re.fullmatch(r"[a-z_]{1,80}", str(exc)) else None
+                decisions.append(DiscoveryDecision(index, "uncertain", reason, validation_code=code))
                 if reason != "invalid_response":
                     return finish(reason)
                 continue

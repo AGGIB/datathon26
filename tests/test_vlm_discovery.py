@@ -179,6 +179,7 @@ def test_bad_output_abstains_and_retains_cv_unchanged(raw):
     report = run(originals=[cv], backend=ScriptedBackend([raw]), source=FixtureFrames())
     assert report.retained_candidates[0] is cv and not report.added_candidates
     assert report.decisions[0].reason == "invalid_response" and report.calls_used == 1
+    assert report.decisions[0].validation_code is not None
 
 
 def test_payload_validation_is_atomic_no_additions_from_valid_prefix_of_bad_window():
