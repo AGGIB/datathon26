@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 
 from ml.appearance import CROP_H, CROP_W, crop_person
-from ml.detect import Detection
+from ml.detect import NMS_IOU, Detection, _nms
 from ml.labels import normalize_video_name
 from ml.video import VideoInfo, probe, sample_frames
 
@@ -114,12 +114,16 @@ def load(path: Path, name: str = "") -> CachedVideo:
     for row, (fi, box, score, li) in enumerate(zip(z["det_frame"], z["det_box"], z["det_score"], z["det_label"])):
         det = Detection(box=tuple(float(v) for v in box), score=float(score), label=labels[int(li)])
         per_frame[int(fi)].append((det, crop_of.get(row)))
-    frames = tuple(
-        CachedFrame(float(t), tuple(d for d, _ in items), tuple(c for _, c in items))
-        for t, items in zip(z["times"], per_frame)
-    )
+    frames = tuple(_frame(float(t), items) for t, items in zip(z["times"], per_frame))
     info = VideoInfo(fps=fps, frame_count=int(count), width=int(width), height=int(height))
     return CachedVideo(name or path.stem.split("_")[0], info, sample_fps, frames, elapsed, z["thumb"])
+
+
+def _frame(t: float, items: list[tuple[Detection, np.ndarray | None]]) -> CachedFrame:
+    """Re-apply the detector's current NMS so caches built by an older detect.py match today's output."""
+    kept = {id(d) for d in _nms([d for d, _ in items], NMS_IOU)}
+    items = [(d, c) for d, c in items if id(d) in kept]
+    return CachedFrame(t, tuple(d for d, _ in items), tuple(c for _, c in items))
 
 
 def load_or_build(video_path: Path, fps: float, detector_factory=None, cache_dir: Path = CACHE_DIR) -> CachedVideo:
