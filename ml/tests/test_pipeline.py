@@ -3,6 +3,7 @@ import dataclasses
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -16,6 +17,12 @@ from ml.detect import INPUT_SIZE, Detection
 from ml.kb import KBError
 from ml.perception import Perception
 from ml.shared_detector import CALIBRATION_FRAMES, SharedDetector
+
+
+@pytest.fixture(autouse=True)
+def _scene_off_by_default(monkeypatch):
+    """Unit tests run the pipeline without the OWLv2 scene stage unless a test enables it."""
+    monkeypatch.setenv("ML_SCENE", "0")
 
 REPO = Path(__file__).resolve().parents[2]
 REAL_VIDEO = REPO / "data" / "open" / "videos" / "Х-26.mov"  # Cyrillic Х, as in the dataset
@@ -119,7 +126,7 @@ def test_plan_keeps_full_rate_when_it_fits():
 
 
 def test_plan_lowers_rate_before_shrinking_input():
-    cost_at, _ = costs(0.3, 0.17)
+    cost_at, _ = costs(0.35, 0.17)  # fits ~2.6 fps at full size: between SAFE_MIN_FPS and the 3 fps ceiling
     plan = pipeline.plan_sampling(142.5, 185.0, cost_at)
     assert plan.input_size == INPUT_SIZE
     assert pipeline.SAFE_MIN_FPS <= plan.sample_fps < pipeline.MAX_SAMPLE_FPS
@@ -392,3 +399,188 @@ def test_real_video_end_to_end(monkeypatch):
     frame = parsed.violations[0].evidence_frames[0]
     assert len(frame.image_base64) <= 150 * 1024
     assert elapsed < 200.0
+
+
+def test_truncated_perception_keeps_role_events_of_the_analysed_prefix():
+    from ml.perception import FrameObjects, analyze_frames
+    from ml.video import VideoInfo
+
+    seat = (100.0, 300.0, 200.0, 500.0)
+    frames = tuple(
+        FrameObjects(round(i / 3, 3), (Detection(seat, 0.9, "person"),) if i / 3 <= 10 else (), ((0.5, 0.5),)
+                     if i / 3 <= 10 else ())
+        for i in range(3 * 30 + 1)
+    )
+    info = VideoInfo(fps=30.0, frame_count=901, width=300, height=600)
+    scene = analyze_frames(frames, info.duration, 3.0)
+    full = Perception(info, frames, scene.roles.in_room, scene.events, 1.0, scene.roles, scene.all_tracks, 3.0)
+    cut = pipeline._truncate(full, n_frames=3 * 16 + 1)  # analysed up to 16 s
+    assert [e.t for e in cut.events if e.kind == "cashier_left"] == [10.0]
+    assert cut.roles is not None and cut.roles.cashier_ids and cut.info.duration <= 16.1
+    assert all(p.t <= 16.0 for tr in cut.all_tracks for p in tr.points)
+
+
+# --- scene stage wiring -------------------------------------------------------------------------
+
+def test_scene_failure_falls_back_to_rules_without_scene(monkeypatch):
+    monkeypatch.setenv("ML_SCENE", "1")
+    seen = {}
+
+    def boom(*a, **k):
+        raise RuntimeError("owl exploded")
+
+    def fake_rules(perception, scene=None):
+        seen["scene"] = scene
+        return []
+
+    monkeypatch.setattr(pipeline, "_analyze_scene", boom)
+    monkeypatch.setattr(pipeline.rules, "find_candidates", fake_rules)
+    perception = SimpleNamespace(frames=(1,))
+    assert pipeline._judge("x.mov", perception, scene_deadline=None) == []
+    assert seen["scene"] is None
+
+
+def test_scene_skipped_when_too_little_time_left(monkeypatch):
+    monkeypatch.setenv("ML_SCENE", "1")
+    called = {"scene": False}
+
+    def scene(*a, **k):
+        called["scene"] = True
+
+    monkeypatch.setattr(pipeline, "_analyze_scene", scene)
+    monkeypatch.setattr(pipeline.rules, "find_candidates", lambda perception, scene=None: [])
+    perception = SimpleNamespace(frames=(1,))
+    pipeline._judge("x.mov", perception, scene_deadline=time.monotonic() + 1.0)
+    assert called["scene"] is False
+
+
+def test_scene_result_is_passed_to_rules(monkeypatch):
+    monkeypatch.setenv("ML_SCENE", "1")
+    marker = object()
+    seen = {}
+    def analyze_scene(video_path, perception, deadline=None):
+        seen["deadline"] = deadline
+        return marker
+
+    monkeypatch.setattr(pipeline, "_analyze_scene", analyze_scene)
+    monkeypatch.setattr(pipeline.rules, "find_candidates",
+                        lambda perception, scene=None: seen.setdefault("scene", scene) and [])
+    deadline = time.monotonic() + 60.0
+    pipeline._judge("x.mov", SimpleNamespace(frames=(1,)), scene_deadline=deadline)
+    assert seen["scene"] is marker
+    assert seen["deadline"] == deadline
+
+
+def test_scene_can_be_disabled_by_env(monkeypatch):
+    monkeypatch.setenv("ML_SCENE", "0")
+    monkeypatch.setattr(pipeline, "_analyze_scene", lambda *a, **k: (_ for _ in ()).throw(AssertionError("called")))
+    monkeypatch.setattr(pipeline.rules, "find_candidates", lambda perception, scene=None: [])
+    assert pipeline._judge("x.mov", SimpleNamespace(frames=(1,)), scene_deadline=None) == []
+
+
+def test_scene_receives_the_absolute_deadline(monkeypatch):
+    import ml.scene
+
+    marker, owl = object(), object()
+    seen = {}
+    lock = threading.Lock()
+    monkeypatch.setattr(pipeline, "_OWL_LOCK", lock)
+    monkeypatch.setattr(pipeline, "_owl", lambda: owl)
+
+    def analyze_scene(video_path, perception, **kwargs):
+        seen.update(kwargs)
+        assert lock.locked()
+        return marker
+
+    monkeypatch.setattr(ml.scene, "analyze_scene", analyze_scene)
+    deadline = time.monotonic() + 60.0
+    assert pipeline._analyze_scene("x.mov", SimpleNamespace(), deadline=deadline) is marker
+    assert seen == {"owl": owl, "deadline": deadline}
+    assert not lock.locked()
+
+
+def test_scene_lock_wait_counts_towards_the_deadline(monkeypatch):
+    lock = threading.Lock()
+    lock.acquire()  # another worker owns the shared model
+    monkeypatch.setattr(pipeline, "_OWL_LOCK", lock)
+    monkeypatch.setattr(pipeline, "_owl", lambda: pytest.fail("must not load a model after lock timeout"))
+    started = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError, match="waiting"):
+            pipeline._analyze_scene("x.mov", SimpleNamespace(), deadline=started + 0.03)
+        assert time.monotonic() - started < 0.5
+        assert lock.locked()  # the waiting worker must not release the other worker's slot
+    finally:
+        lock.release()
+
+
+def test_scene_rechecks_remaining_time_after_acquiring_the_lock(monkeypatch):
+    now = [10.0]
+
+    class BusyLock:
+        released = False
+
+        def acquire(self, timeout):
+            assert timeout == 20.0
+            now[0] = 20.0  # ten seconds were spent waiting for the other worker
+            return True
+
+        def release(self):
+            self.released = True
+
+    lock = BusyLock()
+    monkeypatch.setattr(pipeline, "_OWL_LOCK", lock)
+    monkeypatch.setattr(pipeline.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(pipeline, "_owl", lambda: pytest.fail("not enough time left to start scene inference"))
+    with pytest.raises(TimeoutError, match="after waiting"):
+        pipeline._analyze_scene("x.mov", SimpleNamespace(), deadline=30.0)
+    assert lock.released
+
+
+def test_scene_timeout_keeps_event_candidates_and_releases_the_model(monkeypatch, caplog):
+    import ml.scene
+
+    monkeypatch.setenv("ML_SCENE", "1")
+    lock = threading.Lock()
+    monkeypatch.setattr(pipeline, "_OWL_LOCK", lock)
+    monkeypatch.setattr(pipeline, "_owl", object)
+
+    def timeout(*args, **kwargs):
+        raise TimeoutError("deadline reached between keyframes")
+
+    monkeypatch.setattr(ml.scene, "analyze_scene", timeout)
+    candidate = one_candidate()
+    seen = capture_rules(monkeypatch, [candidate])
+    perception = SimpleNamespace(frames=(1,))
+    assert pipeline._judge("x.mov", perception, scene_deadline=time.monotonic() + 60.0) == [candidate]
+    assert seen["scene"] is None
+    assert not lock.locked()
+    assert "scene budget exhausted" in caplog.text
+    assert not [r for r in caplog.records if r.levelno >= 40]
+
+
+def test_shared_owl_wrapper_leaves_cold_loading_to_deadline_aware_inference(monkeypatch):
+    import ml.scene_owl
+
+    class LazyOwl:
+        def load(self):
+            pytest.fail("model loading must happen in the deadline-aware scene code")
+
+    monkeypatch.setattr(ml.scene_owl, "OwlDetector", LazyOwl)
+    monkeypatch.setattr(pipeline, "_OWL", None)
+    first = pipeline._owl()
+    assert isinstance(first, LazyOwl)
+    assert pipeline._owl() is first
+
+
+def test_scene_deadline_wiring_uses_the_real_scene_api(clip, fake, monkeypatch):
+    from ml.scene import SceneAnalysis
+
+    monkeypatch.setenv("ML_SCENE", "1")
+    monkeypatch.setattr(pipeline, "_owl", lambda: None)  # statistics only, no model or downloads
+    monkeypatch.setattr(pipeline, "_OWL_LOCK", threading.Lock())
+    seen = capture_rules(monkeypatch)
+    result = pipeline.analyze(str(clip), time_budget_sec=200.0)
+    assert result == {"verdict": "no_violation", "violations": []}
+    assert isinstance(seen["scene"], SceneAnalysis)
+    assert seen["scene"].states

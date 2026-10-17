@@ -17,7 +17,7 @@
     {
       "codex_code": "Т03",
       "id": "previous_cash_left_on_desk",
-      "name": "Деньги предыдущего клиента остаются на столе при следующем",
+      "name": "Деньги предыдущего клиента остаются на столе при обслуживании следующего клиента",
       "catalog_section": "violations"
     },
     {
@@ -119,7 +119,7 @@
     {
       "codex_code": "Д03",
       "id": "mixed_receipts_across_documents",
-      "name": "Приём денег по нескольким приходным документам",
+      "name": "Приём нескольких пачек наличных денег",
       "catalog_section": "violations"
     },
     {
