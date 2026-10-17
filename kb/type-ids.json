@@ -1,0 +1,198 @@
+{
+  "schema_version": 1,
+  "base_commit": "5a7db52640821124c549ae35e837be6ab5938153",
+  "types": [
+    {
+      "codex_code": "Т01",
+      "id": "banknote_returned_after_check",
+      "name": "Возврат банкнот клиенту после проверки",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Т02",
+      "id": "no_visible_client_id_check",
+      "name": "Приём денег без видимой идентификации клиента",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Т03",
+      "id": "previous_cash_left_on_desk",
+      "name": "Деньги предыдущего клиента остаются на столе при следующем",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Т04",
+      "id": "computer_left_unlocked",
+      "name": "Включённый экран после ухода кассира",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Т05",
+      "id": "cash_from_bag_stored_without_recount",
+      "name": "Деньги из сумки убраны без видимого пересчёта",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Т06",
+      "id": "door_left_open",
+      "name": "Дверь кассы оставлена открытой / нет видимого запирания",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Т07",
+      "id": "bag_accepted_without_check",
+      "name": "Приём доставленной сумки без видимой проверки",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Т08",
+      "id": "second_client_served_alongside",
+      "name": "Второй посетитель у стола во время обслуживания",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Т09",
+      "id": "safe_left_open",
+      "name": "Сейф (шкаф) оставлен открытым во время работы",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Т10",
+      "id": "key_left_in_safe_lock",
+      "name": "Ключ оставлен в замке сейфа",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Т11",
+      "id": "stamps_and_book_left_on_desk",
+      "name": "Предметы, похожие на штампы и журнал, на столе после ухода кассира",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Т12",
+      "id": "cash_left_on_desk_when_leaving",
+      "name": "Деньги оставлены на столе при уходе кассира",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Т13",
+      "id": "person_entered_cash_area",
+      "name": "Другой человек проходит в кассовую зону",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Т14",
+      "id": "recount_after_client_left",
+      "name": "Пересчёт принятых денег после ухода клиента",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Т15",
+      "id": "personal_items_on_desk",
+      "name": "Предметы, похожие на личные вещи, на кассовом столе",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Т16",
+      "id": "no_banknote_detector_used",
+      "name": "Нет видимого использования отдельного детектора банкнот",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Т17",
+      "id": "food_or_drink_at_workplace",
+      "name": "Предметы, похожие на продукты питания, на рабочем столе",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Д01",
+      "id": "cashier_left_before_service_completed",
+      "name": "Уход до завершения обслуживания клиента",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Д02",
+      "id": "loose_banknotes_issued_without_recount",
+      "name": "Выдача отдельных банкнот без видимого пересчёта",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Д03",
+      "id": "mixed_receipts_across_documents",
+      "name": "Приём денег по нескольким приходным документам",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Д04",
+      "id": "receipt_not_visibly_issued",
+      "name": "Приём или выдача наличных без видимого подтверждающего документа",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Д06",
+      "id": "damaged_bag_without_special_procedure",
+      "name": "Приём сумки с видимыми признаками повреждения",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Д08",
+      "id": "cash_processed_without_required_controller",
+      "name": "Обработка наличности без видимого второго работника",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Д09",
+      "id": "incorrect_sorting_or_final_packaging",
+      "name": "Сортировка или упаковка наличных денег",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Д10",
+      "id": "cassette_transferred_unsealed",
+      "name": "Передача кассеты без видимого закрытия и пломбирования",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Д11",
+      "id": "vault_access_without_required_escort",
+      "name": "Вход в кладовую или сейфовую комнату без видимого сопровождения",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Д13",
+      "id": "personal_camera_phone_or_cash_in_cash_unit",
+      "name": "Смартфон в руках кассира в кассовом узле",
+      "catalog_section": "violations"
+    },
+    {
+      "codex_code": "Д05",
+      "id": "cash_amount_document_mismatch",
+      "name": "Несоответствие принятой или выданной суммы документу",
+      "catalog_section": "excluded_types"
+    },
+    {
+      "codex_code": "Д07",
+      "id": "cash_transfer_without_accounting",
+      "name": "Передача наличности между работниками без учетного отражения",
+      "catalog_section": "excluded_types"
+    },
+    {
+      "codex_code": "Д12",
+      "id": "protected_information_disclosed",
+      "name": "Разглашение банковской тайны или персональных данных",
+      "catalog_section": "excluded_types"
+    },
+    {
+      "codex_code": "Д14",
+      "id": "cash_day_documents_not_preserved",
+      "name": "Ненадлежащая сохранность документов кассового дня",
+      "catalog_section": "excluded_types"
+    },
+    {
+      "codex_code": "Д15",
+      "id": "system_checks_or_archive_noncompliance",
+      "name": "Невыполнение системных проверок клиента или требований к архиву",
+      "catalog_section": "excluded_types"
+    }
+  ]
+}

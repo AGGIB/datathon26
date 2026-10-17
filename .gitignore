@@ -57,6 +57,24 @@ frontend/dist/
 .claude/
 .playwright-mcp/
 
+# Local intake and case-insensitive video exclusions
+tmp/
+*.py[cod]
+*.[mM][pP]4
+*.[mM][oO][vV]
+*.[aA][vV][iI]
+*.[mM][kK][vV]
+*.[wW][eE][bB][mM]
+*.[mM]4[vV]
+*.[mM][tT][sS]
+*.[mM]2[tT][sS]
+*.3[gG][pP]
+*.[wW][mM][vV]
+*.[fF][lL][vV]
+*.[mM][pP][gG]
+*.[mM][pP][eE][gG]
+
+# Additional local ML artifacts
 # ML-only additions; keep the team's protections above intact.
 /models/
 /artifacts/
@@ -64,9 +82,9 @@ frontend/dist/
 /evidence/
 open_labels.xlsx
 venv/
-*.py[cod]
 *.log
 dist/
 build/
 .vscode/
 .idea/
+!backend/app/fixtures/placeholder.jpg

@@ -1,0 +1,8 @@
+# All licenses allow commercial use (see docs/licenses.md)
+torch==2.7.0            # BSD-3
+transformers==4.51.3    # Apache-2.0 (RT-DETR, OWLv2)
+opencv-python-headless==4.11.0.86  # Apache-2.0
+numpy==2.2.5            # BSD
+pillow==11.2.1          # MIT-CMU
+openpyxl==3.1.5         # MIT
+pyyaml==6.0.2           # MIT
