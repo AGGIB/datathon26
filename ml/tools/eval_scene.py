@@ -11,6 +11,7 @@ Expected states come from kb/annotations.csv (time windows are the annotated int
 import argparse
 import logging
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,11 +69,16 @@ CHECKS = (
     Check("X-24", "book/stamp", 6, 14.5, True, _items(("book", "stamp")), "book + stamps left"),
     Check("X-25", "book/stamp", 25, 31.5, False, _items(("book", "stamp")), "put away into cabinet"),
     Check("X-11", "screen_on", 18, 25.5, True, _mean_of("laptop_screen_on"), "lit laptop, room dark"),
+    Check("X-11", "screen_work", 18, 25.5, True, _mean_of("laptop_screen_work"), "spreadsheet visible"),
     Check("X-12", "screen_on", 32, 42, False, _mean_of("laptop_screen_on"), "lid closed"),
+    Check("X-12", "screen_work", 32, 42, False, _mean_of("laptop_screen_work"), "lid closed"),
     Check("X-28", "screen_work", 8, 16.5, True, _mean_of("laptop_screen_work"), "spreadsheet stays"),
     Check("X-29", "screen_work", 10, 17, False, _mean_of("laptop_screen_work"), "lock screen"),
     Check("X-40", "bag/clothes", 10, 25, True, _items(("bag", "clothes")), "coat and bag on desk"),
     Check("X-46", "food/cup", 6, 19, True, _items(("food", "cup")), "banana, mug"),
+    Check("X-21", "bag/clothes", 0, 19.5, False, _items(("bag", "clothes")), "control: clean video"),
+    Check("X-21", "food/cup", 0, 19.5, False, _items(("food", "cup")), "control: clean video"),
+    Check("X-27", "bag/clothes", 0, 26, False, _items(("bag", "clothes")), "control: clean video"),
 )
 
 
@@ -124,9 +130,14 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--series", default="", help="comma-separated videos to dump per-time signals for")
     ap.add_argument("--no-owl", action="store_true")
+    ap.add_argument("--no-cache", action="store_true", help="re-run OWLv2 (honest timing)")
     args = ap.parse_args()
     paths = video_paths()
-    owl = None if args.no_owl else OwlDetector(cache_dir=OWL_CACHE)
+    owl = None if args.no_owl else OwlDetector(cache_dir=None if args.no_cache else OWL_CACHE)
+    if owl is not None:
+        started = time.monotonic()
+        owl.load()  # one-off model load is not part of the per-video time
+        print(f"OWLv2 loaded in {time.monotonic() - started:.1f}s")
     if args.series:
         for name in (v.strip().upper() for v in args.series.split(",")):
             print_series(name, run_scene(name, paths[name], owl))

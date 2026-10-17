@@ -36,8 +36,16 @@ import numpy as np
 from .detect import Box, Detection
 from .events import Event
 from .perception import Perception
-from .scene_geometry import center, clip_box, expand_box, overlap_fraction, to_int_box
-from .scene_items import ITEM_SCAN_QUERIES, DeskItem, desk_zone, items_from_coco, items_from_owl, merge_items
+from .scene_geometry import clip_box, expand_box, overlap_fraction, to_int_box
+from .scene_items import (
+    ITEM_SCAN_QUERIES,
+    DeskItem,
+    desk_zone,
+    items_from_coco,
+    items_from_owl,
+    keep_item,
+    merge_items,
+)
 from .scene_layout import (
     LAYOUT_QUERIES,
     LOCK_QUERIES,
@@ -55,6 +63,7 @@ from .scene_signals import (
     global_gain,
     hold_fill,
     initial_background,
+    key_protrusion,
     masked_median,
     median_smooth,
     person_mask,
@@ -76,10 +85,8 @@ MIN_ROI_VISIBLE = 0.8
 LAPTOP_CONTEXT_GROW = 0.6
 SCREEN_CORE_SHRINK = (0.2, 0.15)  # skip bezel and the wall seen around a tilted screen
 MAX_LAPTOP_PERSON_COVER = 0.35
-KEY_WINDOW = (0.14, 0.05)  # half-size of the key window as share of the safe width/height
-KEY_TEXTURE = (1.6, 3.0)  # edge energy around the lock / on the plain door face
-MIN_ITEM_NOVELTY = 0.3
-STRONG_ITEM_SCORE = 0.45
+KEY_SCALE = 0.05  # expected key size as share of the safe height
+KEY_DARKENING = (8.0, 12.0)  # grey levels the area under the lock is darker than the door face
 
 log = logging.getLogger(__name__)
 
@@ -267,38 +274,14 @@ def _screen(frame: np.ndarray, layout: Layout, persons: Sequence[Box]) -> tuple[
     return feats.on, feats.work
 
 
-def _edge_energy(gray: np.ndarray, box: Box) -> float:
-    x0, y0, x1, y1 = to_int_box(clip_box(box, gray.shape[1], gray.shape[0]))
-    patch = gray[y0:y1, x0:x1].astype(np.float32)
-    if patch.shape[0] < 3 or patch.shape[1] < 3:
-        return 0.0
-    gx = cv2.Sobel(patch, cv2.CV_32F, 1, 0, ksize=3)
-    gy = cv2.Sobel(patch, cv2.CV_32F, 0, 1, ksize=3)
-    return float(np.mean(np.abs(gx) + np.abs(gy)))
-
-
-def key_windows(layout: Layout) -> tuple[Box, Box] | None:
-    """Window around the lock (where a key would stick out) and a control window on the plain door face."""
+def _key_raw(gray: np.ndarray, layout: Layout, persons: Sequence[Box]) -> float | None:
     if layout.lock is None or layout.safe is None:
         return None
-    sw, sh = layout.safe[2] - layout.safe[0], layout.safe[3] - layout.safe[1]
-    cx, cy = center(layout.lock)
-    hw, hh = KEY_WINDOW[0] * sw, KEY_WINDOW[1] * sh
-    win = clip_box((cx - hw, cy - hh, cx + hw, cy + hh), layout.width, layout.height)
-    shift = 3 * hh
-    below = clip_box((win[0], win[1] + shift, win[2], win[3] + shift), layout.width, layout.height)
-    above = clip_box((win[0], win[1] - shift, win[2], win[3] - shift), layout.width, layout.height)
-    ctrl = below if below[3] <= layout.safe[3] else above
-    return win, ctrl
-
-
-def _key_raw(gray: np.ndarray, windows: tuple[Box, Box] | None, persons: Sequence[Box]) -> float | None:
-    if windows is None:
+    scale = KEY_SCALE * (layout.safe[3] - layout.safe[1])
+    guard = expand_box(layout.lock, 3.0, width=layout.width, height=layout.height)
+    if any(overlap_fraction(guard, p) > 0.0 for p in persons):
         return None
-    win, ctrl = windows
-    if any(overlap_fraction(win, p) > 0.2 or overlap_fraction(ctrl, p) > 0.2 for p in persons):
-        return None
-    return _edge_energy(gray, win) / (_edge_energy(gray, ctrl) + 1.0)
+    return key_protrusion(gray, layout.lock, scale=round(scale))
 
 
 def _novelty(gray: np.ndarray, ref: np.ndarray, valid: np.ndarray, box: Box, gain: float) -> float | None:
@@ -306,16 +289,12 @@ def _novelty(gray: np.ndarray, ref: np.ndarray, valid: np.ndarray, box: Box, gai
     return change_score(gray[y0:y1, x0:x1], ref[y0:y1, x0:x1], valid[y0:y1, x0:x1], gain=gain, cell=4)
 
 
-def _keep_item(item: DeskItem) -> bool:
-    return item.score >= STRONG_ITEM_SCORE or item.novelty is None or item.novelty >= MIN_ITEM_NOVELTY
-
-
 def _with_novelty(items: Sequence[DeskItem], gray, ref, valid, gain) -> tuple[DeskItem, ...]:
     out = []
     for it in items:
         nov = _novelty(gray, ref, valid, it.box, gain)
         cand = DeskItem(it.label, it.box, it.score, it.source, it.query, None if nov is None else round(nov, 3))
-        if _keep_item(cand):
+        if keep_item(cand):
             out.append(cand)
     return tuple(out)
 
@@ -384,7 +363,6 @@ def _measure(
         x0, y0, x1, y1 = to_int_box(expand_box(layout.laptop, 0.1, width=w, height=h))
         laptop_mask[y0:y1, x0:x1] = True
     zone = desk_zone(layout.desk, w, h) if layout.desk else None
-    windows = key_windows(layout)
     raw = _Raw()
     for t, frame, gray, dets, mask in zip(times, frames, grays, dets_all, masks):
         persons = [d.box for d in dets if d.label == "person"]
@@ -395,7 +373,7 @@ def _measure(
         on, work = _screen(frame, layout, persons)
         raw.screen_on.append(on)
         raw.screen_work.append(work)
-        raw.key.append(_key_raw(gray, windows, persons))
+        raw.key.append(_key_raw(gray, layout, persons))
         items: list[DeskItem] = []
         if zone is not None:
             items = items_from_coco(dets, zone, persons) + keyframe_items.get(t, [])
@@ -442,7 +420,7 @@ def _build_states(
     raw = _measure(times, frames, perception, layout, keyframe_items, background)
     safe, door = _finish(raw.safe, SAFE_CHANGE), _finish(raw.door, DOOR_CHANGE)
     on, work = _finish_unit(raw.screen_on), _finish_unit(raw.screen_work)
-    key = _finish(raw.key, KEY_TEXTURE)
+    key = _finish(raw.key, KEY_DARKENING)
     states = [
         SceneState(t=round(t, 3), safe_open=safe[i], door_open=door[i], laptop_screen_on=on[i],
                    laptop_screen_work=work[i], key_in_lock=key[i], desk_items=raw.items[i],

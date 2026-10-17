@@ -1,5 +1,5 @@
 from ml.detect import Detection
-from ml.scene_items import DeskItem, desk_zone, items_from_coco, items_from_owl, merge_items
+from ml.scene_items import DeskItem, desk_zone, items_from_coco, items_from_owl, keep_item, merge_items
 from ml.scene_owl import OwlHit
 
 DESK = (60, 350, 330, 540)
@@ -56,3 +56,19 @@ def test_merge_items_keeps_best_per_overlapping_label():
     ]
     merged = merge_items(items)
     assert [(i.label, i.score) for i in merged] == [("book", 0.6), ("cup", 0.3)]
+
+
+def _item(source, score, novelty, label="book"):
+    return DeskItem(label, (0, 0, 10, 10), score, source, label, novelty)
+
+
+def test_keep_item_drops_fixed_equipment_seen_since_the_start():
+    assert not keep_item(_item("coco", 0.6, 0.05, "bag"))  # counting machine called "handbag"
+    assert keep_item(_item("coco", 0.45, 0.4, "cup"))
+    assert keep_item(_item("coco", 0.45, None, "cup"))
+
+
+def test_keep_item_trusts_strong_or_new_owl_hits():
+    assert keep_item(_item("owlv2", 0.39, 0.15))  # notebook partly in the start reference
+    assert not keep_item(_item("owlv2", 0.3, 0.02))
+    assert keep_item(_item("owlv2", 0.6, 0.0))

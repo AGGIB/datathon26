@@ -3,6 +3,7 @@ import pytest
 
 from ml.scene_signals import (
     change_score,
+    key_protrusion,
     hold_fill,
     initial_background,
     masked_median,
@@ -148,3 +149,24 @@ def test_hold_fill_forward_then_backward():
 def test_median_smooth_removes_single_spikes_and_keeps_none():
     assert median_smooth([0.0, 0.0, 1.0, 0.0, 0.0], 3) == [0.0, 0.0, 0.0, 0.0, 0.0]
     assert median_smooth([0.0, None, 1.0, 1.0], 3) == [0.0, None, 1.0, 1.0]
+
+
+def _cabinet_face(with_key: bool) -> np.ndarray:
+    face = np.full((40, 40), 157, dtype=np.uint8)
+    face[18:21, 20:23] = 70  # lock cylinder
+    if with_key:
+        face[22:27, 17:22] = 135  # key head hanging below the cylinder
+    return face
+
+
+def test_key_protrusion_high_with_key_low_without():
+    lock = (19.0, 18.0, 23.0, 21.0)
+    with_key = key_protrusion(_cabinet_face(True), lock, scale=5)
+    without = key_protrusion(_cabinet_face(False), lock, scale=5)
+    assert with_key is not None and without is not None
+    assert with_key > 15
+    assert without < 5
+
+
+def test_key_protrusion_none_near_image_border():
+    assert key_protrusion(np.full((6, 6), 150, dtype=np.uint8), (0.0, 0.0, 3.0, 3.0), scale=5) is None

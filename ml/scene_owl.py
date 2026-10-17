@@ -74,7 +74,8 @@ class OwlDetector:
         self.cache_dir = cache_dir
         self.calls = 0
 
-    def _load(self) -> None:
+    def load(self) -> None:
+        """Load weights now (otherwise on the first detect call)."""
         if self._model is not None:
             return
         import torch
@@ -102,7 +103,7 @@ class OwlDetector:
         cached = self._cache_get(cache_key, queries, (x0, y0, x1, y1), threshold)
         if cached is not None:
             return cached
-        self._load()
+        self.load()
         crop = cv2.cvtColor(frame_bgr[y0:y1, x0:x1], cv2.COLOR_BGR2RGB)
         inputs = self._processor(text=[list(queries)], images=crop, return_tensors="pt").to(self._device)
         with self._torch.no_grad():

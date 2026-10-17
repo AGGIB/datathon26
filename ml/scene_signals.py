@@ -171,6 +171,30 @@ def screen_features(screen_bgr: np.ndarray, context_bgr: np.ndarray) -> ScreenFe
                           sat_mean=sat_mean, texture=texture)
 
 
+def key_protrusion(gray: np.ndarray, lock: Box, scale: int) -> float | None:
+    """How much darker than the plain door face the area just below the lock cylinder is.
+
+    A key left in the lock hangs below/left of the cylinder and darkens a few pixels there; without a key the
+    face is uniform. `scale` is the expected key size in pixels (~5% of the safe height). Experimental: tuned
+    on one camera angle only.
+    """
+    h, w = gray.shape
+    k = max(2, int(scale))
+    x0, y0, x1, y1 = to_int_box(expand_box(lock, 0.0, width=w, height=h))
+    x0, y0, x1, y1 = max(x0 - 2, 0), max(y0 - 2, 0), min(x1 + 2, w), min(y1 + 2, h)
+    patch = gray[y0:y1, x0:x1]
+    if patch.size == 0:
+        return None
+    blob = patch <= (float(patch.min()) + float(np.median(patch))) / 2  # the dark lock cylinder
+    rows, cols = np.nonzero(blob)
+    bottom, cx = y0 + int(rows.max()), x0 + int(round(float(cols.mean())))
+    if bottom + 1 + k > h or cx - k + 1 < 0 or cx + 3 + 2 * k > w or bottom - 2 * k < 0:
+        return None
+    face = float(np.median(gray[bottom - 2 * k: bottom + 1, cx + 3: cx + 3 + 2 * k]))
+    below = gray[bottom + 1: bottom + 1 + k, cx - k + 1: cx + 1].astype(np.float32)
+    return face - float(below.mean())
+
+
 def hold_fill(values: Sequence[float | None]) -> list[float | None]:
     """Carry the last seen value forward over gaps (occlusion), then back-fill the leading gap."""
     out: list[float | None] = []

@@ -44,6 +44,9 @@ MAX_PERSON_COVER = 0.5
 STATIC_COVER = 0.6  # item box lies mostly inside a stronger fixed-equipment box
 DESK_ZONE_UP = 0.35  # objects on the desk top project above the desk box in a top-down oblique view
 MERGE_IOU = 0.3
+# novelty = change vs. the room at the start inside the item box; fixed equipment stays near 0
+MIN_NOVELTY: dict[str, float] = {"owlv2": 0.1, "coco": 0.2}
+STRONG_OWL_SCORE = 0.5
 
 
 @dataclass(frozen=True)
@@ -54,6 +57,15 @@ class DeskItem:
     source: str  # "owlv2" | "coco"
     query: str  # OWLv2 text query or COCO class that produced the item
     novelty: float | None = None  # 0..1 change vs. the room at the start (None if not measured)
+
+
+def keep_item(item: DeskItem) -> bool:
+    """Drop fixed desk equipment present since the start (COCO calls counting machines 'handbag' or 'book')."""
+    if item.novelty is None:
+        return True
+    if item.source == "owlv2" and item.score >= STRONG_OWL_SCORE:
+        return True
+    return item.novelty >= MIN_NOVELTY.get(item.source, max(MIN_NOVELTY.values()))
 
 
 def desk_zone(desk: Box, width: float, height: float) -> Box:
