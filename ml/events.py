@@ -3,11 +3,11 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from .track import Track
+from .track import STITCH_GAP_SEC, Track, stitch_tracks
 
 MIN_TRACK_SEC = 1.0
 MIN_TRACK_SCORE = 0.6
-MIN_EMPTY_SEC = 1.0
+MIN_EMPTY_SEC = 2.0  # longer than the tracker's and the stitcher's dropout tolerance
 EDGE_SEC = 1.0  # tracks starting/ending this close to the video edges are not enter/exit events
 CROWD_COUNT = 3
 
@@ -70,8 +70,11 @@ def extract_events(
     min_empty_sec: float = MIN_EMPTY_SEC,
     edge_sec: float = EDGE_SEC,
     crowd_count: int = CROWD_COUNT,
+    stitch_gap_sec: float = STITCH_GAP_SEC,
 ) -> list[Event]:
-    good = reliable_tracks(tracks, min_track_sec, min_track_score)
+    """Room events from person tracks; fragments split by a dropout <= stitch_gap_sec count as one person."""
+    joined = stitch_tracks(tracks, max_gap_sec=stitch_gap_sec) if stitch_gap_sec > 0 else list(tracks)
+    good = reliable_tracks(joined, min_track_sec, min_track_score)
     events: list[Event] = []
     for tr in good:
         if tr.t_start > edge_sec:

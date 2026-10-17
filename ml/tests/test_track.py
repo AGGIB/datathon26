@@ -69,3 +69,10 @@ def test_track_box_at_and_presence_helpers():
     [track] = tr.tracks()
     assert track.box_at(0.9) == (2, 0, 12, 20)
     assert track.foot_at(0.0) == (5.0, 20.0)
+
+
+def test_small_far_box_is_not_hijacked_by_a_much_bigger_overlapping_box():
+    tr = IoUTracker()
+    small = tr.update(0.0, [det(0, 0, 20, 40)])[0][0]
+    big = tr.update(0.5, [det(0, 0, 40, 100)])[0][0]
+    assert big != small

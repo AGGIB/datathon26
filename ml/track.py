@@ -8,6 +8,7 @@ from .detect import Box, Detection
 
 MIN_IOU = 0.1
 MAX_CENTER_SHIFT = 0.6  # fraction of the previous box diagonal
+MAX_STEP_SIZE_RATIO = 1.6  # a person's box height cannot jump more than this between consecutive samples
 
 
 def iou(a: Box, b: Box) -> float:
@@ -16,6 +17,12 @@ def iou(a: Box, b: Box) -> float:
     inter = ix * iy
     union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
     return inter / union if union > 0 else 0.0
+
+
+def _size_ratio(a: Box, b: Box) -> float:
+    ha, hb = a[3] - a[1], b[3] - b[1]
+    lo, hi = sorted((ha, hb))
+    return hi / lo if lo > 0 else float("inf")
 
 
 def _center_shift(a: Box, b: Box) -> float:
@@ -117,6 +124,8 @@ class IoUTracker:
         assigned: list[tuple[int, Detection]] = []
         for neg_iou, shift, ti, di in pairs:
             if ti in used_t or di in used_d or (-neg_iou < MIN_IOU and shift > MAX_CENTER_SHIFT):
+                continue
+            if _size_ratio(self._live[ti].last.box, dets[di].box) > MAX_STEP_SIZE_RATIO:
                 continue
             used_t.add(ti)
             used_d.add(di)

@@ -4,9 +4,9 @@ from ml.track import Track, TrackPoint
 BOX = (0.0, 0.0, 10.0, 20.0)
 
 
-def track(tid, t0, t1, step=0.5, score=0.9):
+def track(tid, t0, t1, step=0.5, score=0.9, box=BOX):
     n = int(round((t1 - t0) / step)) + 1
-    pts = tuple(TrackPoint(t=round(t0 + i * step, 3), box=BOX, score=score) for i in range(n))
+    pts = tuple(TrackPoint(t=round(t0 + i * step, 3), box=box, score=score) for i in range(n))
     return Track(track_id=tid, points=pts)
 
 
@@ -92,3 +92,26 @@ def test_crowd_event_reports_its_end():
     tracks = [track(1, 0.0, 10.0), track(2, 0.0, 10.0), track(3, 3.0, 6.0)]
     [crowd] = [e for e in extract_events(tracks, duration=10.0) if e.kind == "crowd"]
     assert crowd.t_end == 6.0
+
+
+def test_crowd_that_breaks_up_and_reforms_between_boundaries_gives_two_events():
+    elsewhere = (100.0, 0.0, 110.0, 20.0)
+    tracks = [track(1, 0.0, 10.0), track(2, 0.0, 10.0), track(3, 3.0, 5.0), track(4, 6.0, 8.0, box=elsewhere)]
+    crowds = [(e.t, e.t_end) for e in extract_events(tracks, duration=10.0) if e.kind == "crowd"]
+    assert crowds == [(3.0, 5.0), (6.0, 8.0)]
+
+
+def test_video_without_any_track_is_empty_for_its_whole_duration():
+    events = extract_events([], duration=12.0)
+    assert [(e.kind, e.t, e.t_end) for e in events] == [("room_empty_at_start", 0.0, 12.0)]
+
+
+def test_short_dropout_of_the_only_person_is_neither_exit_nor_empty_room():
+    events = extract_events([track(1, 0.0, 4.0), track(2, 5.25, 10.0)], duration=10.0)
+    assert not [e for e in events if e.kind in ("exit", "enter", "room_empty")]
+
+
+def test_empty_room_shorter_than_two_seconds_is_ignored():
+    elsewhere = (100.0, 0.0, 110.0, 20.0)
+    events = extract_events([track(1, 0.0, 4.0), track(2, 5.5, 10.0, box=elsewhere)], duration=10.0)
+    assert not [e for e in events if e.kind == "room_empty"]
