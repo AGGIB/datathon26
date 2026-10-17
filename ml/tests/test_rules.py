@@ -69,6 +69,12 @@ def test_safe_open_briefly_to_take_cash_is_fine():
     assert run([], smp) == []
 
 
+@pytest.mark.parametrize("duration, reported", [(6.0, False), (6.5, False), (7.0, True)])
+def test_calibrated_safe_duration_preserves_the_seven_second_boundary(duration, reported):
+    smp = samples(0, 2.5) + samples(3.0, 3.0 + duration, safe_open=0.9) + samples(3.5 + duration, 20)
+    assert ("safe_left_open" in types(run([], smp))) is reported
+
+
 def test_door_open_for_long_while_working():
     smp = samples(0, 2) + samples(2.5, 20, door_open=0.8)
     assert types(run([], smp)) == ["door_left_open"]
