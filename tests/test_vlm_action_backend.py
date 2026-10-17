@@ -13,7 +13,7 @@ from ml.vlm.discovery import DiscoveryBudget, DiscoveryWindow, discover_types
 from ml.vlm.discovery_policy import TYPE_IDS
 from ml.vlm.validation import InvalidResponse
 
-POSITIVE = "worn_coat_removed_then_placed_on_cashdesk"
+POSITIVE = "cashier_places_removed_outerwear_on_cashdesk"
 
 
 def action(name=POSITIVE, **changes):
@@ -176,3 +176,39 @@ def test_actual_discovery_accepts_only_physical_positive_and_preserves_cv_identi
     [added] = report.added_candidates
     assert added.type_id == "personal_items_on_desk" and added.t_peak == 4.
     assert "снятую верхнюю одежду" in added.observation
+
+
+def test_action_and_certainty_are_generated_before_frame_indices(inference_request):
+    inner = Scripted([action('unclear')])
+    ActionContrastBackend(inner, catalog=catalog()).infer(inference_request,2)
+    translated = inner.requests[0][0]
+    item = translated.response_schema['properties']['actions']['items']
+    expected = ['action','insufficient_evidence','confidence','start_frame','peak_frame','end_frame']
+    assert list(item['properties']) == item['required'] == expected
+    example = translated.prompt[translated.prompt.index('Return JSON only'):translated.prompt.index('Use supplied')]
+    assert example.index('"action"') < example.index('"insufficient_evidence"') < example.index('"start_frame"')
+    assert 'Inspect ALL supplied frames, including the last frames' in translated.prompt
+    assert 'target action anywhere' in translated.prompt
+    assert 'If no target is fully supported anywhere' in translated.prompt
+    assert 'Never invent a target' in translated.prompt
+
+
+def test_outerwear_placement_does_not_claim_unseen_removal(inference_request):
+    backend = ActionContrastBackend(Scripted([action()]), catalog=catalog())
+    [finding] = json.loads(backend.infer(inference_request,2))['findings']
+    assert finding['observations'][0]['text'] == 'Кассир держит снятую верхнюю одежду'
+    assert all('снимает' not in observation['text'] for observation in finding['observations'])
+    assert 'taking it off need not be visible' in _ACTIONS[POSITIVE].criterion
+    assert 'visitor/courier bag' in _ACTIONS[POSITIVE].criterion
+
+
+def test_late_target_survives_earlier_normal_and_ordinary_fallback_stays_empty(inference_request):
+    frames = tuple(Frame(float(i), inference_request.frames[0].path, float(i)) for i in range(1,13))
+    inference_request = replace(inference_request,frames=frames)
+    late = action(start_frame=10,peak_frame=12,end_frame=12)
+    normal = action('idle_or_other_action',start_frame=1,peak_frame=1,end_frame=2)
+    backend = ActionContrastBackend(Scripted([normal,late]),catalog=catalog())
+    [finding] = json.loads(backend.infer(inference_request,2))['findings']
+    assert (finding['t_start'],finding['t_peak'],finding['t_end']) == (10.,12.,12.)
+    backend = ActionContrastBackend(Scripted([normal,normal]),catalog=catalog())
+    assert json.loads(backend.infer(inference_request,2)) == {'findings':[]}

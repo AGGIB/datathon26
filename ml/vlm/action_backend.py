@@ -13,7 +13,7 @@ from .contracts import Backend, Frame, InferenceRequest
 from .discovery import DiscoveryWindow, MAX_WINDOW_FRAMES, _catalog_types, _parse
 from .validation import InvalidResponse, number, strict_json
 
-DECODER_POLICY = "physical_action_contrast_v3"
+DECODER_POLICY = "physical_action_search_v4"
 
 
 @dataclass(frozen=True)
@@ -34,9 +34,9 @@ _ACTIONS = {
     "banknotes_counted_after_visitor_departure": _Action("recount_after_client_left",
         "A visitor visibly departs; afterwards the cashier actually counts that service's banknotes. Counting during service or handling papers does not qualify.",
         ("Посетитель уходит после обслуживания", "После ухода посетителя кассир пересчитывает банкноты", "Пересчёт банкнот после ухода посетителя продолжается")),
-    "worn_coat_removed_then_placed_on_cashdesk": _Action("personal_items_on_desk",
-        "The person acting as cashier removes their own worn coat, then lays that same coat on the cash desk. A visitor/courier bag, bag handover or existing bag does not qualify.",
-        ("Кассир снимает надетую на нём верхнюю одежду", "Кассир кладёт снятую верхнюю одежду на кассовый стол", "Снятая верхняя одежда остаётся на кассовом столе")),
+    "cashier_places_removed_outerwear_on_cashdesk": _Action("personal_items_on_desk",
+        "The person acting as cashier visibly holds an identifiable outer garment already off the body, then places that garment on their own cash desk. The act of taking it off need not be visible; do not claim hidden removal. A visitor/courier bag, bag handover or ambiguous fabric does not qualify.",
+        ("Кассир держит снятую верхнюю одежду", "Кассир кладёт снятую верхнюю одежду на кассовый стол", "Снятая верхняя одежда остаётся на кассовом столе")),
     "food_or_drink_actually_consumed": _Action("food_or_drink_at_workplace",
         "The cashier visibly takes a bite or drinks with an identifiable cup at the mouth. A standing cup/container, face touching or ambiguous object does not qualify.",
         ("Кассир подносит еду или напиток ко рту", "Кассир ест или пьёт на рабочем месте", "Кассир завершает видимый приём еды или напитка"), False),
@@ -48,7 +48,7 @@ _ACTIONS = {
         ("Кассир уходит от кассового стола", "После ухода кассира на столе остаётся видимая печать или книга", "Печать или книга продолжает оставаться на кассовом столе")),
 }
 _NORMAL = {
-    "visitor_or_courier_bag_handled": "A visitor/courier bag is handed over, handled, or rests on the desk; this is not removal of the cashier's worn coat.",
+    "visitor_or_courier_bag_handled": "A visitor/courier bag is handed over, handled, or rests on the desk; this is not the cashier placing an identifiable outer garment on their desk.",
     "cash_received": "Banknotes are received from a visitor, without a clearly observed checking-and-return sequence.",
     "identity_document_presented": "A visitor presents an identity document or card; do not infer an omitted identity check.",
     "banknotes_counted_during_service": "Banknotes are counted while the visitor remains or the departure order is not established.",
@@ -58,13 +58,17 @@ _NORMAL = {
     "unclear": "The action, object, ownership, actor or temporal order cannot be established from the supplied frames.",
 }
 _INSTRUCTION = (
-    "Describe visible physical actions by choosing from the balanced action list. All choices are valid; "
-    "there is no requirement to find a target action. Prefer the matching ordinary action or unclear over "
-    "the closest target. Sparse frames cannot prove an omitted check or hidden step. No identity, intent, "
+    "Inspect ALL supplied frames, including the last frames, before selecting an action. Search the entire "
+    "clip for a fully supported target action anywhere, then choose its most conclusive observed consequence. "
+    "A target can occur after ordinary work or idle frames; do not choose only the earliest action. "
+    "If no target is fully supported anywhere, prefer at most one best ordinary action or unclear; [] is valid. "
+    "Do not fill two slots with trivial early idle actions. Never invent a target or force the closest match. "
+    "Sparse frames cannot prove an omitted check or hidden step. No identity, intent, "
     "authenticity, access-rights or legal conclusions. Distinguish a visitor's bag from the cashier's worn coat, "
     "papers from banknotes, and a counting machine from an authenticity detector. "
-    "Return JSON only: {\"actions\":[{\"start_frame\":integer,\"peak_frame\":integer,\"end_frame\":integer,"
-    "\"action\":string,\"confidence\":number,\"insufficient_evidence\":boolean}]}. At most 2 actions; [] is valid. "
+    "Choose the action before anchoring its frames. Return JSON only in this field order: {\"actions\":[{"
+    "\"action\":string,\"insufficient_evidence\":boolean,\"confidence\":number,"
+    "\"start_frame\":integer,\"peak_frame\":integer,\"end_frame\":integer}]}. At most 2 actions. "
     "Use supplied 1-based frame indices, start<=peak<=end. A target sequence needs distinct prerequisite "
     "and consequence frames. peak_frame is the most conclusive observed consequence, not the earliest "
     "prerequisite. Mark insufficient_evidence=true if any required action/object/order is unclear. "
@@ -73,10 +77,10 @@ _INSTRUCTION = (
 
 def _schema(actions, count):
     index = {"type": "integer", "enum": list(range(1, count + 1))}
-    properties = {"start_frame": index, "peak_frame": index, "end_frame": index,
-                  "action": {"type": "string", "enum": list(actions)},
+    properties = {"action": {"type": "string", "enum": list(actions)},
+                  "insufficient_evidence": {"type": "boolean"},
                   "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                  "insufficient_evidence": {"type": "boolean"}}
+                  "start_frame": index, "peak_frame": index, "end_frame": index}
     return {"type": "object", "additionalProperties": False, "required": ["actions"],
             "properties": {"actions": {"type": "array", "maxItems": 2, "items": {
                 "type": "object", "additionalProperties": False, "properties": properties,
@@ -144,7 +148,7 @@ class ActionContrastBackend:
             raise InvalidResponse("action_frames")
         positive = {name: action for name, action in _ACTIONS.items()
                     if action.type_id in self._eligible and action.type_id in request.allowed_rule_ids}
-        choices = {**_NORMAL, **{name: action.criterion for name, action in positive.items()}}
+        choices = {**{name: action.criterion for name, action in positive.items()}, **_NORMAL}
         prompt = _INSTRUCTION + json.dumps({
             "action_choices": [{"action": name, "visible_criterion": criterion} for name, criterion in choices.items()],
             "frames_in_supplied_order": [{"frame_index": index, "timestamp_s": frame.timestamp_s}
