@@ -14,14 +14,17 @@ Usage by the rules stage (field meanings are documented on the dataclasses below
 
 How it works (no hard-coded pixel coordinates; everything is located per video):
 * frames are sampled at SAMPLE_FPS; person boxes from perception mask people out;
-* the masked median of the samples is the empty-room background: OWLv2 finds desk, safe, glass door with handle
-  and laptop on it (COCO laptop boxes take precedence);
-* safe_open / door_open measure how much the safe / door region differs from the room as it was at the start
-  of the video (`initial_background`). This assumes the safe and the door are closed when the clip starts,
-  which holds for every clip in the open set (the cashier opens them on camera);
-* laptop_screen_* are image statistics of the laptop box against its surroundings;
-* desk items come from COCO detections at every sampled time plus OWLv2 on a zoomed desk crop at a few
-  keyframes (after exits / while the room is empty), filtered by novelty against the initial background.
+* the start background (each pixel from the first frame where no person hides it) is the room as it was when
+  the clip began. OWLv2 finds desk, safe (+ lock), glass door with handle and laptop screen on it; the COCO
+  laptop box from perception takes precedence over OWLv2 for the laptop;
+* safe_open / door_open = share of the safe / door region that differs from the start background, measured only
+  while people hide < 20 % of it. Assumes the safe and the door are closed when the clip starts, which holds for
+  every clip of the open set (the cashier opens them on camera);
+* laptop_screen_on / _work = brightness, saturation and texture of the inner screen area vs. its surroundings;
+* key_in_lock (experimental) = darkening right under the lock cylinder;
+* desk items = COCO detections at every sample + OWLv2 on a zoomed desk crop at up to MAX_KEYFRAMES keyframes
+  (after exits, while the room is empty, start/middle/end), filtered by novelty against the start background.
+Occluded samples hold the last measured value (the leading gap takes the first measured one).
 """
 
 import logging
@@ -180,20 +183,16 @@ def read_frames(video_path: Path | str, times: Sequence[float]) -> list[np.ndarr
     return [out[i] for i in range(len(times))]
 
 
-def persons_at(perception: Perception, t: float, max_dt: float = PERSON_MATCH_SEC) -> list[Detection]:
-    if not perception.frames:
-        return []
-    nearest = min(perception.frames, key=lambda f: abs(f.t - t))
-    if abs(nearest.t - t) > max_dt:
-        return []
-    return [d for d in nearest.detections if d.label == "person"]
-
-
 def detections_at(perception: Perception, t: float, max_dt: float = PERSON_MATCH_SEC) -> list[Detection]:
+    """Detections of the perception frame nearest to t (empty if none within max_dt)."""
     if not perception.frames:
         return []
     nearest = min(perception.frames, key=lambda f: abs(f.t - t))
     return list(nearest.detections) if abs(nearest.t - t) <= max_dt else []
+
+
+def persons_at(perception: Perception, t: float, max_dt: float = PERSON_MATCH_SEC) -> list[Detection]:
+    return [d for d in detections_at(perception, t, max_dt) if d.label == "person"]
 
 
 # --------------------------------------------------------------------------------------------------- layout
