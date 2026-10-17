@@ -53,3 +53,19 @@ def test_invalid_settings_rejected(tmp_path, field, value):
     kwargs = {"api_keys": frozenset({"k"}), "data_dir": tmp_path, field: value}
     with pytest.raises(ValueError):
         Settings(**kwargs)
+
+
+def test_placeholder_keys_rejected(tmp_path):
+    for bad_key in ["change-me-jury-key", "change-me-ui-key", "change-me-foo"]:
+        with pytest.raises(ValueError, match="Placeholder API key"):
+            Settings(api_keys=frozenset({bad_key}), data_dir=tmp_path)
+
+
+def test_min_budget_sec_setting(tmp_path):
+    s = Settings(api_keys=frozenset({"test"}), data_dir=tmp_path, min_budget_sec=15.0)
+    assert s.min_budget_sec == 15.0
+
+    with pytest.raises(ValueError, match="MIN_BUDGET_SEC"):
+        Settings(api_keys=frozenset({"test"}), data_dir=tmp_path, min_budget_sec=-1.0)
+
+

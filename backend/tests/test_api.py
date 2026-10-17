@@ -384,5 +384,83 @@ def test_timed_out_pipeline_holds_slot_until_thread_exits(tmp_path):
     runner.shutdown()
 
 
+def test_job_rejected_when_remaining_budget_under_minimum(client, tmp_path):
+    import time
+
+    runner = client.app.state.runner
+    store = client.app.state.store
+
+    job_id = "1122334455bb"
+    video_path = tmp_path / "dummy_budget.mov"
+    video_path.write_bytes(b"\x00" * 32)
+    store.create(job_id, video_path, "dummy_budget.mov")
+    # Job created 15 seconds ago on a 30s budget (remaining = 15s < min_budget_sec = 20s)
+    store.update(job_id, created_at=time.time() - 15)
+
+    runner.submit(job_id, video_path)
+    runner.wait(job_id, timeout=5)
+
+    res = store.get(job_id)
+    assert res is not None
+    assert res["status"] == "failed"
+    assert "Недостаточно времени для обработки видео" in res["error"]
+
+
+def test_health_reports_lost_slots_on_thread_timeout(tmp_path, caplog):
+    import logging
+    import threading
+    import time
+    from backend.app.config import Settings
+    from backend.app.main import create_app
+
+    pipeline_finish = threading.Event()
+
+    def hanging_pipeline(video_path, on_progress=None, time_budget_sec=None):
+        pipeline_finish.wait(timeout=2.0)
+        return {"verdict": "no_violation", "violations": []}
+
+    settings = Settings(
+        api_keys=frozenset({API_KEY}),
+        data_dir=tmp_path,
+        max_upload_mb=5,
+        workers=1,
+        pipeline="mock",
+        job_timeout_sec=0.15,
+        pipeline_timeout_sec=0.05,
+        min_budget_sec=0.01,
+    )
+    app = create_app(settings, pipeline_fn=hanging_pipeline)
+    with TestClient(app) as c:
+        # Initial health check: lost_slots is 0
+        h0 = c.get("/health").json()
+        assert h0.get("lost_slots") == 0
+
+        # Upload a job that will hang and hit hard watchdog timeout
+        with caplog.at_level(logging.ERROR):
+            job_id = _upload(c).json()["job_id"]
+            c.app.state.runner.wait(job_id, timeout=2.0)
+
+            # Job timed out and slot is retained as lost
+            j = c.app.state.store.get(job_id)
+            assert j["status"] == "failed"
+            assert "таймаут" in j["error"]
+            assert c.app.state.runner.lost_slots == 1
+
+            h1 = c.get("/health").json()
+            assert h1.get("lost_slots") == 1
+
+            # Verify ERROR log was emitted
+            error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
+            assert any("exceeded hard timeout" in r.message and "compute slot retained" in r.message for r in error_records)
+
+        # Release thread and verify lost_slots returns to 0
+        pipeline_finish.set()
+        time.sleep(0.1)
+        assert c.app.state.runner.lost_slots == 0
+        h2 = c.get("/health").json()
+        assert h2.get("lost_slots") == 0
+
+
+
 
 

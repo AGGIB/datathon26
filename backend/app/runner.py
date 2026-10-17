@@ -35,16 +35,27 @@ class JobRunner:
         workers: int,
         time_budget_sec: float = 270.0,
         soft_budget_sec: float | None = None,
+        min_budget_sec: float = 20.0,
     ) -> None:
         self._store = store
         self._pipeline = pipeline
         self._hard_timeout = float(time_budget_sec)
         self._soft_budget = float(soft_budget_sec) if soft_budget_sec is not None else min(200.0, self._hard_timeout * 0.75)
+        if self._hard_timeout < min_budget_sec:
+            self._min_budget = min(0.01, self._hard_timeout * 0.1)
+        else:
+            self._min_budget = float(min_budget_sec)
         self._workers = workers
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="job")
         self._futures: dict[str, Future] = {}
         self._lock = threading.Lock()
         self._sem = threading.Semaphore(workers)
+        self._lost_slots = 0
+
+    @property
+    def lost_slots(self) -> int:
+        with self._lock:
+            return self._lost_slots
 
     def submit(self, job_id: str, video_path: Path) -> None:
         future = self._pool.submit(self._run, job_id, video_path)
@@ -107,6 +118,21 @@ class JobRunner:
             )
             return
 
+        if hard_remaining < self._min_budget:
+            log.warning(
+                "job %s: remaining time before acquire (%.1fs) below minimum budget %.1fs",
+                job_id,
+                hard_remaining,
+                self._min_budget,
+            )
+            self._store.update(
+                job_id,
+                status="failed",
+                stage="failed",
+                error="Недостаточно времени для обработки видео",
+            )
+            return
+
         # Concurrency guard: ensure active ML executions do not exceed workers
         if not self._sem.acquire(timeout=max(0.001, hard_remaining)):
             log.warning("job %s: could not acquire compute slot within %.1fs", job_id, hard_remaining)
@@ -135,15 +161,36 @@ class JobRunner:
         # Dual budgets: soft budget passed to pipeline, hard timeout enforced by watchdog
         grace_sec = min(10.0, self._hard_timeout * 0.1) if self._hard_timeout < 60 else max(10.0, self._hard_timeout - self._soft_budget)
         available = max(0.001, hard_remaining - grace_sec)
+
+        if available < self._min_budget:
+            self._sem.release()
+            log.warning(
+                "job %s: available budget (%.1fs) below minimum budget %.1fs",
+                job_id,
+                available,
+                self._min_budget,
+            )
+            self._store.update(
+                job_id,
+                status="failed",
+                stage="failed",
+                error="Недостаточно времени для обработки видео",
+            )
+            return
+
         pipeline_budget = min(self._soft_budget, available)
 
         pipeline_result: list[dict[str, Any]] = []
         pipeline_exc: list[Exception] = []
         slot_released = threading.Event()
+        is_lost_slot = [False]
 
         def release_slot() -> None:
             if not slot_released.is_set():
                 slot_released.set()
+                with self._lock:
+                    if is_lost_slot[0]:
+                        self._lost_slots = max(0, self._lost_slots - 1)
                 self._sem.release()
 
         def target() -> None:
@@ -167,8 +214,11 @@ class JobRunner:
             thread.join(timeout=hard_remaining)
 
             if thread.is_alive():
-                log.warning(
-                    "job %s: pipeline exceeded hard timeout %.1fs (allocated %.1fs)",
+                with self._lock:
+                    is_lost_slot[0] = True
+                    self._lost_slots += 1
+                log.error(
+                    "job %s: pipeline exceeded hard timeout %.1fs (allocated %.1fs); compute slot retained by lingering thread",
                     job_id,
                     self._hard_timeout,
                     pipeline_budget,
