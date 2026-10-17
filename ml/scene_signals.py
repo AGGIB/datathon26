@@ -23,12 +23,13 @@ TEXTURE_JUMP = 6.0
 ZNCC_MIN = 0.5
 MEAN_DIFF = 30.0
 
-# laptop screen
-SCREEN_RATIO_OFF, SCREEN_RATIO_ON = 1.0, 1.15  # p95 of box luminance / p90 of context luminance
-COLOR_FRAC_OFF, COLOR_FRAC_ON = 0.05, 0.25  # share of bright saturated pixels (wallpaper, lock screen)
-WORK_FRAC_OFF, WORK_FRAC_ON = 0.04, 0.2  # share of white low-saturation pixels brighter than the surroundings
-COLOR_MIN_SAT, COLOR_MIN_VAL = 110, 90
-WORK_MAX_SAT, WORK_MARGIN = 70, 8.0
+# laptop screen (measured on the inner part of the screen box against the surroundings of the laptop)
+MIN_CONTEXT_LUM = 40.0  # floor for the context brightness (dark room)
+WHITE_REL, WHITE_MIN_LUM, WHITE_MAX_SAT = 0.75, 90.0, 90  # "document white": bright relative to the room
+WORK_FRAC = (0.08, 0.2)  # share of document-white pixels -> work 0..1
+TEXTURE = (12.0, 18.0)  # mean |Laplacian|: text, cells, wallpaper vs. a flat closed lid
+COLORFUL_SAT = (50.0, 80.0)  # mean saturation of a wallpaper / lock screen
+GLOW_REL = (1.0, 1.3)  # screen brighter than everything around it (dark room)
 
 
 def ramp(x: float, lo: float, hi: float) -> float:
@@ -139,27 +140,35 @@ def change_score(
 
 @dataclass(frozen=True)
 class ScreenFeatures:
-    on: float  # 0..1: the screen emits light (any content, including a lock screen)
-    work: float  # 0..1: bright white document-like content (spreadsheet, form) rather than wallpaper
-    brightness_ratio: float
-    color_frac: float
+    on: float  # 0..1: the screen shows something lit (document, wallpaper, lock screen)
+    work: float  # 0..1: bright document-like content (spreadsheet, form), i.e. an unlocked work screen
+    rel_lum: float  # mean screen luminance / bright context luminance
     white_frac: float
+    sat_mean: float
+    texture: float
 
 
-def screen_features(box_bgr: np.ndarray, context_bgr: np.ndarray) -> ScreenFeatures:
-    """Score a laptop crop against its surroundings (desk and wall around the laptop)."""
-    lum = cv2.cvtColor(box_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+def screen_features(screen_bgr: np.ndarray, context_bgr: np.ndarray) -> ScreenFeatures:
+    """Score the inner part of a laptop screen against its surroundings (desk and wall around the laptop).
+
+    Observed on the open set: spreadsheet = bright, low-saturation, textured; lock screen = dark, colourful,
+    textured; closed lid = flat grey; lit screen in a dark room = brighter than everything around it.
+    """
+    lum = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
     ctx = cv2.cvtColor(context_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
-    hsv = cv2.cvtColor(box_bgr, cv2.COLOR_BGR2HSV)
-    sat, val = hsv[..., 1], hsv[..., 2]
-    ctx_hi = float(np.percentile(ctx, 90))
-    ratio = float(np.percentile(lum, 95)) / max(ctx_hi, 10.0)
-    color_frac = float(((sat >= COLOR_MIN_SAT) & (val >= COLOR_MIN_VAL)).mean())
-    white_frac = float(((lum > ctx_hi + WORK_MARGIN) & (sat <= WORK_MAX_SAT)).mean())
-    on = max(ramp(ratio, SCREEN_RATIO_OFF, SCREEN_RATIO_ON), ramp(color_frac, COLOR_FRAC_OFF, COLOR_FRAC_ON))
-    work = ramp(white_frac, WORK_FRAC_OFF, WORK_FRAC_ON)
-    return ScreenFeatures(on=on, work=min(work, max(on, work)), brightness_ratio=ratio,
-                          color_frac=color_frac, white_frac=white_frac)
+    sat = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2HSV)[..., 1].astype(np.float32)
+    ref = max(float(np.percentile(ctx, 90)), MIN_CONTEXT_LUM)
+    rel = lum / ref
+    white_frac = float(((rel >= WHITE_REL) & (lum >= WHITE_MIN_LUM) & (sat <= WHITE_MAX_SAT)).mean())
+    texture = float(np.abs(cv2.Laplacian(lum, cv2.CV_32F)).mean()) if min(lum.shape) >= 3 else 0.0
+    sat_mean = float(sat.mean())
+    textured = ramp(texture, *TEXTURE)
+    work = ramp(white_frac, *WORK_FRAC) * textured
+    colorful = ramp(sat_mean, *COLORFUL_SAT) * textured
+    glow = ramp(float(rel.mean()), *GLOW_REL)
+    on = max(work, colorful, glow)
+    return ScreenFeatures(on=on, work=work, rel_lum=float(rel.mean()), white_frac=white_frac,
+                          sat_mean=sat_mean, texture=texture)
 
 
 def hold_fill(values: Sequence[float | None]) -> list[float | None]:

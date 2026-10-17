@@ -41,11 +41,13 @@ from .scene_items import ITEM_SCAN_QUERIES, DeskItem, desk_zone, items_from_coco
 from .scene_layout import (
     LAYOUT_QUERIES,
     LOCK_QUERIES,
+    SCREEN_QUERIES,
     pick_desk,
     pick_door,
     pick_laptop,
     pick_lock,
     pick_safe,
+    pick_screen,
 )
 from .scene_owl import OwlDetector, OwlHit
 from .scene_signals import (
@@ -72,6 +74,7 @@ SAFE_CHANGE = (0.07, 0.17)  # share of changed cells vs. the start -> safe_open 
 DOOR_CHANGE = (0.10, 0.30)
 MIN_ROI_VISIBLE = 0.8
 LAPTOP_CONTEXT_GROW = 0.6
+SCREEN_CORE_SHRINK = (0.2, 0.15)  # skip bezel and the wall seen around a tilted screen
 MAX_LAPTOP_PERSON_COVER = 0.35
 KEY_WINDOW = (0.14, 0.05)  # half-size of the key window as share of the safe width/height
 KEY_TEXTURE = (1.6, 3.0)  # edge energy around the lock / on the plain door face
@@ -92,6 +95,7 @@ class Layout:
     door: Box | None
     laptop: Box | None
     lock: Box | None
+    screen: Box | None = None  # laptop screen (inner part is measured)
     confidence: dict[str, float] = field(default_factory=dict)  # 0..1 per element
 
 
@@ -223,8 +227,13 @@ def locate_layout(
         lock_hits = owl.detect(background, LOCK_QUERIES, region=region,
                                cache_key=f"{cache_key}_lock" if cache_key else None)
         lock, c_lock = pick_lock(lock_hits, safe)
-    conf = {"desk": c_desk, "safe": c_safe, "door": c_door, "laptop": c_laptop, "lock": c_lock}
-    layout = Layout(w, h, desk, safe, door, laptop, lock, {k: round(v, 3) for k, v in conf.items()})
+    screen_hits: list[OwlHit] = []
+    if owl is not None and laptop is not None:
+        screen_hits = owl.detect(background, SCREEN_QUERIES, region=expand_box(laptop, 0.4, width=w, height=h),
+                                 cache_key=f"{cache_key}_screen" if cache_key else None)
+    screen, c_screen = pick_screen(screen_hits, laptop)
+    conf = {"desk": c_desk, "safe": c_safe, "door": c_door, "laptop": c_laptop, "lock": c_lock, "screen": c_screen}
+    layout = Layout(w, h, desk, safe, door, laptop, lock, screen, {k: round(v, 3) for k, v in conf.items()})
     log.info("layout %s", layout)
     return layout, background
 
@@ -247,20 +256,13 @@ def _region_change(
     return change_score(gray[y0:y1, x0:x1], ref[y0:y1, x0:x1], valid, gain=gain)
 
 
-def _laptop_box(dets: Sequence[Detection], layout: Layout) -> Box | None:
-    laptops = [d for d in dets if d.label == "laptop"]
-    if layout.laptop is None:
-        return max(laptops, key=lambda d: d.score).box if laptops else None
-    near = [d for d in laptops if overlap_fraction(layout.laptop, d.box) > 0.3]
-    return max(near, key=lambda d: d.score).box if near else layout.laptop
-
-
-def _screen(frame: np.ndarray, box: Box | None, persons: Sequence[Box]) -> tuple[float | None, float | None]:
-    if box is None or any(overlap_fraction(box, p) > MAX_LAPTOP_PERSON_COVER for p in persons):
+def _screen(frame: np.ndarray, layout: Layout, persons: Sequence[Box]) -> tuple[float | None, float | None]:
+    screen = layout.screen
+    if screen is None or any(overlap_fraction(screen, p) > MAX_LAPTOP_PERSON_COVER for p in persons):
         return None, None
     h, w = frame.shape[:2]
-    x0, y0, x1, y1 = to_int_box(clip_box(box, w, h))
-    cx0, cy0, cx1, cy1 = to_int_box(expand_box(box, LAPTOP_CONTEXT_GROW, width=w, height=h))
+    x0, y0, x1, y1 = to_int_box(expand_box(screen, -SCREEN_CORE_SHRINK[0], -SCREEN_CORE_SHRINK[1], width=w, height=h))
+    cx0, cy0, cx1, cy1 = to_int_box(expand_box(layout.laptop or screen, LAPTOP_CONTEXT_GROW, width=w, height=h))
     feats = screen_features(frame[y0:y1, x0:x1], frame[cy0:cy1, cx0:cx1])
     return feats.on, feats.work
 
@@ -390,7 +392,7 @@ def _measure(
         gain = global_gain(gray, ref, valid)
         raw.safe.append(_region_change(gray, ref, valid, safe_roi, gain, ignore=laptop_mask))
         raw.door.append(_region_change(gray, ref, valid, layout.door, gain))
-        on, work = _screen(frame, _laptop_box(dets, layout), persons)
+        on, work = _screen(frame, layout, persons)
         raw.screen_on.append(on)
         raw.screen_work.append(work)
         raw.key.append(_key_raw(gray, windows, persons))

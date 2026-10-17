@@ -100,32 +100,44 @@ def test_change_score_none_when_nothing_visible():
     assert change_score(ref, ref, np.zeros_like(ref, dtype=bool)) is None
 
 
-def _screen(color, size=(20, 30)):
-    return np.full((*size, 3), color, dtype=np.uint8)
+def _screen(color, size=(24, 32), lines=None):
+    img = np.full((*size, 3), color, dtype=np.uint8)
+    if lines is not None:
+        img[::3] = lines  # rows of text / table grid
+    return img
 
 
-def test_screen_features_white_document_is_on_and_work():
-    box = _screen((235, 235, 235))
-    context = _screen((170, 170, 170), size=(60, 60))
-    feats = screen_features(box, context)
+CONTEXT_LIT = np.full((60, 60, 3), 190, dtype=np.uint8)
+CONTEXT_DARK = np.full((60, 60, 3), 30, dtype=np.uint8)
+
+
+def test_screen_features_spreadsheet_is_on_and_work():
+    feats = screen_features(_screen((200, 190, 185), lines=(90, 90, 90)), CONTEXT_LIT)
     assert feats.on > 0.8
     assert feats.work > 0.8
 
 
-def test_screen_features_blue_lock_screen_is_on_but_not_work():
-    box = _screen((160, 80, 20))  # BGR: saturated blue wallpaper
-    context = _screen((60, 60, 60), size=(60, 60))
-    feats = screen_features(box, context)
+def test_screen_features_lock_screen_is_on_but_not_work():
+    feats = screen_features(_screen((120, 60, 20), lines=(160, 120, 40)), CONTEXT_LIT)
     assert feats.on > 0.5
     assert feats.work < 0.2
 
 
-def test_screen_features_closed_dark_lid_is_off():
-    box = _screen((50, 50, 50))
-    context = _screen((170, 170, 170), size=(60, 60))
-    feats = screen_features(box, context)
+def test_screen_features_closed_flat_lid_is_off():
+    feats = screen_features(_screen((120, 120, 120)), CONTEXT_LIT)
     assert feats.on < 0.2
     assert feats.work < 0.2
+
+
+def test_screen_features_glowing_screen_in_dark_room_is_on():
+    feats = screen_features(_screen((210, 210, 210), lines=(120, 120, 120)), CONTEXT_DARK)
+    assert feats.on > 0.8
+    assert feats.work > 0.8
+
+
+def test_screen_features_dark_screen_in_dark_room_is_off():
+    feats = screen_features(_screen((25, 25, 25)), CONTEXT_DARK)
+    assert feats.on < 0.2
 
 
 def test_hold_fill_forward_then_backward():

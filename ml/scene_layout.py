@@ -8,7 +8,7 @@ next to the desk, the entrance door is a glass door with a handle).
 from collections.abc import Sequence
 
 from .detect import Box
-from .scene_geometry import box_area, center, expand_box, median_box, overlap_fraction
+from .scene_geometry import box_area, center, expand_box, median_box, overlap_fraction, sub_box
 from .scene_owl import OwlHit
 
 DESK_QUERIES = ("a desk", "an office desk")
@@ -17,6 +17,9 @@ DOOR_QUERIES = ("a glass door",)
 HANDLE_QUERIES = ("a door handle",)
 LAPTOP_QUERIES = ("a laptop",)
 LOCK_QUERIES = ("a lock", "a keyhole")
+SCREEN_QUERIES = ("a computer screen", "a keyboard")
+MIN_SCREEN_SCORE = 0.2
+SCREEN_FALLBACK_SHARE = 0.6  # without a screen hit: upper part of the laptop box
 LAYOUT_QUERIES = DESK_QUERIES + SAFE_QUERIES + DOOR_QUERIES + HANDLE_QUERIES + LAPTOP_QUERIES
 
 MIN_COCO_LAPTOPS = 3
@@ -31,6 +34,7 @@ MIN_DOOR_SCORE = 0.15
 MIN_HANDLE_SCORE = 0.2
 NO_HANDLE_PENALTY = 0.6
 HANDLE_REL_Y = (0.3, 0.85)
+MIN_HANDLE_INSIDE = 0.3
 MAX_LOCK_SHARE_OF_SAFE = 0.05
 
 
@@ -102,11 +106,10 @@ def pick_door(hits: Sequence[OwlHit], width: float, height: float) -> tuple[Box 
     handles = _of(hits, HANDLE_QUERIES, MIN_HANDLE_SCORE)
     fits = []
     for d in doors:
-        zone = expand_box(d.box, 0.1, 0.0, width=width, height=height)
         for hd in handles:
-            hx, hy = center(hd.box)
-            if zone[0] <= hx <= zone[2] and zone[1] <= hy <= zone[3]:
-                fits.append((d.score * _handle_height_fit(d.box, hy), d, hd))
+            inside = overlap_fraction(hd.box, d.box)  # the handle belongs to the panel that contains it
+            if inside >= MIN_HANDLE_INSIDE:
+                fits.append((d.score * inside * _handle_height_fit(d.box, center(hd.box)[1]), d, hd))
     if fits:
         _, d, hd = max(fits, key=lambda f: f[0])
         return d.box, max(d.score, hd.score)
@@ -134,3 +137,21 @@ def pick_lock(hits: Sequence[OwlHit], safe: Box | None) -> tuple[Box | None, flo
         return None, 0.0
     best = max(cands, key=lambda h: h.score)
     return best.box, best.score
+
+
+def pick_screen(hits: Sequence[OwlHit], laptop: Box | None) -> tuple[Box | None, float]:
+    """Screen of the laptop: best 'computer screen' hit centred on the laptop, else its upper part."""
+    if laptop is None:
+        return None, 0.0
+    lx0, ly0, lx1, ly1 = laptop
+    pad_x, pad_y = 0.1 * (lx1 - lx0), 0.1 * (ly1 - ly0)
+    cands = []
+    for h in hits:
+        cx, cy = center(h.box)
+        if h.query == SCREEN_QUERIES[0] and h.score >= MIN_SCREEN_SCORE \
+                and lx0 - pad_x <= cx <= lx1 + pad_x and ly0 - pad_y <= cy <= ly1 + pad_y:
+            cands.append(h)
+    if cands:
+        best = max(cands, key=lambda h: h.score)
+        return best.box, best.score
+    return sub_box(laptop, 0.0, 0.0, 1.0, SCREEN_FALLBACK_SHARE), 0.0

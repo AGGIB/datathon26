@@ -1,4 +1,4 @@
-from ml.scene_layout import pick_desk, pick_door, pick_laptop, pick_lock, pick_safe
+from ml.scene_layout import pick_desk, pick_door, pick_laptop, pick_lock, pick_safe, pick_screen
 from ml.scene_owl import OwlHit
 
 W, H = 464, 848
@@ -58,6 +58,16 @@ def test_pick_door_requires_a_handle_inside_the_glass_door():
     assert conf > 0.3
 
 
+def test_pick_door_prefers_the_panel_that_contains_the_handle():
+    hits = [
+        hit("a glass door", (133, 21, 252, 355), 0.445),  # fixed panel next to the door, handle on its edge
+        hit("a glass door", (2, 21, 144, 427), 0.404),
+        hit("a door handle", (121, 286, 142, 298), 0.46),
+    ]
+    box, _ = pick_door(hits, W, H)
+    assert box == (2, 21, 144, 427)
+
+
 def test_pick_door_falls_back_to_best_glass_door_without_handle():
     hits = [hit("a glass door", (0, 3, 113, 416), 0.37)]
     box, conf = pick_door(hits, W, H)
@@ -71,3 +81,22 @@ def test_pick_lock_inside_safe_only():
     box, _ = pick_lock(hits, safe)
     assert box == (191, 300, 199, 306)
     assert pick_lock(hits, None)[0] is None
+
+
+def test_pick_screen_takes_screen_hit_on_the_laptop():
+    laptop = (245, 326, 317, 393)
+    hits = [
+        hit("a computer screen", (276, 327, 316, 374), 0.56),
+        hit("a computer screen", (10, 10, 60, 60), 0.9),  # monitor elsewhere in the room
+        hit("a keyboard", (259, 363, 294, 384), 0.64),
+    ]
+    box, conf = pick_screen(hits, laptop)
+    assert box == (276, 327, 316, 374)
+    assert conf == 0.56
+
+
+def test_pick_screen_falls_back_to_upper_part_of_laptop():
+    box, conf = pick_screen([], (0, 0, 100, 100))
+    assert box == (0, 0, 100, 60)
+    assert conf == 0.0
+    assert pick_screen([], None) == (None, 0.0)
