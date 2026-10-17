@@ -293,20 +293,14 @@ class VerifiedActionBackend:
         local = {source: index for index, source in enumerate(source_indices, 1)}
         episodes = [{"id": episode["id"], "anchors": [local[index] for index in episode["anchors"]]}
                     for episode in original]
-        prompt_episodes = [{"id": episode["id"], "phase_anchors": episode["anchors"],
-                            "unique_anchors": list(dict.fromkeys(episode["anchors"]))} for episode in episodes]
-        prompt = _INSTRUCTION + json.dumps({"row_fields": ["frame", "actor", "role", "object_id", "object", "state", "place", "direction"],
-            "enums": [list(values) for values in _ENUMS], "episodes": prompt_episodes,
-            "frames_in_supplied_order": [{"frame": index, "timestamp_s": frame.timestamp_s}
-                for index, frame in enumerate(frames, 1)]}, separators=(",", ":"))
-        translated = InferenceRequest(prompt, frames, "checklist", None, (), _schema(episodes, len(frames)))
+        translated = self._verification_request(episodes, frames)
         verified_raw = self._proxy.infer(translated, timeout_s=budget.remaining())
         if budget.remaining() <= 0:
             raise TimeoutError("verification_timeout")
-        facts = _primitives(verified_raw, episodes)
+        facts = self._verification_facts(verified_raw, episodes)
         findings, diagnostics = [], []
         for index, (action, finding) in enumerate(proposals, 1):
-            supported = _supports(action["action"], facts[index])
+            supported = self._supports_proposal(action["action"], facts[index])
             diagnostics.append({"episode_id": index, "accepted": supported,
                                 "reason": "visible_primitives_supported" if supported else "primitive_evidence_not_supported"})
             if supported:
@@ -315,3 +309,18 @@ class VerifiedActionBackend:
             raise TimeoutError("verification_timeout")
         self.last_verifications = tuple(diagnostics)
         return json.dumps({"findings": findings}, ensure_ascii=False, allow_nan=False)
+
+    def _verification_request(self, episodes, frames):
+        prompt_episodes = [{"id": episode["id"], "phase_anchors": episode["anchors"],
+                            "unique_anchors": list(dict.fromkeys(episode["anchors"]))} for episode in episodes]
+        prompt = _INSTRUCTION + json.dumps({"row_fields": ["frame", "actor", "role", "object_id", "object", "state", "place", "direction"],
+            "enums": [list(values) for values in _ENUMS], "episodes": prompt_episodes,
+            "frames_in_supplied_order": [{"frame": index, "timestamp_s": frame.timestamp_s}
+                for index, frame in enumerate(frames, 1)]}, separators=(",", ":"))
+        return InferenceRequest(prompt, frames, "checklist", None, (), _schema(episodes, len(frames)))
+
+    def _verification_facts(self, raw, episodes):
+        return _primitives(raw, episodes)
+
+    def _supports_proposal(self, action, facts):
+        return _supports(action, facts)
