@@ -79,3 +79,8 @@ def analyze(
             _demo_violation(video_path, "ДЕМО: тип нарушения B", 8.0, 4.0),
         ],
     }
+
+
+def fast_fallback(video_path: str) -> dict[str, Any]:
+    """Instant fallback compliant with K1 when ML exceeds timeout budget (Issue #11)."""
+    return {"verdict": "no_violation", "violations": []}

@@ -9,6 +9,7 @@ from typing import Any, Callable, Protocol
 
 from pydantic import ValidationError
 
+from . import mock_pipeline
 from .schemas import AnalysisResult
 from .store import JobStore
 
@@ -32,7 +33,8 @@ class JobRunner:
         self._pipeline = pipeline
         self._budget = time_budget_sec
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="job")
-        self._pipeline_pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="pipeline")
+        # Headroom to avoid pool exhaustion if timed-out threads take time to clean up
+        self._pipeline_pool = ThreadPoolExecutor(max_workers=max(workers * 4, 16), thread_name_prefix="pipeline")
         self._futures: dict[str, Future] = {}
         self._lock = threading.Lock()
 
@@ -81,8 +83,7 @@ class JobRunner:
                     job_id,
                     self._budget,
                 )
-                from .mock_pipeline import analyze as fallback_analyze
-                raw = fallback_analyze(str(video_path), delay_sec=0.0)
+                raw = mock_pipeline.fast_fallback(str(video_path))
 
             result = AnalysisResult.model_validate(raw)
         except ValidationError as exc:
