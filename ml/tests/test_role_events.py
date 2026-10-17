@@ -157,3 +157,18 @@ def test_unstable_weak_figure_at_the_seat_after_leaving_is_not_a_return():
     cashier = Track(1, path(1, [(0, 8, SEAT), (8.5, 12, FAR)]).points + tuple(back))
     ev = extract_role_events(roles([cashier]), times(20), duration=20.0)
     assert not kinds(ev, "cashier_returned")
+
+
+def test_bending_over_the_desk_for_a_moment_while_standing_is_not_leaving():
+    bent = (40.0, 100.0, 80.0, 110.0)  # box shrinks to the upper body: foot point jumps away from the seat
+    cashier = path(1, [(0, 5, STANDING), (5.5, 6, bent), (6.5, 20, STANDING)])
+    ev = extract_role_events(roles([cashier]), times(20), duration=20.0)
+    assert not kinds(ev, "cashier_left")
+
+
+def test_narrow_figure_at_the_seat_soon_after_walking_away_is_not_a_return():
+    narrow = (52.0, 100.0, 68.0, 160.0)  # seen through the door frame: a sliver of a person
+    cashier = path(1, [(0, 8, SEAT), (8.5, 10, FAR), (10.5, 20, narrow)])
+    ev = extract_role_events(roles([cashier]), times(20), duration=20.0)
+    [left] = kinds(ev, "cashier_left")
+    assert left.t == 8.0 and left.t_end is None

@@ -102,11 +102,14 @@ def extract_events(
 
 CASHIER_MIN_AWAY_SEC = 3.0  # away from the seat at least this long (or until the video ends)
 CASHIER_MIN_AWAY_AT_END_SEC = 1.5
-# A return needs the cashier settled back at work: usual posture (not standing where she sat), clear detection,
-# for a while. Otherwise it is her (or someone) seen through the glass door right behind the seat.
+# Being back at work needs a clear, full-width figure (through the glass door right behind the seat the cashier,
+# or a passer-by, shows up weak or as a narrow sliver). After a real absence (>= CASHIER_MIN_AWAY_SEC) she must
+# also settle in her usual posture for RETURN_MIN_SEC.
+STAY_MIN_SCORE = 0.8
+STAY_MIN_WIDTH = 0.7  # median box width relative to the usual one
 RETURN_MIN_SEC = 2.0
-RETURN_MIN_SCORE = 0.8
 SETTLED_HEIGHT = (0.6, 1.35)  # box height relative to the usual one at the workplace
+WALK_SHIFT = 0.5  # sideways shift of the box centre (in widths) that means walking off, not bending over the desk
 MIN_OVERLAP_SEC = 2.0
 BEHIND_DIST = 1.3  # cashier widths from the seat
 BEHIND_MIN_HEIGHT = 0.9  # standing person next to a seated cashier is at least about as tall
@@ -148,19 +151,48 @@ def _runs(flags: Sequence[bool], value: bool = False) -> list[tuple[int, int]]:
     return runs
 
 
+def _clear_stay(points: Sequence[TrackPoint], wp: Workplace) -> bool:
+    widths = sorted((p.box[2] - p.box[0]) / max(wp.width, 1.0) for p in points)
+    mean_score = sum(p.score for p in points) / len(points)
+    return mean_score >= STAY_MIN_SCORE and widths[len(widths) // 2] >= STAY_MIN_WIDTH
+
+
 def _is_return(obs: Sequence[tuple[int, TrackPoint] | None], times: Sequence[float], wp: Workplace) -> bool:
-    """The stay contains RETURN_MIN_SEC of settled, clearly detected presence."""
+    """The stay contains RETURN_MIN_SEC of clear presence in the usual posture."""
     for i, j in _runs([o is not None and _settled(o[1], wp) for o in obs], value=True):
-        scores = [o[1].score for o in obs[i:j]]
-        if times[j - 1] - times[i] >= RETURN_MIN_SEC and sum(scores) / len(scores) >= RETURN_MIN_SCORE:
+        if times[j - 1] - times[i] >= RETURN_MIN_SEC and _clear_stay([o[1] for o in obs[i:j]], wp):
             return True
     return False
 
 
+def _walked_off(obs: Sequence[tuple[int, TrackPoint] | None], wp: Workplace) -> bool:
+    seat_x = (wp.box[0] + wp.box[2]) / 2
+    return any(
+        o is not None and abs((o[1].box[0] + o[1].box[2]) / 2 - seat_x) > WALK_SHIFT * wp.width for o in obs
+    )
+
+
 def _at_work_flags(obs: Sequence[tuple[int, TrackPoint] | None], times: Sequence[float], wp: Workplace) -> list[bool]:
+    """Per sample: is the cashier at work.
+
+    A short gap without walking off (a dropout, bending over the desk) keeps her at work if she is clearly back.
+    After a real departure, only a settled return counts; other stays at the seat are discarded.
+    """
     flags = [o is not None and wp.occupied_by(o[1].box, o[1].score) for o in obs]
+    last_at_work: int | None = None
     for i, j in _runs(flags, value=True):
-        if i > 0 and not _is_return(obs[i:j], times[i:j], wp):
+        if i == 0:
+            last_at_work = j - 1
+            continue
+        stay = obs[i:j]
+        short_dropout = (
+            last_at_work is not None
+            and times[i] - times[last_at_work] < CASHIER_MIN_AWAY_SEC
+            and not _walked_off(obs[last_at_work + 1:i], wp)
+        )
+        if _clear_stay([o[1] for o in stay], wp) and (short_dropout or _is_return(stay, times[i:j], wp)):
+            last_at_work = j - 1
+        else:
             flags[i:j] = [False] * (j - i)
     return flags
 
