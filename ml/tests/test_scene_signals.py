@@ -3,6 +3,8 @@ import pytest
 
 from ml.scene_signals import (
     change_score,
+    hold_forward,
+    region_reference,
     key_protrusion,
     hold_fill,
     initial_background,
@@ -91,6 +93,23 @@ def test_change_score_detects_flat_region_turning_bright():
     assert change_score(cur, ref, np.ones_like(ref, dtype=bool), gain=1.0) == pytest.approx(0.5)
 
 
+def test_structural_change_ignores_brightness_shift_on_flat_face():
+    ref = np.full((64, 64), 150, dtype=np.uint8)
+    cur = ref.copy()
+    cur[:32] = 120  # shadow of a person sitting next to the cabinet
+    valid = np.ones_like(ref, dtype=bool)
+    assert change_score(cur, ref, valid, gain=1.0) == pytest.approx(0.5)
+    assert change_score(cur, ref, valid, gain=1.0, structural_only=True) == 0.0
+
+
+def test_structural_change_sees_new_edges():
+    ref = np.full((64, 64), 150, dtype=np.uint8)
+    cur = ref.copy()
+    cur[:, ::4] = 60  # door edge / interior structure appears
+    valid = np.ones_like(ref, dtype=bool)
+    assert change_score(cur, ref, valid, gain=1.0, structural_only=True) == 1.0
+
+
 def test_change_score_none_for_regions_smaller_than_a_cell():
     tiny = np.zeros((3, 40), dtype=np.uint8)
     assert change_score(tiny, tiny, np.ones_like(tiny, dtype=bool)) is None
@@ -170,3 +189,32 @@ def test_key_protrusion_high_with_key_low_without():
 
 def test_key_protrusion_none_near_image_border():
     assert key_protrusion(np.full((6, 6), 150, dtype=np.uint8), (0.0, 0.0, 3.0, 3.0), scale=5) is None
+
+
+def _gray(v):
+    return np.full((8, 8), v, dtype=np.uint8)
+
+
+def test_region_reference_trusts_a_clean_start():
+    grays = [_gray(10), _gray(200), _gray(200)]
+    visible = [np.ones((8, 8), bool)] * 3
+    ref, how = region_reference(grays, visible, [0.0, 1.0, 2.0], (0, 0, 8, 8), 0.8, 2.0)
+    assert how == "start" and ref[0, 0] == 10
+
+
+def test_region_reference_uses_the_usual_state_when_hidden_at_start():
+    hidden = np.zeros((8, 8), bool)
+    shown = np.ones((8, 8), bool)
+    grays = [_gray(0), _gray(250), _gray(10), _gray(10), _gray(10)]  # opened at 3 s, closed after
+    visible = [hidden, shown, shown, shown, shown]
+    ref, how = region_reference(grays, visible, [0.0, 3.0, 4.0, 5.0, 6.0], (0, 0, 8, 8), 0.8, 2.0)
+    assert how == "median" and ref[0, 0] == 10
+
+
+def test_region_reference_none_when_never_clean():
+    ref, how = region_reference([_gray(1)], [np.zeros((8, 8), bool)], [0.0], (0, 0, 8, 8), 0.8, 2.0)
+    assert ref is None and how == "none"
+
+
+def test_hold_forward_keeps_leading_gap_unknown():
+    assert hold_forward([None, 0.2, None, 0.8]) == [None, 0.2, 0.2, 0.8]

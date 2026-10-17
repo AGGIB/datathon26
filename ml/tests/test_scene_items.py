@@ -1,5 +1,16 @@
+import cv2
+import numpy as np
+
 from ml.detect import Detection
-from ml.scene_items import DeskItem, desk_zone, items_from_coco, items_from_owl, keep_item, merge_items
+from ml.scene_items import (
+    DeskItem,
+    desk_zone,
+    items_from_coco,
+    items_from_owl,
+    keep_item,
+    merge_items,
+    relabel_by_color,
+)
 from ml.scene_owl import OwlHit
 
 DESK = (60, 350, 330, 540)
@@ -13,19 +24,19 @@ def test_desk_zone_extends_above_the_desk_top():
 
 def test_owl_hits_map_to_item_labels_and_respect_thresholds():
     hits = [
-        OwlHit("papers", (208, 397, 234, 408), 0.49),
+        OwlHit("money", (208, 397, 234, 408), 0.49),
         OwlHit("a notebook", (179, 382, 231, 411), 0.37),
         OwlHit("a banana", (100, 400, 120, 410), 0.05),  # too weak
         OwlHit("a jacket", (0, 0, 40, 40), 0.6),  # not on the desk
     ]
     items = items_from_owl(hits, ZONE, person_boxes=[])
-    assert sorted((i.label, i.query) for i in items) == [("book", "a notebook"), ("cash_bundle", "papers")]
+    assert sorted((i.label, i.query) for i in items) == [("book", "a notebook"), ("cash_bundle", "money")]
     assert all(i.source == "owlv2" for i in items)
 
 
 def test_owl_item_explained_by_fixed_equipment_is_dropped():
     hits = [
-        OwlHit("papers", (79, 371, 103, 388), 0.3),
+        OwlHit("money", (79, 371, 103, 388), 0.3),
         OwlHit("a banknote counting machine", (75, 345, 145, 430), 0.35),
     ]
     assert items_from_owl(hits, ZONE, person_boxes=[]) == []
@@ -78,13 +89,21 @@ def test_keep_item_drops_fixed_equipment_seen_since_the_start():
 
 def test_keep_item_trusts_strong_or_new_owl_hits():
     assert keep_item(_item("owlv2", 0.39, 0.2))  # notebook partly in the start reference
-    assert not keep_item(_item("owlv2", 0.26, 0.125))  # "papers" on the counting machine
+    assert not keep_item(_item("owlv2", 0.26, 0.125))  # weak hit on the counting machine
     assert not keep_item(_item("owlv2", 0.3, 0.02))
     assert keep_item(_item("owlv2", 0.6, 0.0))
 
 
-def test_generic_papers_query_needs_a_higher_score():
-    weak = [OwlHit("papers", (208, 397, 234, 408), 0.26)]
-    strong = [OwlHit("papers", (208, 397, 234, 408), 0.49)]
-    assert items_from_owl(weak, ZONE, person_boxes=[]) == []
-    assert [i.label for i in items_from_owl(strong, ZONE, person_boxes=[])] == ["cash_bundle"]
+def test_papers_query_is_not_used():
+    hits = [OwlHit("papers", (208, 397, 234, 408), 0.49)]
+    assert items_from_owl(hits, ZONE, person_boxes=[]) == []
+
+
+def _hsv(bgr):
+    return cv2.cvtColor(np.full((10, 20, 3), bgr, dtype=np.uint8), cv2.COLOR_BGR2HSV)
+
+
+def test_yellow_cash_bundle_is_food():
+    assert relabel_by_color("cash_bundle", _hsv((40, 200, 230))) == "food"  # banana yellow
+    assert relabel_by_color("cash_bundle", _hsv((170, 190, 180))) == "cash_bundle"  # pale green-grey notes
+    assert relabel_by_color("book", _hsv((40, 200, 230))) == "book"

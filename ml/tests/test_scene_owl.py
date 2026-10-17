@@ -1,7 +1,9 @@
 import numpy as np
 import pytest
 
-from ml.scene_owl import OwlHit, decode_hits, nms_per_query
+import threading
+
+from ml.scene_owl import OWL_REVISION, OwlDetector, OwlHit, decode_hits, nms_per_query, shared_owl
 
 
 def test_decode_hits_maps_normalised_boxes_to_source_pixels_with_offset():
@@ -28,3 +30,19 @@ def test_nms_per_query_suppresses_duplicates_only_within_a_query():
 def test_nms_per_query_caps_hits_per_query():
     hits = [OwlHit("a", (i * 20, 0, i * 20 + 10, 10), 0.5) for i in range(5)]
     assert len(nms_per_query(hits, max_per_query=2)) == 2
+
+
+def test_shared_owl_is_one_instance_across_threads():
+    seen = []
+    threads = [threading.Thread(target=lambda: seen.append(shared_owl())) for _ in range(8)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert len({id(o) for o in seen}) == 1
+
+
+def test_owl_detector_is_pinned_and_lazy():
+    owl = OwlDetector()
+    assert owl.revision == OWL_REVISION and len(OWL_REVISION) == 40
+    assert owl.calls == 0 and owl._model is None  # nothing loaded until the first forward

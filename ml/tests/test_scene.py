@@ -13,16 +13,29 @@ def test_sample_times_cover_the_video_at_fixed_rate():
     assert sample_times(0.1, fps=2.0) == [0.0]
 
 
-def test_pick_keyframes_prefers_moments_after_exits_and_empty_room():
+def test_pick_keyframes_puts_one_inside_each_absence_first():
     events = [
         Event("enter", 1.0, track_id=1),
         Event("exit", 9.0, track_id=1),
         Event("room_empty", 9.0, t_end=19.0),
     ]
     keys = pick_keyframes(events, duration=20.0, max_n=4)
-    assert keys[:2] == [3.0, 10.0]  # 15% fallback, then right after the exit
-    assert 14.0 in keys  # middle of the empty room
-    assert len(keys) == 4
+    assert 10.5 in keys  # 1.5 s into the empty room
+    assert keys == [3.0, 10.5, 18.4]  # the exit keyframe (10.0) is too close to 10.5
+
+
+def test_pick_keyframes_last_exit_of_x25_gets_a_keyframe():
+    exits = [Event("exit", t, track_id=i) for i, t in enumerate([5.7, 9.2, 13.7, 26.0, 29.8])]
+    events = exits + [Event("room_empty", 29.8, t_end=31.7)]
+    keys = pick_keyframes(events, duration=31.7, max_n=4)
+    assert any(29.8 <= k <= 31.7 for k in keys)
+    assert 27.0 in keys  # then exits, latest first
+
+
+def test_pick_keyframes_cashier_left_span_of_x31_gets_a_keyframe():
+    events = [Event("cashier_left", 4.5, t_end=11.2), Event("exit", 4.5, track_id=1)]
+    keys = pick_keyframes(events, duration=23.8, max_n=4)
+    assert any(4.5 < k < 11.2 for k in keys)
 
 
 def test_pick_keyframes_without_events_uses_start_middle_end_and_respects_gap():

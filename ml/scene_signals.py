@@ -102,10 +102,13 @@ def global_gain(cur: np.ndarray, ref: np.ndarray, valid: np.ndarray) -> float:
 
 
 def change_score(
-    cur: np.ndarray, ref: np.ndarray, valid: np.ndarray, gain: float | None = None, cell: int = CELL
+    cur: np.ndarray, ref: np.ndarray, valid: np.ndarray, gain: float | None = None, cell: int = CELL,
+    structural_only: bool = False,
 ) -> float | None:
     """Share of visible cells whose appearance differs from the reference (grayscale uint8 arrays).
 
+    structural_only: count only cells whose structure changed (edges appeared/disappeared, ZNCC dropped), not
+    plain brightness shifts of flat surfaces (shadows, exposure) — used for the safe.
     Returns None when too little of the region is visible to say anything.
     """
     if cur.shape[0] < cell or cur.shape[1] < cell:
@@ -130,11 +133,14 @@ def change_score(
     flat = np.maximum(sa, sb) < FLAT_STD
     half_flat = ~flat & (np.minimum(sa, sb) < FLAT_STD)
     textured = ~flat & ~half_flat
-    changed = (
-        (flat & (mean_diff > FLAT_DIFF))
-        | (half_flat & ((np.abs(sa - sb) > TEXTURE_JUMP) | (mean_diff > FLAT_DIFF)))
-        | (textured & ((zncc < ZNCC_MIN) | (mean_diff > MEAN_DIFF)))
-    )
+    if structural_only:
+        changed = (half_flat & (np.abs(sa - sb) > TEXTURE_JUMP)) | (textured & (zncc < ZNCC_MIN))
+    else:
+        changed = (
+            (flat & (mean_diff > FLAT_DIFF))
+            | (half_flat & ((np.abs(sa - sb) > TEXTURE_JUMP) | (mean_diff > FLAT_DIFF)))
+            | (textured & ((zncc < ZNCC_MIN) | (mean_diff > MEAN_DIFF)))
+        )
     return float((changed & usable).sum() / usable.sum())
 
 
@@ -193,6 +199,43 @@ def key_protrusion(gray: np.ndarray, lock: Box, scale: int) -> float | None:
     face = float(np.median(gray[bottom - 2 * k: bottom + 1, cx + 3: cx + 3 + 2 * k]))
     below = gray[bottom + 1: bottom + 1 + k, cx - k + 1: cx + 1].astype(np.float32)
     return face - float(below.mean())
+
+
+def region_reference(
+    grays: Sequence[np.ndarray], visible: Sequence[np.ndarray], times: Sequence[float], roi: tuple[int, int, int, int],
+    min_visible: float, trust_start_sec: float,
+) -> tuple[np.ndarray | None, str]:
+    """Reference appearance of one region (safe, door) and how it was chosen.
+
+    "start": the first sample where people hide < (1 - min_visible) of the region, if that happens within
+    trust_start_sec — the state before anyone touched it. Otherwise "median": per-pixel median over all clean
+    samples, i.e. the state the region is in most of the time (a start composite would take hidden pixels from
+    the moment the cashier opens the safe). "none": the region is never clean.
+    """
+    x0, y0, x1, y1 = roi
+    clean = [i for i, v in enumerate(visible) if v[y0:y1, x0:x1].size and v[y0:y1, x0:x1].mean() >= min_visible]
+    if not clean:
+        return None, "none"
+    if times[clean[0]] <= trust_start_sec:
+        return grays[clean[0]][y0:y1, x0:x1], "start"
+    stack = np.stack([grays[i][y0:y1, x0:x1] for i in clean]).astype(np.float32)
+    hidden = np.stack([~visible[i][y0:y1, x0:x1] for i in clean])
+    stack[hidden] = np.nan
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN columns are handled below
+        med = np.nanmedian(stack, axis=0)
+    fallback = np.median(np.stack([grays[i][y0:y1, x0:x1] for i in clean]), axis=0)
+    return np.clip(np.rint(np.where(np.isnan(med), fallback, med)), 0, 255).astype(np.uint8), "median"
+
+
+def hold_forward(values: Sequence[float | None]) -> list[float | None]:
+    """Carry the last measured value over occlusion gaps; before the first measurement stay unknown."""
+    out: list[float | None] = []
+    last: float | None = None
+    for v in values:
+        last = v if v is not None else last
+        out.append(last)
+    return out
 
 
 def hold_fill(values: Sequence[float | None]) -> list[float | None]:

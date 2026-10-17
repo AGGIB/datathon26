@@ -6,15 +6,18 @@ Item labels: cash_bundle, book, stamp, bag, clothes, cup, food, phone.
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from .detect import Box, Detection
-from .scene_geometry import box_area, center, expand_box, intersection, overlap_fraction
-from .scene_owl import OwlHit
+import numpy as np
 
-# query -> item label. Bundles of banknotes seen from above look like a small stack of paper to OWLv2.
+from .detect import Box, Detection
+from .scene_geometry import center, expand_box, overlap_fraction
+from .scene_owl import OwlHit
+from .track import iou
+
+# query -> item label. ("papers" was dropped: it fires on the counting machine and on food.)
 ITEM_QUERIES: dict[str, str] = {
     "a stack of banknotes": "cash_bundle",
+    "a bundle of banknotes": "cash_bundle",
     "money": "cash_bundle",
-    "papers": "cash_bundle",
     "a book": "book",
     "a notebook": "book",
     "a rubber stamp": "stamp",
@@ -25,6 +28,8 @@ ITEM_QUERIES: dict[str, str] = {
     "a cup": "cup",
     "a mug": "cup",
     "a banana": "food",
+    "a yellow banana": "food",
+    "fruit": "food",
     "food": "food",
     "a mobile phone": "phone",
 }
@@ -36,7 +41,11 @@ OWL_MIN_SCORE: dict[str, float] = {
     "cash_bundle": 0.2, "book": 0.25, "stamp": 0.15, "bag": 0.2, "clothes": 0.2, "cup": 0.2, "food": 0.15,
     "phone": 0.2,
 }
-QUERY_MIN_SCORE: dict[str, float] = {"papers": 0.3}  # generic query, also fires on the counting machine
+QUERY_MIN_SCORE: dict[str, float] = {}  # per-query overrides of OWL_MIN_SCORE
+# OWLv2 reads a banana lying on the desk as "money": a mostly yellow "cash bundle" is food
+YELLOW_HUE = (18, 35)  # OpenCV hue range 0..179
+YELLOW_MIN_SAT, YELLOW_MIN_VAL = 80, 80
+YELLOW_FOOD_SHARE = 0.3
 COCO_TO_ITEM: dict[str, str] = {
     "book": "book", "cup": "cup", "banana": "food", "handbag": "bag", "backpack": "bag", "suitcase": "bag",
     "cell phone": "phone",
@@ -61,6 +70,15 @@ class DeskItem:
     source: str  # "owlv2" | "coco"
     query: str  # OWLv2 text query or COCO class that produced the item
     novelty: float | None = None  # 0..1 change vs. the room at the start (None if not measured)
+
+
+def relabel_by_color(label: str, hsv_crop: np.ndarray) -> str:
+    """A 'cash_bundle' whose pixels are mostly saturated yellow is a banana (food)."""
+    if label != "cash_bundle" or hsv_crop.size == 0:
+        return label
+    hue, sat, val = hsv_crop[..., 0], hsv_crop[..., 1], hsv_crop[..., 2]
+    yellow = (hue >= YELLOW_HUE[0]) & (hue <= YELLOW_HUE[1]) & (sat >= YELLOW_MIN_SAT) & (val >= YELLOW_MIN_VAL)
+    return "food" if float(yellow.mean()) >= YELLOW_FOOD_SHARE else label
 
 
 def keep_item(item: DeskItem) -> bool:
@@ -127,18 +145,10 @@ def items_from_coco(dets: Sequence[Detection], zone: Box, person_boxes: Sequence
     return merge_items(items)
 
 
-def _iou(a: Box, b: Box) -> float:
-    inter = intersection(a, b)
-    if inter is None:
-        return 0.0
-    i = box_area(inter)
-    return i / (box_area(a) + box_area(b) - i)
-
-
 def merge_items(items: Sequence[DeskItem]) -> list[DeskItem]:
     """One item per physical object and label: keep the strongest of overlapping same-label items."""
     kept: list[DeskItem] = []
     for it in sorted(items, key=lambda i: i.score, reverse=True):
-        if all(k.label != it.label or _iou(k.box, it.box) < MERGE_IOU for k in kept):
+        if all(k.label != it.label or iou(k.box, it.box) < MERGE_IOU for k in kept):
             kept.append(it)
     return sorted(kept, key=lambda i: (i.label, -i.score))

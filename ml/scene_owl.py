@@ -8,6 +8,7 @@ while tuning.
 import hashlib
 import json
 import logging
+import threading
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -16,9 +17,11 @@ import cv2
 import numpy as np
 
 from .detect import Box
-from .scene_geometry import box_area, clip_box, intersection, to_int_box
+from .scene_geometry import clip_box, to_int_box
+from .track import iou
 
 MODEL_ID = "google/owlv2-base-patch16-ensemble"
+OWL_REVISION = "cfd3195ba4ea9592eec887ded089f4c08eff231d"  # pinned snapshot (Apache-2.0)
 DEFAULT_THRESHOLD = 0.08
 NMS_IOU = 0.5
 MAX_HITS_PER_QUERY = 8
@@ -34,19 +37,11 @@ class OwlHit:
     score: float
 
 
-def _iou(a: Box, b: Box) -> float:
-    inter = intersection(a, b)
-    if inter is None:
-        return 0.0
-    i = box_area(inter)
-    return i / (box_area(a) + box_area(b) - i)
-
-
 def nms_per_query(hits: Sequence[OwlHit], iou_thr: float = NMS_IOU, max_per_query: int = MAX_HITS_PER_QUERY) -> list[OwlHit]:
     kept: list[OwlHit] = []
     for h in sorted(hits, key=lambda h: h.score, reverse=True):
         same = [k for k in kept if k.query == h.query]
-        if len(same) < max_per_query and all(_iou(h.box, k.box) < iou_thr for k in same):
+        if len(same) < max_per_query and all(iou(h.box, k.box) < iou_thr for k in same):
             kept.append(h)
     return kept
 
@@ -65,30 +60,47 @@ def decode_hits(
 
 
 class OwlDetector:
-    """Lazy OWLv2 wrapper. `detect` / `detect_batch` take BGR frames and optional regions to zoom into."""
+    """Lazy OWLv2 wrapper. `detect` / `detect_batch` take BGR frames and optional regions to zoom into.
 
-    def __init__(self, model_id: str = MODEL_ID, device: str | None = None, cache_dir: Path | None = None) -> None:
+    Thread-safe: the backend runs analyses in parallel threads and one MPS/CUDA model must not run two
+    forwards at once, so loading and every forward pass happen under one lock. Use `shared_owl()` to get
+    the single per-process instance.
+    """
+
+    def __init__(
+        self,
+        model_id: str = MODEL_ID,
+        device: str | None = None,
+        cache_dir: Path | None = None,
+        revision: str | None = OWL_REVISION,
+    ) -> None:
         self.model_id = model_id
+        self.revision = revision
         self._device = device
+        self._torch = None
         self._model = None
         self._processor = None
+        self._lock = threading.RLock()
         self.cache_dir = cache_dir
-        self.calls = 0  # forward passes
+        self.calls = 0  # forward passes (updated under the lock)
         self.images = 0  # images scored
 
     def load(self) -> None:
-        """Load weights now (otherwise on the first detect call)."""
-        if self._model is not None:
-            return
-        import torch
-        from transformers import Owlv2ForObjectDetection, Owlv2Processor
+        """Load weights now (otherwise on the first detect call). Safe to call from several threads."""
+        with self._lock:
+            if self._model is not None:
+                return
+            import torch
+            from transformers import Owlv2ForObjectDetection, Owlv2Processor
 
-        from .detect import _pick_device
+            from .detect import _pick_device
 
-        self._torch = torch
-        self._device = self._device or _pick_device()
-        self._processor = Owlv2Processor.from_pretrained(self.model_id)
-        self._model = Owlv2ForObjectDetection.from_pretrained(self.model_id).to(self._device).eval()
+            self._torch = torch
+            self._device = self._device or _pick_device()
+            self._processor = Owlv2Processor.from_pretrained(self.model_id, revision=self.revision)
+            model = Owlv2ForObjectDetection.from_pretrained(self.model_id, revision=self.revision,
+                                                            use_safetensors=True)
+            self._model = model.to(self._device).eval()
 
     def detect(
         self,
@@ -130,15 +142,16 @@ class OwlDetector:
         return results
 
     def _forward(self, crops: list[np.ndarray], queries: Sequence[str], rects: list[tuple], threshold: float):
-        self.load()
-        texts = [list(queries)] * len(crops)
-        inputs = self._processor(text=texts, images=crops, return_tensors="pt").to(self._device)
-        with self._torch.no_grad():
-            out = self._model(**inputs)
-        self.calls += 1
-        self.images += len(crops)
-        probs = out.logits.sigmoid().cpu().numpy()  # (B, P, Q)
-        boxes = out.pred_boxes.cpu().numpy()  # (B, P, 4)
+        with self._lock:
+            self.load()
+            texts = [list(queries)] * len(crops)
+            inputs = self._processor(text=texts, images=crops, return_tensors="pt").to(self._device)
+            with self._torch.no_grad():
+                out = self._model(**inputs)
+            self.calls += 1
+            self.images += len(crops)
+            probs = out.logits.sigmoid().cpu().numpy()  # (B, P, Q)
+            boxes = out.pred_boxes.cpu().numpy()  # (B, P, 4)
         return [
             decode_hits(probs[j], boxes[j], queries, float(max(r[2] - r[0], r[3] - r[1])), (r[0], r[1]), threshold)
             for j, r in enumerate(rects)
@@ -167,3 +180,16 @@ class OwlDetector:
             return
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_text(json.dumps([asdict(h) for h in hits]))
+
+
+_SHARED: OwlDetector | None = None
+_SHARED_LOCK = threading.Lock()
+
+
+def shared_owl() -> OwlDetector:
+    """The one OWLv2 instance of this process (created lazily, weights load on first use)."""
+    global _SHARED
+    with _SHARED_LOCK:
+        if _SHARED is None:
+            _SHARED = OwlDetector()
+        return _SHARED
