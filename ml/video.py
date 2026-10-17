@@ -28,9 +28,20 @@ def _open(path: Path) -> cv2.VideoCapture:
 
 
 MAX_PIXELS = 3840 * 2160  # reject absurd resolutions before decoding (memory safety)
+# Top-level ISO-BMFF/QuickTime atoms. Same rule as backend/app/media.py, repeated here because OpenCV's
+# FFmpeg backend ignores protocol whitelists: a playlist renamed to .mov must never reach VideoCapture.
+_CONTAINER_ATOMS = frozenset({b"ftyp", b"moov", b"mdat", b"wide", b"free", b"skip"})
+
+
+def _check_container(path: Path) -> None:
+    with path.open("rb") as fh:
+        head = fh.read(8)
+    if len(head) < 8 or head[4:8] not in _CONTAINER_ATOMS:
+        raise ValueError(f"not a mov/mp4 container: {path.name}")
 
 
 def probe(path: Path | str, max_pixels: int = MAX_PIXELS) -> VideoInfo:
+    _check_container(Path(path))
     cap = _open(Path(path))
     try:
         fps = cap.get(cv2.CAP_PROP_FPS)

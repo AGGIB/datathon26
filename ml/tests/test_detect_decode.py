@@ -47,3 +47,19 @@ def test_non_person_object_above_object_threshold_is_kept():
 def test_person_between_object_and_person_threshold_is_dropped():
     probs = np.array([[0.45, 0.0, 0.0]])
     assert decode_queries(probs, BOX, SHAPE, ID2LABEL) == []
+
+
+def test_nested_duplicate_box_is_suppressed():
+    from ml.detect import Detection, _nms
+
+    outer = Detection(box=(0.0, 0.0, 100.0, 200.0), score=0.9, label="person")
+    nested = Detection(box=(10.0, 5.0, 70.0, 110.0), score=0.6, label="person")  # IoU ~0.3, fully inside
+    assert _nms([outer, nested], iou_thr=0.6) == [outer]
+
+
+def test_partially_overlapping_second_person_is_kept():
+    from ml.detect import Detection, _nms
+
+    cashier = Detection(box=(0.0, 0.0, 100.0, 200.0), score=0.9, label="person")
+    behind = Detection(box=(60.0, -20.0, 140.0, 150.0), score=0.8, label="person")  # half outside
+    assert len(_nms([cashier, behind], iou_thr=0.6)) == 2

@@ -38,12 +38,26 @@ def _pick_device() -> str:
     return "cpu"
 
 
+NESTED_IOS = 0.9  # intersection over the smaller box: a weaker box almost entirely inside a stronger one
+
+
+def _intersection_over_smaller(a: Box, b: Box) -> float:
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    smaller = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+    return ix * iy / smaller if smaller > 0 else 0.0
+
+
 def _nms(dets: list[Detection], iou_thr: float) -> list[Detection]:
+    """Per-label NMS that also drops nested duplicates (e.g. an upper-body box inside a full-body box)."""
     from .track import iou  # local import keeps track.py free of torch
+
+    def duplicate(d: Detection, k: Detection) -> bool:
+        return d.label == k.label and (iou(d.box, k.box) >= iou_thr or _intersection_over_smaller(d.box, k.box) >= NESTED_IOS)
 
     kept: list[Detection] = []
     for d in sorted(dets, key=lambda d: d.score, reverse=True):
-        if all(d.label != k.label or iou(d.box, k.box) < iou_thr for k in kept):
+        if not any(duplicate(d, k) for k in kept):
             kept.append(d)
     return kept
 

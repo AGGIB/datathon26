@@ -42,3 +42,10 @@ def test_probe_rejects_unreadable_file(tmp_path):
 def test_probe_rejects_oversized_frames(synthetic_video):
     with pytest.raises(ValueError):
         probe(synthetic_video, max_pixels=64 * 48 - 1)
+
+
+def test_probe_rejects_playlist_disguised_as_mov(tmp_path):
+    fake = tmp_path / "x.mov"
+    fake.write_bytes(b"#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\nfile:///etc/passwd\n")
+    with pytest.raises(ValueError, match="container"):
+        probe(fake)
