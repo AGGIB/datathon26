@@ -1,6 +1,16 @@
 import pytest
 
-from ml.roles import Workplace, assign_roles, is_handoff, is_mirror, near_span, pick_anchor, workplace_of
+from ml.detect import Detection
+from ml.roles import (
+    Workplace,
+    assign_roles,
+    desk_point,
+    is_handoff,
+    is_mirror,
+    near_span,
+    pick_anchor,
+    workplace_of,
+)
 from ml.track import Track, TrackPoint
 
 PINK = (0.5, 0.5, 0.0, 0.0)
@@ -99,7 +109,8 @@ def test_cashier_reflection_is_rejected_as_mirror():
 def test_cashier_walking_in_on_a_separate_track_is_absorbed():
     walk_in = moving(5, 0, 3, (300.0, 0.0, 360.0, 120.0), SEAT, score=0.8, sig=DARK)
     roles = assign_roles([walk_in, trk(1, 2.5, 30, SEAT)])
-    assert roles.cashier_ids == (5, 1)
+    assert roles.cashier_ids == (5,)
+    assert roles.cashier[0].t_start == 0.0 and roles.cashier[0].t_end == 30.0
     assert roles.visitor_ids == ()
 
 
@@ -115,3 +126,12 @@ def test_short_tracks_are_rejected_and_empty_input_has_no_roles():
     roles = assign_roles([trk(1, 0, 30, SEAT), trk(2, 3, 3.5, DESK_FAR_SIDE)])
     assert dict(roles.rejected) == {2: "short"}
     assert assign_roles([]).workplace is None
+
+
+def test_desk_is_where_objects_stay_put_near_the_seat():
+    laptop = Detection(box=(140.0, 380.0, 180.0, 420.0), score=0.8, label="laptop")
+    passing_bag = [Detection(box=(10.0 * i, 0.0, 10.0 * i + 20, 20.0), score=0.5, label="handbag") for i in range(10)]
+    far_tv = Detection(box=(900.0, 900.0, 950.0, 950.0), score=0.9, label="tv")
+    frames = [[laptop, passing_bag[i], far_tv] for i in range(10)]
+    assert desk_point(frames, WP) == pytest.approx((160.0, 400.0))
+    assert desk_point([[passing_bag[i]] for i in range(10)], WP) is None

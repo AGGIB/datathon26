@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .appearance import Signature, mean_signature, signature_distance
-from .detect import Box
+from .detect import Box, Detection
 from .track import Track, TrackPoint, foot, iou
 
 log = logging.getLogger(__name__)
@@ -36,6 +36,10 @@ MIRROR_SCORE_MARGIN = 0.03
 # re-identification of the cashier after a break in tracking
 REID_APPEARANCE = 0.35
 CONCURRENT_TOL_SEC = 0.5
+
+# desk: static non-person objects (laptop, counting machine, phone...) near the seat
+DESK_MIN_PRESENCE = 0.3  # share of frames an object cell must be occupied in
+DESK_MAX_DIST = 3.0  # cashier widths from the seat
 
 # hand-off: the tracker opened a new track for the same person just before/after the old one ended
 HANDOFF_SEC = 1.5
@@ -224,6 +228,41 @@ def _absorb_cashier_handoffs(cashier: list[Track], others: list[Track], wp: Work
     return others
 
 
+def desk_point(frames: Sequence[Sequence[Detection]], wp: Workplace) -> tuple[float, float] | None:
+    """Centre of objects that stay put near the seat for a good part of the video (the desk equipment)."""
+    cell = max(wp.width / 2, 1.0)
+    seen: dict[tuple[int, int], set[int]] = {}
+    centers: dict[tuple[int, int], list[tuple[float, float]]] = {}
+    for fi, dets in enumerate(frames):
+        for d in dets:
+            if d.label == "person":
+                continue
+            c = ((d.box[0] + d.box[2]) / 2, (d.box[1] + d.box[3]) / 2)
+            key = (int(c[0] // cell), int(c[1] // cell))
+            seen.setdefault(key, set()).add(fi)
+            centers.setdefault(key, []).append(c)
+    static = [
+        pt for key, frames_in in seen.items() if len(frames_in) >= DESK_MIN_PRESENCE * len(frames)
+        for pt in centers[key]
+        if np.hypot(pt[0] - wp.home[0], pt[1] - wp.home[1]) / max(wp.width, 1.0) <= DESK_MAX_DIST
+    ]
+    if not static:
+        return None
+    x, y = np.median(np.asarray(static), axis=0)
+    return float(x), float(y)
+
+
+def _chain_cashier(cashier: Sequence[Track], wp: Workplace) -> list[Track]:
+    """Join cashier fragments that hand over to each other into one track (keeps the first id)."""
+    chained: list[Track] = []
+    for tr in sorted(cashier, key=lambda c: c.t_start):
+        if chained and is_handoff(chained[-1], tr, wp):
+            chained[-1] = _joined(chained[-1], tr)
+        else:
+            chained.append(tr)
+    return chained
+
+
 def assign_roles(tracks: Sequence[Track]) -> Roles:
     long_enough = [tr for tr in tracks if tr.duration >= MIN_TRACK_SEC]
     short = [(tr.track_id, "short") for tr in tracks if tr.duration < MIN_TRACK_SEC]
@@ -242,7 +281,7 @@ def assign_roles(tracks: Sequence[Track]) -> Roles:
     spans = [near_span(v, wp) for v in merge_visitor_handoffs(visitors, wp)]
     roles = Roles(
         workplace=wp,
-        cashier=tuple(sorted(cashier, key=lambda t: t.t_start)),
+        cashier=tuple(_chain_cashier(cashier, wp)),
         visitors=tuple(sorted((v for v in spans if v is not None), key=lambda t: t.t_start)),
         rejected=tuple(sorted(rejected)),
     )
