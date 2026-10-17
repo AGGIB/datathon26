@@ -24,6 +24,11 @@ from ml.labels import normalize_video_name
 from ml.vlm.discovery_policy import POLICY_ID, TYPE_IDS, plan_windows
 
 ROOT = Path(__file__).resolve().parents[2]
+# Returned infrastructure failures must not look like successful CV-only runs.
+# completed, budget_exhausted (normal call cap), no_windows and no_verified_types
+# are legitimate bounded completion/abstention, rather than runtime failures.
+FAILURE_STATUSES = frozenset({"backend_error", "video_timeout", "frames_unavailable",
+                              "model_unavailable", "prompt_too_long"})
 
 
 class SafeParser(argparse.ArgumentParser):
@@ -186,7 +191,7 @@ def _baseline_result(base, elapsed=0.0, error=None):
 
 
 def run(args):
-    from ml.kb import catalog
+    from ml.kb import KB_PATH, catalog
     from ml.video import probe
     from ml.vlm.discovery import DiscoveryBudget, discover_types
     from ml.vlm.mlx_backend import LocalMLXBackend
@@ -214,6 +219,9 @@ def run(args):
     config = {"model_directory": str(directory), "model_artifact_sha256": artifacts,
               "model_weights_sha256": artifacts.get("model.safetensors"),
               "python": str(args.python.absolute()), "runtime": _runtime_versions(args.python),
+              "parent_python": str(Path(sys.executable).absolute()),
+              "parent_runtime": _runtime_versions(Path(sys.executable)),
+              "kb_path": str(Path(KB_PATH).absolute()), "kb_sha256": _sha(Path(KB_PATH)),
               "max_tokens": args.max_tokens, "frame_side": args.frame_side,
               "budget_sec": args.budget, "allowlist": TYPE_IDS, "sampling_policy": POLICY_ID,
               "baseline_sha256": _sha(args.baseline) if args.baseline else None,
@@ -262,7 +270,8 @@ def run(args):
                     if _sha(path) != digest:
                         raise ValueError("video_changed_during_inference")
                     merged = merge_predictions(base, additions)
-                    results[key] = _baseline_result(merged, time.monotonic() - started)
+                    failure = report.status if report.status in FAILURE_STATUSES else None
+                    results[key] = _baseline_result(merged, time.monotonic() - started, error=failure)
                     audit["videos"][key] = {"sha256": digest, "duration_sec": duration,
                                              "report": asdict(report), "vlm_only": additions,
                                              "inference_reused": reused, "inference_source_video": owner,
@@ -275,7 +284,8 @@ def run(args):
                     logging.info("%s failed: %s", key, type(exc).__name__)
                 _save(args.out, results)
                 _save(audit_path, audit)
-            audit["code_inputs_stable"] = _source_hashes() == config["source_sha256"]
+            audit["code_inputs_stable"] = (_source_hashes() == config["source_sha256"]
+                                           and _sha(Path(KB_PATH)) == config["kb_sha256"])
             _save(audit_path, audit)
         finally:
             backend.close()

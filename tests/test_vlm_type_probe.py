@@ -55,6 +55,10 @@ def local_probe(tmp_path, monkeypatch):
     from ml.vlm import discovery, mlx_backend
 
     monkeypatch.setattr(probe_module, 'ROOT', tmp_path)
+    kb_path = tmp_path / 'kb/violations.yaml'
+    kb_path.parent.mkdir()
+    kb_path.write_text('violations: []\n')
+    monkeypatch.setattr(kb, 'KB_PATH', kb_path)
     (tmp_path / 'ml').mkdir()
     (tmp_path / 'ml/fixture.py').write_text('# synthetic code fingerprint\n')
     videos = tmp_path / 'videos'
@@ -132,6 +136,9 @@ def test_content_deduplication_preserves_each_cv_baseline_and_fingerprints(local
     assert audit['config']['model_artifact_sha256']['preprocessor_config.json']
     assert audit['config']['source_sha256']['ml/fixture.py']
     assert audit['config']['runtime']['packages']['mlx'] == '0'
+    assert audit['config']['parent_runtime']['python'] == 'synthetic'
+    assert audit['config']['parent_python']
+    assert audit['config']['kb_sha256']
     assert len(audit['config_sha256']) == 64 and audit['code_inputs_stable']
 
 
@@ -149,6 +156,92 @@ def test_inference_failure_retains_baseline_and_never_logs_exception_text(local_
     assert all('error' not in row for row in results.values())
     assert 'SYNTHETIC_PRIVATE_OBSERVATION' not in caplog.text
     assert len(case.closed) == 1
+
+
+@pytest.mark.parametrize('status', ['backend_error', 'video_timeout', 'frames_unavailable',
+                                   'model_unavailable', 'prompt_too_long'])
+@pytest.mark.parametrize('partial', [False, True])
+def test_returned_failure_is_flagged_without_losing_cv_or_accepted_partial_findings(local_probe, monkeypatch,
+                                                                                 status, partial):
+    case = local_probe
+    original = case.discovery.discover_types
+
+    def failed(*args, **kwargs):
+        report = original(*args, **kwargs)
+        report.status = status
+        if not partial:
+            report.added_candidates = ()
+        return report
+
+    monkeypatch.setattr(case.discovery, 'discover_types', failed)
+    results = case.module.run(case.args)
+    assert all(row['vlm_error'] == status for row in results.values())
+    for key, row in results.items():
+        assert all(event in row['violations'] for event in case.baseline[key]['violations'])
+        assert any(event['type_id'] == 'food_or_drink_at_workplace' for event in row['violations']) is partial
+    assert int(any('vlm_error' in row for row in results.values())) == 1
+
+
+@pytest.mark.parametrize('status', ['completed', 'budget_exhausted', 'no_windows', 'no_verified_types'])
+def test_expected_bounded_completion_or_abstention_is_not_a_runtime_error(local_probe, monkeypatch, status):
+    case = local_probe
+    original = case.discovery.discover_types
+
+    def complete(*args, **kwargs):
+        report = original(*args, **kwargs)
+        report.status = status
+        return report
+
+    monkeypatch.setattr(case.discovery, 'discover_types', complete)
+    assert not any('vlm_error' in row for row in case.module.run(case.args).values())
+
+
+def test_kb_change_changes_fingerprint_and_mid_run_change_invalidates_stability(local_probe, monkeypatch):
+    import json
+    from pathlib import Path
+    case = local_probe
+    case.module.run(case.args)
+    first = json.loads(case.args.out.with_suffix('.audit.json').read_text())
+    kb_path = Path(first['config']['kb_path'])
+    kb_path.write_text('violations: []\n# synthetic eligibility update\n')
+    case.args.out = case.root / 'var/second-run.json'
+    case.module.run(case.args)
+    second = json.loads(case.args.out.with_suffix('.audit.json').read_text())
+    assert first['config_sha256'] != second['config_sha256']
+    assert first['config']['kb_sha256'] != second['config']['kb_sha256']
+    assert second['code_inputs_stable']
+    original = case.discovery.discover_types
+
+    def mutate(*args, **kwargs):
+        kb_path.write_text('violations: []\n# changed during inference\n')
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(case.discovery, 'discover_types', mutate)
+    case.args.out = case.root / 'var/third-run.json'
+    case.module.run(case.args)
+    assert json.loads(case.args.out.with_suffix('.audit.json').read_text())['code_inputs_stable'] is False
+
+
+def test_parent_decode_runtime_versions_are_separate_and_affect_fingerprint(local_probe, monkeypatch):
+    import json
+    from pathlib import Path
+    import sys
+    case = local_probe
+    case.args.python = case.root / 'synthetic-mlx-python'
+    case.args.python.write_text('not executed')
+    parent_versions = {'python': 'synthetic CV', 'packages': {'opencv-python': '4.synthetic'}}
+    model_versions = {'python': 'synthetic MLX', 'packages': {'mlx': '0.synthetic'}}
+    monkeypatch.setattr(case.module, '_runtime_versions', lambda executable:
+                        parent_versions if Path(executable) == Path(sys.executable) else model_versions)
+    case.module.run(case.args)
+    first = json.loads(case.args.out.with_suffix('.audit.json').read_text())
+    assert first['config']['parent_runtime'] == parent_versions
+    assert first['config']['runtime'] == model_versions
+    parent_versions['packages']['opencv-python'] = '5.synthetic'
+    case.args.out = case.root / 'var/second-run.json'
+    case.module.run(case.args)
+    second = json.loads(case.args.out.with_suffix('.audit.json').read_text())
+    assert first['config_sha256'] != second['config_sha256']
 
 
 def test_startup_failure_still_writes_protected_cv_outputs(local_probe, monkeypatch):
