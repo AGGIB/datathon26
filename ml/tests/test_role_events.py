@@ -128,11 +128,11 @@ def test_no_workplace_means_no_role_events():
 STANDING = (40.0, 40.0, 80.0, 160.0)  # same place, twice as tall: stood up
 
 
-def test_standing_up_to_walk_away_is_the_moment_of_leaving():
+def test_standing_at_the_seat_is_still_at_work_and_walking_away_is_leaving():
     cashier = path(1, [(0, 8, SEAT), (8.5, 10, STANDING), (10.5, 20, FAR)])
     ev = extract_role_events(roles([cashier]), times(20), duration=20.0)
     [left] = kinds(ev, "cashier_left")
-    assert left.t == 8.0
+    assert left.t == 10.0
 
 
 def test_brief_or_weak_reappearance_at_the_seat_after_leaving_is_not_a_return():
@@ -141,4 +141,19 @@ def test_brief_or_weak_reappearance_at_the_seat_after_leaving_is_not_a_return():
     ev = extract_role_events(roles([flicker, ghost]), times(20), duration=20.0)
     [left] = kinds(ev, "cashier_left")
     assert left.t == 8.0 and left.t_end is None
+    assert not kinds(ev, "cashier_returned")
+
+
+def test_standing_near_the_seat_after_leaving_is_not_a_return():
+    # seen through the glass door right behind the seat: same spot in the image, but standing
+    cashier = path(1, [(0, 8, SEAT), (8.5, 12, FAR), (12.5, 20, STANDING)])
+    ev = extract_role_events(roles([cashier]), times(20), duration=20.0)
+    [left] = kinds(ev, "cashier_left")
+    assert left.t == 8.0 and left.t_end is None
+
+
+def test_unstable_weak_figure_at_the_seat_after_leaving_is_not_a_return():
+    back = [TrackPoint(t, SEAT, 0.72 if i % 2 else 0.78) for i, t in enumerate(times(20)) if t >= 12.5]
+    cashier = Track(1, path(1, [(0, 8, SEAT), (8.5, 12, FAR)]).points + tuple(back))
+    ev = extract_role_events(roles([cashier]), times(20), duration=20.0)
     assert not kinds(ev, "cashier_returned")

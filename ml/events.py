@@ -102,7 +102,11 @@ def extract_events(
 
 CASHIER_MIN_AWAY_SEC = 3.0  # away from the seat at least this long (or until the video ends)
 CASHIER_MIN_AWAY_AT_END_SEC = 1.5
-CASHIER_MIN_SEATED_SEC = 1.5  # shorter stays on the seat are flicker (e.g. someone passing behind the glass)
+# A return needs the cashier settled back at work: usual posture (not standing where she sat), clear detection,
+# for a while. Otherwise it is her (or someone) seen through the glass door right behind the seat.
+RETURN_MIN_SEC = 2.0
+RETURN_MIN_SCORE = 0.8
+SETTLED_HEIGHT = (0.6, 1.35)  # box height relative to the usual one at the workplace
 MIN_OVERLAP_SEC = 2.0
 BEHIND_DIST = 1.3  # cashier widths from the seat
 BEHIND_MIN_HEIGHT = 0.9  # standing person next to a seated cashier is at least about as tall
@@ -119,12 +123,17 @@ def _point_at(track: Track, t: float, tol: float) -> TrackPoint | None:
     return best if abs(best.t - t) <= tol else None
 
 
-def _seated_cashier(cashier: Sequence[Track], wp: Workplace, t: float, tol: float) -> int | None:
+def _cashier_at(cashier: Sequence[Track], t: float, tol: float) -> tuple[int, TrackPoint] | None:
     for tr in cashier:
         p = _point_at(tr, t, tol)
-        if p is not None and wp.occupied_by(p.box, p.score):
-            return tr.track_id
+        if p is not None:
+            return tr.track_id, p
     return None
+
+
+def _settled(p: TrackPoint, wp: Workplace) -> bool:
+    rel = (p.box[3] - p.box[1]) / max(wp.height, 1.0)
+    return wp.occupied_by(p.box, p.score) and SETTLED_HEIGHT[0] <= rel <= SETTLED_HEIGHT[1]
 
 
 def _runs(flags: Sequence[bool], value: bool = False) -> list[tuple[int, int]]:
@@ -139,30 +148,41 @@ def _runs(flags: Sequence[bool], value: bool = False) -> list[tuple[int, int]]:
     return runs
 
 
-def _drop_short_stays(seated: list[int | None], times: Sequence[float]) -> list[int | None]:
-    out = list(seated)
-    for i, j in _runs([s is not None for s in seated], value=True):
-        if i > 0 and times[j - 1] - times[i] < CASHIER_MIN_SEATED_SEC:
-            out[i:j] = [None] * (j - i)
-    return out
+def _is_return(obs: Sequence[tuple[int, TrackPoint] | None], times: Sequence[float], wp: Workplace) -> bool:
+    """The stay contains RETURN_MIN_SEC of settled, clearly detected presence."""
+    for i, j in _runs([o is not None and _settled(o[1], wp) for o in obs], value=True):
+        scores = [o[1].score for o in obs[i:j]]
+        if times[j - 1] - times[i] >= RETURN_MIN_SEC and sum(scores) / len(scores) >= RETURN_MIN_SCORE:
+            return True
+    return False
+
+
+def _at_work_flags(obs: Sequence[tuple[int, TrackPoint] | None], times: Sequence[float], wp: Workplace) -> list[bool]:
+    flags = [o is not None and wp.occupied_by(o[1].box, o[1].score) for o in obs]
+    for i, j in _runs(flags, value=True):
+        if i > 0 and not _is_return(obs[i:j], times[i:j], wp):
+            flags[i:j] = [False] * (j - i)
+    return flags
 
 
 def _cashier_events(roles: Roles, times: Sequence[float], duration: float) -> list[Event]:
     tol = (times[1] - times[0]) / 2 + 1e-6 if len(times) > 1 else 0.5
-    seated = _drop_short_stays([_seated_cashier(roles.cashier, roles.workplace, t, tol) for t in times], times)
+    obs = [_cashier_at(roles.cashier, t, tol) for t in times]
+    at_work = _at_work_flags(obs, times, roles.workplace)
     events = []
-    for i, j in _runs([s is not None for s in seated]):
+    for i, j in _runs(at_work):
         if i == 0:
-            continue  # nobody at the desk yet: arrival, not a return
-        left_t, left_id = times[i - 1], seated[i - 1]
+            continue  # nobody at work yet: arrival, not a return
+        left_t, left_id = times[i - 1], obs[i - 1][0]
         back = j < len(times)
         away = (times[j] if back else duration) - left_t
         if away < (CASHIER_MIN_AWAY_SEC if back else CASHIER_MIN_AWAY_AT_END_SEC):
             continue
-        ids = tuple(dict.fromkeys([left_id] + ([seated[j]] if back else [])))
+        back_id = obs[j][0] if back else None
+        ids = tuple(dict.fromkeys([left_id] + ([back_id] if back else [])))
         events.append(Event("cashier_left", left_t, t_end=times[j] if back else None, track_id=left_id, track_ids=ids))
         if back:
-            events.append(Event("cashier_returned", times[j], track_id=seated[j], track_ids=ids))
+            events.append(Event("cashier_returned", times[j], track_id=back_id, track_ids=ids))
     return events
 
 
