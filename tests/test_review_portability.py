@@ -25,5 +25,6 @@ def test_low_level_verifier_candidate_does_not_shadow_team_candidate():
     from ml.candidates import Candidate
     assert hasattr(vlm, 'VerifierCandidate')
     assert 'VerifierCandidate' in vlm.__all__
-    assert not hasattr(vlm, 'Candidate')
+    assert vlm.Candidate is vlm.VerifierCandidate
+    assert vlm.Candidate is not Candidate
     assert vlm.VerifierCandidate is not Candidate
