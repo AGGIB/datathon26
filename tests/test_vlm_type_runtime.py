@@ -705,3 +705,72 @@ def test_pipeline_compact_environment_requires_exact_explicit_discovery_opt_in(
     else:
         assert len(observed)==1 and observed[0]['compact_verify_actions'] is expected
         assert observed[0]['verify_actions'] is True
+
+
+@pytest.mark.parametrize('action,blind_object,actor_continuity,expected_calls,expected_addition',[
+    ('visitor_or_courier_bag_handled','bag','yes',2,False),
+    ('cashier_places_removed_outerwear_on_cashdesk','outerwear','yes',4,True),
+    ('cashier_places_removed_outerwear_on_cashdesk','bag','yes',4,False),
+    ('cashier_places_removed_outerwear_on_cashdesk','outerwear','unknown',4,False),
+])
+def test_actual_owned_compact_adapter_uses_source_anchors_four_call_budget_and_cv_reserved_slots(
+        monkeypatch,action,blind_object,actor_continuity,expected_calls,expected_addition):
+    from ml import kb
+    from ml.assemble import select
+    from ml.vlm import mlx_backend
+    from ml.vlm.compact_verified_action_backend import CompactVerifiedActionBackend
+    from ml.vlm.discovery_policy import plan_windows
+
+    class Raw(OwnedScriptedActions):
+        def __init__(self):
+            super().__init__('')
+        def infer(self,request,timeout_s):
+            self.requests.append((request,timeout_s))
+            if 'actions' in request.response_schema['properties']:
+                confidence=.9 if request.frames[0].timestamp_s==0 else .99
+                return json.dumps({'actions':[{'action':action,'insufficient_evidence':False,'confidence':confidence,
+                    'start_frame':10,'peak_frame':11,'end_frame':12}]})
+            atoms=(['cashier_holds_identifiable_outerwear','cashier_places_outerwear_on_own_workdesk',
+                    'outerwear_resting_on_own_workdesk'] if blind_object=='outerwear' else ['visitor_bag_handled']*3)
+            return json.dumps({'episodes':[{'id':1,'rows':[[index,atom,'unknown'] for index,atom in enumerate(atoms,1)],
+                                           'same_actor':actor_continuity,'same_object':'yes'}]})
+    types=catalog()
+    raw,source=Raw(),ScriptedFrames()
+    monkeypatch.setattr(kb,'catalog',lambda: types)
+    constructed=[]
+    monkeypatch.setattr(mlx_backend,'LocalMLXBackend',lambda *a,**kw: constructed.append(True) or raw)
+    actual_discover=runtime.discover_types
+    measured=[]
+    deadline=time.monotonic()+3
+    def observe(*args,**kwargs):
+        assert kwargs['budget'].deadline==deadline and kwargs['budget'].max_calls==4
+        report=actual_discover(*args,**kwargs)
+        measured.append((report.calls_used,kwargs['budget'].calls_used))
+        return report
+    monkeypatch.setattr(runtime,'discover_types',observe)
+    assert runtime.configure_discovery(model_path='scripted',python_executable='scripted',
+                                       compact_verify_actions=True,frame_source=source)
+    wrapper=runtime._configuration.backend
+    assert isinstance(wrapper,CompactVerifiedActionBackend)
+    originals=[candidate('safe_left_open',0.,.51),candidate('door_left_open',5.,.52),
+               candidate('cash_left_on_desk_when_leaving',9.,.53),candidate('key_left_in_safe_lock',13.,.54)]
+    result=runtime.augment_types('scripted.mp4',originals,types,duration_sec=44.,deadline=deadline)
+    assert all(actual is original for actual,original in zip(result,originals))
+    assert [original.confidence for original in originals]==[.51,.52,.53,.54]
+    assert len(result)==4+expected_addition and len(select(result,types))==len(result)
+    if expected_addition:
+        assert result[-1].type_id=='personal_items_on_desk' and result[-1].confidence==.99
+        assert result[-1].t_peak==plan_windows(44.)[1].timestamps[10]
+    assert measured==[(expected_calls,expected_calls)]
+    assert source.calls==1 and len(raw.requests)==wrapper.calls_used==expected_calls
+    if expected_calls==4:
+        for proposal,verification in ((raw.requests[0][0],raw.requests[1][0]),(raw.requests[2][0],raw.requests[3][0])):
+            assert len(proposal.frames)==12 and len(verification.frames)==3
+            assert all(left is right for left,right in zip(proposal.frames[-3:],verification.frames,strict=True))
+            assert action not in verification.prompt and not verification.allowed_rule_ids
+        assert wrapper.last_verifications[0]['accepted'] is expected_addition
+    # Jobs never restart/revalidate the owner; an exhausted job does no work.
+    assert runtime.augment_types('scripted.mp4',originals,types,duration_sec=44.,deadline=0)==originals
+    assert len(raw.requests)==expected_calls and raw.validated==[180] and constructed==[True]
+    runtime.configure_discovery()
+    assert raw.closed==1
