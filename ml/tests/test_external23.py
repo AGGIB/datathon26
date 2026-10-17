@@ -719,3 +719,31 @@ def test_mixed_case_excluded_output_rejected_before_creation_in_api_and_cli(kit,
     assert export_api.main() == 1
     assert not (kit.root / folder).exists()
     assert 'ERROR:' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('folder', ['QuArAnTiNe', 'ExClUdEd'])
+def test_review_rejects_case_alias_media_before_generating_url(kit, monkeypatch, folder):
+    monkeypatch.setattr(review, 'PRIVATE', kit.root)
+    monkeypatch.setattr(review, 'quote', lambda *args, **kwargs: pytest.fail('excluded media URL generated'))
+    clip_id = 'ext23-synthetic'
+    index = {'records': [{'clip_id': clip_id, 'clip_path': folder + '/synthetic.mp4',
+                          'license': kit.document['sources'][0]['license'],
+                          'source_context': {'country': 'KZ', 'scene_type': 'bank_cashdesk'}}]}
+    annotations = {'schema_version': 1, 'clips': [{'clip_id': clip_id}]}
+    with pytest.raises(ValueError, match='EXCLUDED_INPUT_OR_OUTPUT'):
+        review.render(index, annotations, [], kit.root / 'review/index.html')
+
+
+@pytest.mark.parametrize('folder', ['QuArAnTiNe', 'ExClUdEd'])
+@pytest.mark.parametrize('cli_option', ['--index', '--annotations', '--model-results', '--output'])
+def test_review_rejects_case_alias_inputs_and_output_before_reading(kit, monkeypatch, capsys, folder, cli_option):
+    monkeypatch.setattr(review, 'PRIVATE', kit.root)
+    args = ['synthetic', '--index', str(kit.root / 'intake.json'),
+            '--annotations', str(kit.root / 'annotations.json'),
+            '--output', str(kit.root / 'review/index.html'),
+            cli_option, str(kit.root / folder / 'synthetic.html')]
+    monkeypatch.setattr(sys, 'argv', args)
+    monkeypatch.setattr(review, 'read_json', lambda *args: pytest.fail('excluded input read'))
+    assert review.main() == 1
+    assert not (kit.root / folder).exists()
+    assert 'ERROR:' in capsys.readouterr().err

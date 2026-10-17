@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sys
 from urllib.parse import quote
+from external23_common import active_path
 from external23_policy import source_usable
 
 
@@ -28,8 +29,7 @@ def private_path(value, base=ROOT):
     path = Path(value)
     path = (path if path.is_absolute() else base / path).resolve()
     require(path.is_relative_to(PRIVATE), "review_path_outside_private")
-    require(not {'excluded', 'quarantine'} & set(path.relative_to(PRIVATE).parts), "review_excluded_path")
-    return path
+    return active_path(PRIVATE, path)
 
 
 def read_json(path):
