@@ -3,3 +3,6 @@
 # uv pip install --python var/venvs/vlm-mlx/bin/python -r requirements-ml-vlm-mlx.txt
 mlx-vlm==0.7.8
 PyYAML==6.0.2
+# AutoProcessor image processing requires Torch/Torchvision even with MLX inference.
+torch==2.7.0
+torchvision==0.22.0
