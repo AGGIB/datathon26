@@ -1,0 +1,43 @@
+{
+  "checked_on": "2026-10-17",
+  "sources": [
+    {
+      "repo": "anthropics/skills",
+      "commit": "dbd4588f9e1033efb41dad4bef2f7947c8993d44",
+      "files": [
+        "skills/frontend-design/LICENSE.txt",
+        "skills/frontend-design/SKILL.md"
+      ],
+      "sha256": {
+        "skills/frontend-design/LICENSE.txt": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+        "skills/frontend-design/SKILL.md": "d91970639e9f5c37682ac7ab60094d35f1c7c1f38d731bd56396563aee10c1d3"
+      }
+    },
+    {
+      "repo": "vercel-labs/agent-skills",
+      "commit": "063bee94c3f4df8453406c830b0a7df0f2860278",
+      "files": [
+        "skills/web-design-guidelines/SKILL.md"
+      ],
+      "sha256": {
+        "skills/web-design-guidelines/SKILL.md": "f4647ca866a3accf763777f83e7682954f0187cd6bea7eea0399796652414e8f"
+      }
+    },
+    {
+      "repo": "vercel-labs/web-interface-guidelines",
+      "commit": "434b7f91364665f2f733b310ec54809bf8f37937",
+      "files": [
+        "command.md"
+      ],
+      "sha256": {
+        "command.md": "d246b026f4f29b5823a9cc857f9edf3d2507002e055e32040cadeaf3b38e0234"
+      }
+    }
+  ],
+  "vercel_local_change": "Pinned external guidelines URL to reviewed commit 434b7f91364665f2f733b310ec54809bf8f37937; marked SKILL.md as locally modified.",
+  "installed_in": "~/.codex/skills",
+  "installed_skill_sha256": {
+    "frontend-design": "d91970639e9f5c37682ac7ab60094d35f1c7c1f38d731bd56396563aee10c1d3",
+    "web-design-guidelines": "da1252df73ab3dc6569989a06e7798ad82e566afb66a6ff37695f4aab281fc34"
+  }
+}

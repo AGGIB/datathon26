@@ -59,3 +59,15 @@ docker compose up --build
 - Договорённости из [docs/contracts.md](docs/contracts.md) меняем только через Агыбая.
 - Модели берём только с лицензиями Apache-2.0, MIT или BSD. Ultralytics (AGPL) и веса с NC-лицензией не используем. Каждую модель записываем в `docs/licenses.md`.
 - Видео и кадры не загружаем ни в какие облачные сервисы.
+
+## Фронтенд Рамазана
+
+Готовый React/Vite-интерфейс в стилистике Forte. Запуск и подключение к mock/real API: [frontend/README.md](frontend/README.md).
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+Материалы выступления: [слайды](docs/pitch.html), [текст питча](docs/pitch-script.md), [сценарий демо](docs/demo-script.md).

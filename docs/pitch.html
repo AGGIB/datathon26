@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="ru">
+  <meta charset="utf-8" /><meta
+    name="viewport"
+    content="width=device-width,initial-scale=1"
+  /><title>Кассовый контроль · Питч</title
+  ><style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      background: #152d25;
+      color: #eff2e8;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    section {
+      min-height: 100vh;
+      padding: 8vh 9vw;
+      display: none;
+      flex-direction: column;
+      justify-content: center;
+    }
+    section.active {
+      display: flex;
+    }
+    small {
+      color: #9fb79c;
+      letter-spacing: 3px;
+    }
+    h1 {
+      font-size: clamp(42px, 6vw, 84px);
+      font-weight: 500;
+      line-height: 1.08;
+      letter-spacing: -2px;
+      margin: 30px 0;
+    }
+    h2 {
+      font-size: clamp(32px, 4vw, 60px);
+      font-weight: 500;
+      line-height: 1.2;
+    }
+    p,
+    li {
+      font-size: clamp(18px, 2vw, 28px);
+      line-height: 1.6;
+      max-width: 1050px;
+      color: #c1cebb;
+    }
+    li {
+      margin: 18px 0;
+    }
+    .accent {
+      color: #b6d290;
+    }
+    .tag {
+      font-size: 16px;
+      border: 1px solid #667e5e;
+      padding: 12px 18px;
+      align-self: flex-start;
+      color: #c1cebb;
+    }
+    .flow {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .flow span {
+      padding: 22px;
+      border: 1px solid #61785b;
+      font-size: 23px;
+    }
+    footer {
+      position: fixed;
+      bottom: 20px;
+      left: 9vw;
+      right: 9vw;
+      display: flex;
+      justify-content: space-between;
+      color: #9fb79c;
+      font-size: 12px;
+    }
+    button {
+      background: transparent;
+      border: 1px solid #83997c;
+      color: #eff2e8;
+      padding: 8px 18px;
+      cursor: pointer;
+    }
+    button:focus-visible {
+      outline: 3px solid #b6d290;
+    }
+    a {
+      color: #b6d290;
+    }
+    @media print {
+      section {
+        display: flex !important;
+        height: 100vh;
+        break-after: page;
+      }
+      footer {
+        display: none;
+      }
+      body {
+        print-color-adjust: exact;
+        -webkit-print-color-adjust: exact;
+      }
+    }
+  </style>
+  <section class="active">
+    <small>FORTEBANK DATATHON 26 / 01</small>
+    <h1>
+      Каждый эпизод.<br /><span class="accent">Под вашим контролем.</span>
+    </h1>
+    <p>Видео-контроль кассовой дисциплины: от записи к проверяемым фактам.</p>
+    <span class="tag">Помощь проверяющему, не заключение</span>
+  </section>
+  <section>
+    <small>ПУТЬ ПОЛЬЗОВАТЕЛЯ / 02</small>
+    <h2>Одна запись.<br />Понятный результат.</h2>
+    <div class="flow">
+      <span>01 · Загрузка MOV</span><span>02 · Статус анализа</span
+      ><span>03 · Эпизоды и основания</span>
+    </div>
+    <p>
+      Прогресс отправки, понятные ошибки и переход к нужному моменту записи.
+    </p>
+  </section>
+  <section>
+    <small>ДЕМО / 03</small>
+    <h2>
+      Не просто сигнал.<br /><span class="accent"
+        >Доказательство в контексте.</span
+      >
+    </h2>
+    <ul>
+      <li>Точный таймкод и исходная запись</li>
+      <li>До трёх кадров с увеличением</li>
+      <li>Описание наблюдаемого, цитата и источник</li>
+    </ul>
+    <span class="tag"
+      >Показать реальный UI. Фикстуру обязательно назвать демонстрацией.</span
+    >
+  </section>
+  <section>
+    <small>ЦЕЛЕВАЯ АРХИТЕКТУРА / 04</small>
+    <h2>Интерфейс → API →<br />локальный анализ</h2>
+    <div class="flow">
+      <span>React + TypeScript</span><span>FastAPI / очередь</span
+      ><span>CV / правила / VLM</span>
+    </div>
+    <p>
+      Фронтенд подготовлен. Подключение пайплайна и офлайн-работу подтверждаем
+      совместным прогоном с командой.
+    </p>
+  </section>
+  <section>
+    <small>ПРОВЕРКА КАЧЕСТВА / 05</small>
+    <h2>Каждый вывод<br /><span class="accent">нужно проверить.</span></h2>
+    <ul>
+      <li>Полнота, ложные срабатывания, ошибка таймкода</li>
+      <li>Отложенный ракурс и несколько загрузок</li>
+      <li>Цель по ТЗ: результат за ≤ 5 минут</li>
+    </ul>
+    <span class="tag"
+      >Фактические метрики пока не предоставлены. Добавить из отчёта
+      команды.</span
+    >
+  </section>
+  <section>
+    <small>ЦЕННОСТЬ И ГРАНИЦЫ / 06</small>
+    <h2>
+      Эпизод → кадр → основание.<br /><span class="accent"
+        >Решение — за специалистом.</span
+      >
+    </h2>
+    <p>
+      Только то, что видно на видео. Без выводов о намерениях и действиях в
+      банковской системе. Новые ракурсы, перекрытия и кодеки требуют проверки.
+    </p>
+    <span class="tag"
+      >Боевой URL и запись реального демо — после подключения API</span
+    >
+  </section>
+  <footer>
+    <span>КАССОВЫЙ КОНТРОЛЬ · DATATHON 26</span
+    ><span
+      ><button onclick="go(-1)" aria-label="Предыдущий слайд">←</button>
+      <output id="counter">1 / 6</output>
+      <button onclick="go(1)" aria-label="Следующий слайд">→</button></span
+    >
+  </footer>
+  <script>
+    let i = 0;
+    const slides = [...document.querySelectorAll("section")];
+    function go(d) {
+      slides[i].classList.remove("active");
+      i = Math.max(0, Math.min(slides.length - 1, i + d));
+      slides[i].classList.add("active");
+      document.getElementById("counter").textContent =
+        `${i + 1} / ${slides.length}`;
+    }
+    document.addEventListener("keydown", (e) => {
+      if (["ArrowRight", "ArrowLeft"].includes(e.key)) {
+        e.preventDefault();
+        go(e.key === "ArrowRight" ? 1 : -1);
+      }
+    });
+  </script>
+</html>

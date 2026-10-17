@@ -31,3 +31,6 @@ frontend/dist/
 
 # os
 .DS_Store
+
+# Local frontend build and tool outputs
+dist/
