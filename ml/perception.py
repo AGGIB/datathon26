@@ -15,15 +15,16 @@ from pathlib import Path
 import numpy as np
 
 from .appearance import Signature, color_signature, crop_person
-from .detect import Detection, Detector
-from .events import Event, extract_events, extract_role_events
+from .detect import INPUT_SIZE, Detection, Detector
+from .events import MIN_EMPTY_SEC, Event, extract_events, extract_role_events
 from .roles import Roles, assign_roles, desk_point
-from .track import IoUTracker, Track, drop_duplicate_tracks, stitch_tracks
+from .track import STITCH_GAP_SEC, IoUTracker, Track, drop_duplicate_tracks, stitch_tracks
 from .video import VideoInfo, probe, sample_frames
 
 SAMPLE_FPS = 4.0
 BATCH = 8
 TRACKER_GAP_SEC = 1.0
+TRACKER_GAP_SAMPLES = 2.5  # a track survives this many missed samples (at low sampling rates)
 
 ProgressFn = Callable[[float, str], None]
 log = logging.getLogger(__name__)
@@ -34,6 +35,22 @@ class FrameObjects:
     t: float
     detections: tuple[Detection, ...]
     signatures: tuple[Signature, ...] = ()  # aligned with detections; () for non-person boxes
+
+
+@dataclass(frozen=True)
+class Tolerances:
+    """Dropout tolerances scaled to the sampling interval: at 1.25 fps one missed detection is already 1.6 s."""
+
+    tracker_gap_sec: float
+    stitch_gap_sec: float
+    min_empty_sec: float  # an empty room / exit must last clearly longer than any bridged dropout
+
+
+def tolerances(sample_fps: float) -> Tolerances:
+    step = 1.0 / sample_fps
+    tracker_gap = max(TRACKER_GAP_SEC, TRACKER_GAP_SAMPLES * step)
+    longer = tracker_gap + step
+    return Tolerances(tracker_gap, max(STITCH_GAP_SEC, longer), max(MIN_EMPTY_SEC, longer))
 
 
 @dataclass(frozen=True)
@@ -54,6 +71,8 @@ class Perception:
     elapsed_sec: float
     roles: Roles | None = None
     all_tracks: tuple[Track, ...] = ()
+    sample_fps: float = SAMPLE_FPS  # frames analysed per second of video
+    input_size: int = INPUT_SIZE  # detector input side in px: the resolution the evidence was seen at
 
     def objects_at(self, t: float, label: str) -> tuple[Detection, ...]:
         nearest = min(self.frames, key=lambda f: abs(f.t - t))
@@ -66,21 +85,24 @@ def observe(t: float, frame: np.ndarray, detections: Sequence[Detection]) -> Fra
     return FrameObjects(t, tuple(detections), sigs)
 
 
-def track_people(frames: Sequence[FrameObjects]) -> list[Track]:
-    tracker = IoUTracker(max_gap_sec=TRACKER_GAP_SEC)
+def track_people(frames: Sequence[FrameObjects], tol: Tolerances) -> list[Track]:
+    tracker = IoUTracker(max_gap_sec=tol.tracker_gap_sec)
     for f in frames:
         tracker.update(f.t, list(f.detections), f.signatures or None)
-    return drop_duplicate_tracks(stitch_tracks(tracker.tracks()))
+    return drop_duplicate_tracks(stitch_tracks(tracker.tracks(), max_gap_sec=tol.stitch_gap_sec))
 
 
-def analyze_frames(frames: Sequence[FrameObjects], duration: float) -> Scene:
-    tracks = track_people(frames)
+def analyze_frames(frames: Sequence[FrameObjects], duration: float, sample_fps: float = SAMPLE_FPS) -> Scene:
+    tol = tolerances(sample_fps)
+    tracks = track_people(frames, tol)
     roles = assign_roles(tracks)
     if roles.workplace is not None:
         desk = desk_point([f.detections for f in frames], roles.workplace)
         roles = dataclasses.replace(roles, workplace=dataclasses.replace(roles.workplace, desk=desk))
     times = [f.t for f in frames]
-    events = extract_events(roles.in_room, duration=duration) + extract_role_events(roles, times, duration)
+    events = extract_events(
+        roles.in_room, duration=duration, min_empty_sec=tol.min_empty_sec, stitch_gap_sec=tol.stitch_gap_sec
+    ) + extract_role_events(roles, times, duration)
     log.info("scene: %d tracks, cashier=%s visitors=%s, %d events", len(tracks), roles.cashier_ids,
              roles.visitor_ids, len(events))
     return Scene(tuple(tracks), roles, tuple(sorted(events, key=lambda e: (e.t, e.kind))))
@@ -91,7 +113,9 @@ def perceive(
     detector: Detector,
     sample_fps: float = SAMPLE_FPS,
     on_progress: ProgressFn | None = None,
+    input_size: int | None = None,
 ) -> Perception:
+    """`input_size` is recorded on the result; by default it is read from the detector (640 if unknown)."""
     started = time.monotonic()
     info = probe(video_path)
     frames: list[FrameObjects] = []
@@ -112,7 +136,7 @@ def perceive(
     if batch:
         flush()
 
-    scene = analyze_frames(frames, info.duration)
+    scene = analyze_frames(frames, info.duration, sample_fps)
     return Perception(
         info=info,
         frames=tuple(frames),
@@ -121,4 +145,6 @@ def perceive(
         elapsed_sec=time.monotonic() - started,
         roles=scene.roles,
         all_tracks=scene.all_tracks,
+        sample_fps=sample_fps,
+        input_size=input_size or getattr(detector, "input_size", INPUT_SIZE),
     )

@@ -1,7 +1,8 @@
 import numpy as np
+import pytest
 
 from ml.detect import Detection
-from ml.perception import FrameObjects, analyze_frames, observe
+from ml.perception import FrameObjects, analyze_frames, observe, tolerances
 
 PINK = (0.5, 0.5, 0.0, 0.0)
 DARK = (0.0, 0.0, 0.5, 0.5)
@@ -60,3 +61,58 @@ def test_empty_detections_give_an_empty_room():
     frames = [FrameObjects(round(i * STEP, 3), ()) for i in range(41)]
     out = analyze_frames(frames, duration=10.0)
     assert kinds(out.events) == [("room_empty_at_start", 0.0)]
+
+
+def lone_cashier(fps, duration, missing):
+    """One seated person sampled at `fps`; detections at the sample indexes in `missing` are lost."""
+    frames = []
+    for i in range(int(duration * fps) + 1):
+        t = round(i / fps, 3)
+        dets = () if i in missing else (person(SEAT),)
+        frames.append(FrameObjects(t, dets, tuple(PINK for _ in dets)))
+    return frames
+
+
+@pytest.mark.parametrize("fps", [1.25, 2.2, 4.0])
+@pytest.mark.parametrize("missed", [1, 2])
+def test_missed_detections_at_any_sampling_rate_are_not_an_empty_room(fps, missed):
+    middle = int(10 * fps)
+    frames = lone_cashier(fps, 20.0, missing=set(range(middle, middle + missed)))
+    out = analyze_frames(frames, duration=20.0, sample_fps=fps)
+    assert not [e for e in out.events if e.kind in ("room_empty", "exit", "enter", "cashier_left")]
+
+
+def test_perception_tolerances_follow_the_sampling_interval():
+    slow, fast = tolerances(1.25), tolerances(4.0)
+    assert slow.tracker_gap_sec == pytest.approx(2.0) and fast.tracker_gap_sec == pytest.approx(1.0)
+    assert slow.min_empty_sec > slow.tracker_gap_sec + 1 / 1.25 - 1e-9
+    assert fast.min_empty_sec == pytest.approx(2.0)
+    assert slow.stitch_gap_sec > slow.tracker_gap_sec
+
+
+class FakeDetector:
+    input_size = 320
+
+    def detect(self, frames):
+        return [[person(SEAT)] for _ in frames]
+
+
+@pytest.fixture
+def tiny_video(tmp_path):
+    import cv2
+
+    path = tmp_path / "clip.mp4"
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 10, (300, 600))
+    for _ in range(30):
+        writer.write(np.full((600, 300, 3), 90, dtype=np.uint8))
+    writer.release()
+    return path
+
+
+def test_perceive_records_sampling_rate_and_detector_resolution(tiny_video):
+    from ml.perception import perceive
+
+    out = perceive(tiny_video, FakeDetector(), sample_fps=2.0)
+    assert out.sample_fps == 2.0 and out.input_size == 320
+    assert len(out.frames) == 6 and out.roles.cashier_ids
+    assert perceive(tiny_video, FakeDetector(), sample_fps=2.0, input_size=640).input_size == 640
