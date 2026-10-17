@@ -56,9 +56,7 @@ class Detector:
         self.device = device or _pick_device()
         self.input_size = input_size
         self.model = AutoModelForObjectDetection.from_pretrained(model_id).to(self.device).eval()
-        id2label = self.model.config.id2label
-        self._class_ids = [i for i, name in id2label.items() if name in LABELS_OF_INTEREST]
-        self._class_names = [id2label[i] for i in self._class_ids]
+        self._id2label = dict(self.model.config.id2label)
 
     def _prep(self, frames: list[np.ndarray]):
         size = (self.input_size, self.input_size)
@@ -71,21 +69,23 @@ class Detector:
             return []
         with self._torch.no_grad():
             out = self.model(pixel_values=self._prep(frames))
-        probs = out.logits.sigmoid()[..., self._class_ids].cpu().numpy()  # (B, Q, C)
+        probs = out.logits.sigmoid().cpu().numpy()  # (B, Q, all classes)
         boxes = out.pred_boxes.cpu().numpy()  # (B, Q, 4) cx, cy, w, h normalized
-        return [self._decode(probs[i], boxes[i], frames[i].shape) for i in range(len(frames))]
+        return [decode_queries(probs[i], boxes[i], frames[i].shape, self._id2label) for i in range(len(frames))]
 
-    def _decode(self, probs: np.ndarray, boxes: np.ndarray, shape: tuple) -> list[Detection]:
-        h, w = shape[:2]
-        best = probs.argmax(axis=1)
-        scores = probs[np.arange(len(best)), best]
-        dets = []
-        for q in np.flatnonzero(scores >= min(OBJECT_THRESHOLD, *DEFAULT_THRESHOLDS.values())):
-            label = self._class_names[best[q]]
-            score = float(scores[q])
-            if score < DEFAULT_THRESHOLDS.get(label, OBJECT_THRESHOLD):
-                continue
-            cx, cy, bw, bh = boxes[q]
-            box = ((cx - bw / 2) * w, (cy - bh / 2) * h, (cx + bw / 2) * w, (cy + bh / 2) * h)
-            dets.append(Detection(box=tuple(float(v) for v in box), score=score, label=label))
-        return _nms(dets, NMS_IOU)
+
+def decode_queries(probs: np.ndarray, boxes: np.ndarray, shape: tuple, id2label: dict[int, str]) -> list[Detection]:
+    """Pick each query's class over ALL classes first, then keep only labels of interest."""
+    h, w = shape[:2]
+    best = probs.argmax(axis=1)
+    scores = probs[np.arange(len(best)), best]
+    dets = []
+    for q in np.flatnonzero(scores >= min(OBJECT_THRESHOLD, *DEFAULT_THRESHOLDS.values())):
+        label = id2label[int(best[q])]
+        score = float(scores[q])
+        if label not in LABELS_OF_INTEREST or score < DEFAULT_THRESHOLDS.get(label, OBJECT_THRESHOLD):
+            continue
+        cx, cy, bw, bh = boxes[q]
+        box = ((cx - bw / 2) * w, (cy - bh / 2) * h, (cx + bw / 2) * w, (cy + bh / 2) * h)
+        dets.append(Detection(box=tuple(float(v) for v in box), score=score, label=label))
+    return _nms(dets, NMS_IOU)
