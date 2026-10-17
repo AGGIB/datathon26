@@ -250,6 +250,40 @@
         "revision": "ebb281ec70b05090aa6165b016eac8ec08e71b17"
       },
       "conversion_input_revision": null
+    },
+    {
+      "model_id": "mlx-community/Qwen3.5-4B-MLX-4bit",
+      "revision": "32f3e8ecf65426fc3306969496342d504bfa13f3",
+      "license": "Apache-2.0",
+      "weights": [
+        {
+          "path": "model.safetensors",
+          "sha256": "5fb9acd0246866381cf8c5c354c6db1019f6498eec4ccb4f5edcc71ffeacb2db",
+          "size_bytes": 3034300695
+        }
+      ],
+      "purpose": "Optional local action-first type experiment; metadata and code compatibility only, not a quality or runtime measurement.",
+      "runtime": "mlx-vlm",
+      "runtime_version_reference": "0.7.8",
+      "model_type": "qwen3_5",
+      "local_directory": "models/Qwen3.5-4B-MLX-4bit",
+      "enable_thinking": false,
+      "quantization": {
+        "group_size": 64,
+        "bits": 4,
+        "mode": "affine"
+      },
+      "metadata_source": "https://huggingface.co/mlx-community/Qwen3.5-4B-MLX-4bit/commit/32f3e8ecf65426fc3306969496342d504bfa13f3",
+      "model_card": "https://huggingface.co/mlx-community/Qwen3.5-4B-MLX-4bit/blob/32f3e8ecf65426fc3306969496342d504bfa13f3/README.md",
+      "weight_manifest_sha256": "732be593188f851a697cdd1f42cd734224c487d88a0e018677a7ea1eaa02ee48",
+      "base_model": "Qwen/Qwen3.5-4B",
+      "upstream_metadata_reference": {
+        "model_id": "Qwen/Qwen3.5-4B",
+        "revision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+        "license": "Apache-2.0",
+        "license_source": "https://huggingface.co/Qwen/Qwen3.5-4B/blob/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/LICENSE"
+      },
+      "conversion_input_revision": null
     }
   ]
 }

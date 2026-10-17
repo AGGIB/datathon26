@@ -5,8 +5,11 @@ from pathlib import Path
 import os
 import sys
 
-from .preflight import _validated_model_directory, enforce_offline
-from .mlx_backend import MAX_FRAME_FILE_BYTES, MAX_SOURCE_PIXELS, MAX_WIRE_BYTES, _decode_wire
+from .preflight import enforce_offline
+from .mlx_backend import (
+    MAX_FRAME_FILE_BYTES, MAX_SOURCE_PIXELS, MAX_WIRE_BYTES, MLX_MODEL_TYPES,
+    _decode_wire, _validated_mlx_model_directory,
+)
 
 
 def main():
@@ -24,12 +27,12 @@ def main():
         protocol.write(line)
 
     try:
-        directory = _validated_model_directory(sys.argv[1])
+        directory = _validated_mlx_model_directory(sys.argv[1])
         tokens, side = int(sys.argv[2]), int(sys.argv[3])
         if not 32 <= tokens <= 1024 or not 224 <= side <= 896:
             raise ValueError("invalid worker limits")
         config = json.loads((directory / "config.json").read_text())
-        if config.get("model_type") != "qwen3_vl":
+        if config.get("model_type") not in MLX_MODEL_TYPES:
             raise ValueError("unsupported checkpoint")
         import mlx.core as mx
         from mlx_vlm import generate, load
@@ -72,7 +75,7 @@ def main():
                     times.append(f"Image {len(images)}: timestamp_s={frame['timestamp_s']:.9f}")
                 # Frame times come from the source contract, rather than model-written timestamps.
                 text = "Image order and source times:\n" + "\n".join(times) + "\n" + request["prompt"]
-                prompt = apply_chat_template(processor, config, text, num_images=len(images))
+                prompt = apply_chat_template(processor, config, text, num_images=len(images), enable_thinking=False)
                 generation_options = {}
                 if "response_schema" in request:
                     from mlx_vlm.structured import build_json_schema_logits_processor
