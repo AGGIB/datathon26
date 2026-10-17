@@ -132,7 +132,7 @@ def test_content_deduplication_preserves_each_cv_baseline_and_fingerprints(local
     assert audit['videos']['X-3']['actual_calls_used'] == 0
     assert audit['config']['ground_truth_in_model_input'] is False
     assert audit['config']['timing_scope'] == 'warm_vlm_plus_frame_io_only_CV_replayed'
-    assert audit['config']['sampling_policy'] == 'uniform_halves_12_v1'
+    assert audit['config']['sampling_policy'] == 'positive_actions_uniform_halves_12_v2'
     assert audit['config']['model_artifact_sha256']['preprocessor_config.json']
     assert audit['config']['source_sha256']['ml/fixture.py']
     assert audit['config']['runtime']['packages']['mlx'] == '0'

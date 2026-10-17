@@ -1,15 +1,16 @@
-"""Frozen first experiment policy, independent of labels, names and camera geometry."""
+"""Versioned positive-action policy, independent of labels, names and camera geometry."""
 import math
 
 from .discovery import DiscoveryWindow
 
 TYPE_IDS = (
-    "banknote_returned_after_check", "no_visible_client_id_check", "previous_cash_left_on_desk",
-    "cash_from_bag_stored_without_recount", "bag_accepted_without_check", "recount_after_client_left",
-    "no_banknote_detector_used", "personal_items_on_desk", "food_or_drink_at_workplace",
+    "banknote_returned_after_check", "previous_cash_left_on_desk", "recount_after_client_left",
+    "personal_items_on_desk", "food_or_drink_at_workplace",
     "key_left_in_safe_lock", "stamps_and_book_left_on_desk",
 )
-POLICY_ID = "uniform_halves_12_v1"
+# Absence-only procedural types need dense, unobscured cycle evidence; the
+# uniform sparse windows cannot supply it. The sampling schedule stays frozen.
+POLICY_ID = "positive_actions_uniform_halves_12_v2"
 
 
 def plan_windows(duration: float) -> tuple[DiscoveryWindow, ...]:

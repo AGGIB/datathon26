@@ -318,3 +318,50 @@ def test_default_owner_process_decodes_real_synthetic_video_and_assembly_uses_ca
     assert violation["rule"] == catalog()[TYPE].rule.as_ref()
     assert violation["type_id"] == TYPE and violation["timecode_sec"] == 2.
     assert not any(frame.path.exists() for frame in backend.requests[0][0].frames)
+
+
+@pytest.mark.parametrize("absence_type", ["no_visible_client_id_check", "cash_from_bag_stored_without_recount",
+                                          "bag_accepted_without_check", "no_banknote_detector_used"])
+def test_sparse_default_policy_cannot_add_absence_only_type_even_with_verified_norm(absence_type):
+    from ml.vlm.discovery_policy import TYPE_IDS
+
+    cv = original()
+    backend = ScriptedBackend([json.dumps({"findings": [finding(type_id=absence_type)]})])
+    report = run(originals=[cv], backend=backend, source=FixtureFrames(), allowed=TYPE_IDS)
+    assert report.retained_candidates[0] is cv and not report.added_candidates
+    assert report.decisions[0].reason == "invalid_response"
+    assert absence_type not in backend.requests[0][0].allowed_rule_ids
+    assert catalog()[absence_type].status == "verified"
+
+
+def test_observations_precede_classification_in_prompt_and_constrained_schema():
+    from ml.vlm.discovery_policy import TYPE_IDS
+
+    backend = ScriptedBackend(['{"findings":[]}'])
+    report = run(backend=backend, source=FixtureFrames(), allowed=TYPE_IDS)
+    request = backend.requests[0][0]
+    assert report.status == "completed"
+    finding_schema = request.response_schema["properties"]["findings"]["items"]
+    assert list(finding_schema["properties"])[0] == finding_schema["required"][0] == "observations"
+    assert list(finding_schema["properties"])[1] == "type_id"
+    example = request.prompt[request.prompt.index("Output JSON only"):request.prompt.index("Choose t_peak")]
+    assert example.index('"observations"') < example.index('"type_id"')
+    payload = json.loads(request.prompt[request.prompt.index('{"types"'):])
+    criteria = {entry["type_id"]: entry["visual_criterion"] for entry in payload["types"]}
+    assert len(criteria) == 7 and set(criteria) == set(TYPE_IDS)
+    coat = criteria["personal_items_on_desk"]
+    assert "removes their own worn coat" in coat and "places that coat" in coat
+    assert "client/courier bag" in coat and "does not qualify" in coat
+    assert "visibly consumes" in criteria["food_or_drink_at_workplace"]
+    assert "most conclusive observed consequence, not the earliest prerequisite" in request.prompt
+
+
+def test_decisive_peak_after_prerequisites_still_requires_source_anchor_and_observation():
+    later = finding(t_peak=3.)
+    report = run(backend=ScriptedBackend([json.dumps({"findings": [later]})]), source=FixtureFrames())
+    [added] = report.added_candidates
+    assert added.t_start == 1. and added.t_peak == added.t_end == 3.
+    assert added.evidence_times == (3., 1., 2.)
+    missing_consequence = finding(t_peak=3., observations=finding()["observations"][:2])
+    report = run(backend=ScriptedBackend([json.dumps({"findings": [missing_consequence]})]), source=FixtureFrames())
+    assert not report.added_candidates and report.decisions[0].reason == "invalid_response"

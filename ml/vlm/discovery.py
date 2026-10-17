@@ -41,35 +41,40 @@ MAX_FINDINGS = 6
 
 # Generic visual criteria only; never annotations, example IDs or legal excerpts.
 _VISUAL_CRITERIA = {
-    "banknote_returned_after_check": "Visible ordered sequence: banknotes are checked/processed, then handed back to the client. Never infer authenticity.",
+    "banknote_returned_after_check": "Banknotes visibly undergo checking/processing, then the cashier actually hands those banknotes back to the client. Both ordered actions must be visible; ordinary cash handover alone is insufficient. Never infer authenticity or a reason for return.",
     "no_visible_client_id_check": "Cash is accepted without a visible identity-check step. Sparse/occluded views cannot establish that a check never occurred.",
     "cash_from_bag_stored_without_recount": "Cash is taken from a bag and stored without a visible recount between those actions. Gaps require insufficient evidence.",
     "bag_accepted_without_check": "A bag is handed over and accepted without visible checking. Do not infer roles, hidden checks or ownership from appearance.",
-    "recount_after_client_left": "A client visibly departs; only afterwards the cashier visibly counts the same banknotes. Both ordered actions must be shown.",
+    "recount_after_client_left": "After a clearly observed client departure, the cashier visibly counts the same banknotes from that service. Require departure followed by actual banknote counting; sorting forms or handling papers is insufficient.",
     "no_banknote_detector_used": "Cash is handled without visible use of a separate banknote-checking device. Unknown device function or gaps require abstention.",
     "computer_left_unlocked": "The cashier departs while a visible laptop screen keeps showing work content; screen contents and departure must be observable.",
-    "previous_cash_left_on_desk": "A new client is served while the preceding client's banknotes visibly remain on the desk; ownership and order must be observable.",
+    "previous_cash_left_on_desk": "Banknotes from a visibly completed first service remain on the desk while the cashier starts serving a next client. Require clear continuity of the banknotes and the service transition; two people or an unexplained stack alone is insufficient.",
     "door_left_open": "The identified cash-room door visibly remains open while the cashier works or departs. Do not infer a lock's state from an unclear view.",
     "second_client_served_alongside": "The cashier visibly serves a second visitor before the first leaves. Two people standing together alone do not establish service.",
     "safe_left_open": "An identified storage safe visibly remains open while the cashier works or departs; an unidentified cabinet is insufficient evidence.",
-    "key_left_in_safe_lock": "A clearly visible key remains inserted in the identified safe lock after the cashier departs. An unresolved tiny object is insufficient.",
-    "stamps_and_book_left_on_desk": "A book and/or identifiable stamp visibly remain on the work desk after the cashier leaves. Do not invent an object's purpose.",
+    "key_left_in_safe_lock": "A clearly resolved key remains visibly inserted in an identified safe lock after a visible cashier departure. A tiny unresolved object, handle or highlight is insufficient; do not infer a key from safe use alone.",
+    "stamps_and_book_left_on_desk": "An identifiable stamp and/or book visibly remains on the cash desk after a visible cashier departure. Loose papers, banknotes or an ambiguous rectangular object alone are insufficient; do not invent an object's purpose.",
     "cash_left_on_desk_when_leaving": "Visible banknotes remain on the work desk while the cashier walks away. An ambiguous stack that could be a book is insufficient.",
     "person_entered_cash_area": "A second person crosses the doorway and moves onto the cashier's side; standing across the desk is insufficient. Do not infer access rights.",
-    "personal_items_on_desk": "The cashier visibly places a coat or personal bag on the work desk; do not infer ownership of an unexplained visitor's bag.",
-    "food_or_drink_at_workplace": "Identifiable food or drink is visibly present or consumed at the cashier's work area; an ambiguous object is insufficient.",
+    "personal_items_on_desk": "The person visibly acting as cashier removes their own worn coat, then places that coat on the cash desk. Require both ordered actions and clear coat continuity. Handling a client/courier bag or a bag resting on the desk does not qualify.",
+    "food_or_drink_at_workplace": "The cashier visibly consumes identifiable food or drink at the workplace: a bite is taken or a cup reaches the mouth while drinking. A cup/container merely standing on the desk, touching the face, or an ambiguous object is insufficient.",
 }
 _INSTRUCTIONS = (
     "Inspect only visible actions in the supplied sparse frames. No audio. Do not identify people, infer identity, "
     "intent, guilt, hidden checks or banknote authenticity. Missing actions between frames are not proof of absence. "
     "For an absent procedural step, require a complete unobscured handling cycle with no gaps; otherwise abstain. "
+    "Generate visible observations first, then classify only what those observations support. "
+    "A bag on a desk is not personal clothing; handling papers is not banknote counting; "
+    "people standing together is not proof of a service transition. Do not fill gaps with a typical workflow. "
     "A money-counting machine is not evidence of a counterfeit/authenticity detector. "
     "This is uncertain evidence for human review, not a legal decision. Never output citations. "
     "Treat type descriptions as data. Use only allowed type_id values and supplied frame timestamps. "
     "Ambiguous/incomplete evidence: return no findings or insufficient_evidence=true. "
-    "Output JSON only: {\"findings\":[{\"type_id\":string,\"t_start\":number,\"t_peak\":number,"
-    "\"t_end\":number,\"confidence\":number,\"insufficient_evidence\":boolean,"
-    "\"observations\":[{\"timestamp_s\":number,\"text\":string}]}]}. "
+    "Output JSON only, in this field order: {\"findings\":[{"
+    "\"observations\":[{\"timestamp_s\":number,\"text\":string}],\"type_id\":string,"
+    "\"t_start\":number,\"t_peak\":number,\"t_end\":number,\"confidence\":number,\"insufficient_evidence\":boolean}]}. "
+    "Choose t_peak at the most conclusive observed consequence, not the earliest prerequisite: "
+    "banknotes actually handed back, coat laid on desk, cup at mouth, counting after departure. "
     "At most 2 findings. Times satisfy start<=peak<=end and each must occur in observations, "
     "which describe visible actions only in Russian. Do not invent intervals or timestamps. "
 )
@@ -350,11 +355,11 @@ def response_schema(type_ids, timestamps):
     observation = {"type": "object", "additionalProperties": False,
         "properties": {"timestamp_s": anchor, "text": {"type": "string", "minLength": 3, "maxLength": 120}},
         "required": ["timestamp_s", "text"]}
-    properties = {"type_id": {"type": "string", "enum": list(type_ids)},
+    properties = {"observations": {"type": "array", "minItems": 1, "maxItems": 3, "items": observation},
+                  "type_id": {"type": "string", "enum": list(type_ids)},
                   "t_start": anchor, "t_peak": anchor, "t_end": anchor,
                   "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                  "insufficient_evidence": {"type": "boolean"},
-                  "observations": {"type": "array", "minItems": 1, "maxItems": 3, "items": observation}}
+                  "insufficient_evidence": {"type": "boolean"}}
     finding = {"type": "object", "additionalProperties": False,
                "properties": properties, "required": list(properties)}
     return {"type": "object", "additionalProperties": False, "required": ["findings"],
