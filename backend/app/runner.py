@@ -33,8 +33,7 @@ class JobRunner:
         self._pipeline = pipeline
         self._budget = time_budget_sec
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="job")
-        # Headroom to avoid pool exhaustion if timed-out threads take time to clean up
-        self._pipeline_pool = ThreadPoolExecutor(max_workers=max(workers * 4, 16), thread_name_prefix="pipeline")
+        self._pipeline_pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="pipeline")
         self._futures: dict[str, Future] = {}
         self._lock = threading.Lock()
 
@@ -78,6 +77,8 @@ class JobRunner:
             try:
                 raw = future.result(timeout=self._budget)
             except FutureTimeout:
+                # Cancel queued pipeline future so it does not run after timeout
+                future.cancel()
                 log.warning(
                     "job %s: pipeline exceeded time budget %.1fs, returning fast fallback stage",
                     job_id,

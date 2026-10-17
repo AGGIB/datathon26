@@ -102,10 +102,14 @@ docker compose up --build
 ```
 
 ### Запуск в полностью изолированной сети (без интернета):
-Контейнер сконфигурирован с `HF_HUB_OFFLINE=1` и `TRANSFORMERS_OFFLINE=1` (согласно ТЗ п. 7, полная переносимость):
+Контейнер сконфигурирован с `HF_HUB_OFFLINE=1` и `TRANSFORMERS_OFFLINE=1` (согласно ТЗ п. 7, полная переносимость). Используется внутренняя сеть Docker (`--internal`), блокирующая внешний интернет, но сохраняющая доступность API на хосте:
 ```bash
+# 1. Создать изолированную сеть без внешнего шлюза в интернет
+docker network create --internal offline_net
+
+# 2. Запустить контейнер в изолированной сети
 docker run --rm \
-  --network none \
+  --network offline_net \
   -p 8000:8000 \
   --env-file .env \
   -v $(pwd)/var:/data \
