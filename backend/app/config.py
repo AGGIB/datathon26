@@ -29,6 +29,17 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        for candidate in (Path(".env"), Path(__file__).resolve().parent.parent.parent / ".env"):
+            if candidate.is_file():
+                for line in candidate.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        k, v = k.strip(), v.strip().strip("'\"")
+                        if k and k not in os.environ:
+                            os.environ[k] = v
+                break
+
         keys = frozenset(k.strip() for k in os.environ.get("API_KEYS", "").split(",") if k.strip())
         if not keys:
             raise RuntimeError("API_KEYS is not set (comma-separated list, e.g. JURY_KEY,UI_KEY)")
