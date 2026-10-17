@@ -16,8 +16,8 @@ from .discovery import BudgetExhausted, DiscoveryBudget
 from .preflight import ModelUnavailable
 from .validation import InvalidResponse, number, strict_json
 
-VERIFICATION_POLICY = "blind_episode_primitives_v2"
-DECODER_POLICY = "physical_action_search_v4_blind_episode_primitives_v2"
+VERIFICATION_POLICY = "blind_episode_primitives_v3"
+DECODER_POLICY = "physical_action_search_v4_blind_episode_primitives_v3"
 MIN_PROPOSAL_CONFIDENCE = .7
 _ACTORS = ("a", "b", "c", "not_visible", "unknown")
 _ROLES = ("cashier", "visitor", "other", "not_visible", "unknown")
@@ -33,14 +33,21 @@ _DIRECTIONS = ("to_visitor", "from_visitor", "to_cashier", "from_cashier", "visi
                "service_complete", "none", "unknown")
 _ENUMS = (_ACTORS, _ROLES, _OBJECT_IDS, _OBJECTS, _STATES, _PLACES, _DIRECTIONS)
 _INSTRUCTION = (
-    "Inspect the supplied images afresh. Describe only visible physical facts for each neutral episode. "
-    "Rows are BEFORE, PEAK, AFTER in that order; use the exact supplied source frame indices. "
+    "Inspect the supplied anchor images afresh. Describe only visible physical facts for each neutral episode. "
+    "phase_anchors gives BEFORE, PEAK, AFTER; return one row for each unique anchor in unique_anchors order. "
+    "Repeated phase anchors are the SAME image: describe it ONCE, never invent separate phase facts. "
+    "Use the exact supplied local frame indices. "
     "No inference about intent, authenticity, rights, omissions or rules. Use unknown for unresolved facts; "
     "do not select an expected action. All options are alternatives, none is preferred. "
     "Return JSON {\"episodes\":[{\"id\":1,\"rows\":[[frame,actor,role,object_id,object,state,place,direction],...]},...]}. "
-    "Exactly three rows per episode, one result per episode. Actors a/b/c and objects x/y/z are local "
+    "One result per episode. Look for one coherent person-object interaction or continuing object track "
+    "bracketed by the episode anchors. Scan the whole anchor content, including hands and work areas. "
+    "Do not automatically describe the largest or central object, or switch to an unrelated object between rows. "
+    "When multiple interactions are equally plausible or the focal track cannot be resolved, use unknown. "
+    "Actors a/b/c and objects x/y/z are local "
     "identity tracks within an episode, not screen positions. Reuse an ID only when visual continuity "
     "supports the SAME person/object; similar appearance alone or an occluded gap requires unknown. "
+    "Do not force an identity track to stay constant when it cannot be established. "
     "An actor not visible uses not_visible for actor AND role; do not substitute a different visible person. "
     "cashier means visibly operating the workstation, visitor means being served; clothing alone cannot establish role. "
     "Distinguish banknotes from papers, bag from identifiable outerwear, stamp/book from a rectangle, "
@@ -53,7 +60,6 @@ _INSTRUCTION = (
     "person has visibly left, not merely hidden. next_visitor_served requires a visibly completed prior "
     "service followed by actual service of a different visitor; several people alone is insufficient. "
     "service_complete must be visibly established. none means no such movement/transition, unknown means unclear. "
-    "Repeated references to the same frame within one episode must give identical facts. "
     "No free text or confidence. Return only the constrained JSON. "
 )
 
@@ -68,13 +74,15 @@ def _schema(episodes, frame_count):
         raise ValueError("primitive_schema_anchors")
     schemas = []
     for episode in episodes:
+        unique = tuple(dict.fromkeys(episode["anchors"]))
         rows = [{"type": "array", "minItems": 8, "maxItems": 8, "items": False,
             "prefixItems": [{"type": "integer", "const": anchor},
                 *({"type": "string", "enum": list(values)} for values in _ENUMS)]}
-            for anchor in episode["anchors"]]
+            for anchor in unique]
         schemas.append({"type": "object", "additionalProperties": False,
             "properties": {"id": {"type": "integer", "const": episode["id"]},
-                "rows": {"type": "array", "minItems": 3, "maxItems": 3, "prefixItems": rows, "items": False}},
+                "rows": {"type": "array", "minItems": len(unique), "maxItems": len(unique),
+                         "prefixItems": rows, "items": False}},
             "required": ["id", "rows"]})
     return {"type": "object", "additionalProperties": False,
         "properties": {"episodes": {"type": "array", "minItems": count, "maxItems": count,
@@ -96,19 +104,20 @@ def _primitives(raw, episodes):
         identity, rows = episode["id"], episode["rows"]
         if type(identity) is not int or identity not in expected or identity in result:
             raise InvalidResponse("primitive_episode_identity")
-        if not isinstance(rows, list) or len(rows) != 3:
+        unique = tuple(dict.fromkeys(expected[identity]))
+        if not isinstance(rows, list) or len(rows) != len(unique):
             raise InvalidResponse("primitive_phase_coverage")
         seen = {}
-        for row, index in zip(rows, expected[identity], strict=True):
+        for row, index in zip(rows, unique, strict=True):
             if (not isinstance(row, list) or len(row) != 8 or type(row[0]) is not int or row[0] != index
                     or any(not isinstance(item, str) or item not in choices for item, choices in zip(row[1:], _ENUMS, strict=True))):
                 raise InvalidResponse("primitive_values")
             if (row[1] == "not_visible") != (row[2] == "not_visible"):
                 raise InvalidResponse("primitive_actor_visibility")
-            if row[0] in seen and seen[row[0]] != row:
-                raise InvalidResponse("primitive_same_frame_conflict")
             seen[row[0]] = row
-        result[identity] = rows
+        # Duplicate phase anchors use exactly one observed row, never a second
+        # model claim about the same pixels. Preserve the three-phase matcher.
+        result[identity] = [list(seen[index]) for index in expected[identity]]
     return result
 
 
@@ -274,13 +283,20 @@ class VerifiedActionBackend:
         self.last_actions = actions
         if not proposals:
             return '{"findings":[]}'
-        episodes = [{"id": index, "anchors": [action[key] for key in ("start_frame", "peak_frame", "end_frame")]}
+        original = [{"id": index, "anchors": [action[key] for key in ("start_frame", "peak_frame", "end_frame")]}
                     for index, (action, _) in enumerate(proposals, 1)]
+        source_indices = sorted({anchor for episode in original for anchor in episode["anchors"]})
+        frames = tuple(request.frames[index - 1] for index in source_indices)
+        local = {source: index for index, source in enumerate(source_indices, 1)}
+        episodes = [{"id": episode["id"], "anchors": [local[index] for index in episode["anchors"]]}
+                    for episode in original]
+        prompt_episodes = [{"id": episode["id"], "phase_anchors": episode["anchors"],
+                            "unique_anchors": list(dict.fromkeys(episode["anchors"]))} for episode in episodes]
         prompt = _INSTRUCTION + json.dumps({"row_fields": ["frame", "actor", "role", "object_id", "object", "state", "place", "direction"],
-            "enums": [list(values) for values in _ENUMS], "episodes": episodes,
+            "enums": [list(values) for values in _ENUMS], "episodes": prompt_episodes,
             "frames_in_supplied_order": [{"frame": index, "timestamp_s": frame.timestamp_s}
-                for index, frame in enumerate(request.frames, 1)]}, separators=(",", ":"))
-        translated = InferenceRequest(prompt, request.frames, "checklist", None, (), _schema(episodes, len(request.frames)))
+                for index, frame in enumerate(frames, 1)]}, separators=(",", ":"))
+        translated = InferenceRequest(prompt, frames, "checklist", None, (), _schema(episodes, len(frames)))
         verified_raw = self._proxy.infer(translated, timeout_s=budget.remaining())
         if budget.remaining() <= 0:
             raise TimeoutError("verification_timeout")

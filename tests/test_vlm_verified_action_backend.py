@@ -106,7 +106,8 @@ def test_verifier_is_blind_to_proposed_action_confidence_and_owner_input(inferen
         inner = Scripted([action(name, confidence=confidence)], primitive_payload(facts(name)))
         VerifiedActionBackend(inner, catalog=catalog()).infer(inference_request, 2)
         translated, timeout = inner.requests[1]
-        assert translated.frames is inference_request.frames
+        assert translated.frames == inference_request.frames
+        assert all(left is right for left, right in zip(translated.frames, inference_request.frames, strict=True))
         assert translated.candidate_id is None and translated.allowed_rule_ids == ()
         assert inference_request.prompt not in translated.prompt and str(confidence) not in translated.prompt
         assert all(kind not in translated.prompt for kind in TYPE_IDS)
@@ -278,14 +279,18 @@ def test_malformed_verification_is_atomic_and_emits_no_valid_prefix(inference_re
     assert backend.last_verifications == () and backend.calls_used == 2
 
 
-def test_same_frame_must_have_identical_facts_and_food_can_be_one_frame(inference_request):
+def test_repeated_phase_anchors_use_one_fact_expanded_locally_and_food_can_be_one_frame(inference_request):
     selected = action(FOOD, start_frame=2, peak_frame=2, end_frame=2)
-    eating = row(2, "food", "biting", "mouth")
+    eating = row(1, "food", "biting", "mouth")
+    inner = Scripted([selected], primitive_payload([eating]))
+    backend = VerifiedActionBackend(inner, catalog=catalog())
+    [finding] = json.loads(backend.infer(inference_request, 2))["findings"]
+    assert finding["t_start"] == finding["t_peak"] == finding["t_end"] == 4.6
+    assert inner.requests[1][0].frames == (inference_request.frames[1],)
+    expanded = _primitives(primitive_payload([eating]), [{"id": 1, "anchors": [1, 1, 1]}])[1]
+    assert expanded == [eating, eating, eating] and expanded[0] is not expanded[1]
     backend = VerifiedActionBackend(Scripted([selected], primitive_payload([eating] * 3)), catalog=catalog())
-    assert len(json.loads(backend.infer(inference_request, 2))["findings"]) == 1
-    inconsistent = [eating, eating, row(2, "food", "held", "hand")]
-    backend = VerifiedActionBackend(Scripted([selected], primitive_payload(inconsistent)), catalog=catalog())
-    with pytest.raises(InvalidResponse, match="primitive_same_frame_conflict"):
+    with pytest.raises(InvalidResponse, match="primitive_phase_coverage"):
         backend.infer(inference_request, 2)
 
 
@@ -365,7 +370,8 @@ def test_verified_discovery_decodes_once_counts_raw_calls_and_protects_cv_identi
     assert report.status == "completed" and report.retained_candidates[0] is original
     assert source.calls == 1 and report.calls_used == report.budget_calls_used == backend.calls_used == 2
     assert len(report.added_candidates) == 1
-    assert inner.requests[0][0].frames is inner.requests[1][0].frames
+    assert inner.requests[0][0].frames == inner.requests[1][0].frames
+    assert all(left is right for left, right in zip(inner.requests[0][0].frames, inner.requests[1][0].frames, strict=True))
 
 
 def test_lifecycle_and_zero_timeout_do_not_load_or_call_inner(inference_request):
@@ -402,7 +408,8 @@ def test_schema_has_bounded_uniform_eight_field_rows_and_no_proposal_conditionin
         episode = episodes["prefixItems"][identity - 1]
         assert episode["properties"]["id"] == {"type": "integer", "const": identity}
         rows = episode["properties"]["rows"]
-        assert rows["minItems"] == rows["maxItems"] == len(rows["prefixItems"]) == 3
+        expected = list(dict.fromkeys(expected))
+        assert rows["minItems"] == rows["maxItems"] == len(rows["prefixItems"]) == len(expected)
         assert rows["items"] is False
         for row_schema, anchor in zip(rows["prefixItems"], expected, strict=True):
             assert row_schema["minItems"] == row_schema["maxItems"] == len(row_schema["prefixItems"]) == 8
@@ -420,15 +427,16 @@ def test_late_proposal_anchors_are_constrained_in_each_generated_phase(inference
     inference_request = replace(inference_request, frames=frames)
     selected = action(start_frame=8, peak_frame=11, end_frame=12)
     rows = facts()
-    for row, anchor in zip(rows, (8, 11, 12), strict=True):
-        row[0] = anchor
     inner = Scripted([selected], primitive_payload(rows))
     backend = VerifiedActionBackend(inner, catalog=catalog())
     [finding] = json.loads(backend.infer(inference_request, 2))["findings"]
     assert finding["t_peak"] == 11.
+    assert inner.requests[1][0].frames == tuple(inference_request.frames[index - 1] for index in (8, 11, 12))
+    assert all(inner.requests[1][0].frames[local] is inference_request.frames[source - 1]
+               for local, source in enumerate((8, 11, 12)))
     schema = inner.requests[1][0].response_schema
     row_schemas = schema["properties"]["episodes"]["prefixItems"][0]["properties"]["rows"]["prefixItems"]
-    assert [item["prefixItems"][0]["const"] for item in row_schemas] == [8, 11, 12]
+    assert [item["prefixItems"][0]["const"] for item in row_schemas] == [1, 2, 3]
     with pytest.raises(InvalidResponse, match="primitive_values"):
         _primitives(primitive_payload(facts()), [{"id": 1, "anchors": [8, 11, 12]}])
 
@@ -436,3 +444,34 @@ def test_late_proposal_anchors_are_constrained_in_each_generated_phase(inference
 def test_schema_never_treats_boolean_episode_id_as_integer_anchor_identity():
     with pytest.raises(ValueError, match="primitive_schema_anchors"):
         _schema([{"id": True, "anchors": [1, 2, 3]}], 12)
+
+
+def test_two_episodes_share_at_most_six_original_anchor_frames_and_preserve_source_times(inference_request):
+    frames = tuple(Frame(float(index), inference_request.frames[0].path, float(index)) for index in range(1, 13))
+    inference_request = replace(inference_request, frames=frames)
+    second_rows = facts(FOOD)
+    for item, local in zip(second_rows, (4, 5, 6), strict=True):
+        item[0] = local
+    inner = Scripted([action(start_frame=1, peak_frame=4, end_frame=6),
+                      action(FOOD, start_frame=8, peak_frame=10, end_frame=12)],
+                     primitive_payload(facts(), second_rows))
+    backend = VerifiedActionBackend(inner, catalog=catalog())
+    findings = json.loads(backend.infer(inference_request, 2))["findings"]
+    selected = inner.requests[1][0].frames
+    assert len(selected) == 6 and [frame.timestamp_s for frame in selected] == [1., 4., 6., 8., 10., 12.]
+    assert all(frame is frames[source - 1] for frame, source in zip(selected, (1, 4, 6, 8, 10, 12), strict=True))
+    assert [(item["t_start"], item["t_peak"], item["t_end"]) for item in findings] == [(1., 4., 6.), (8., 10., 12.)]
+    assert backend.calls_used == 2
+
+
+def test_peak_end_duplicate_anchor_cannot_generate_inconsistent_second_fact(inference_request):
+    selected = action(start_frame=1, peak_frame=3, end_frame=3)
+    rows = [row(1), row(2, state="resting", place="own_workdesk")]
+    inner = Scripted([selected], primitive_payload(rows))
+    backend = VerifiedActionBackend(inner, catalog=catalog())
+    [finding] = json.loads(backend.infer(inference_request, 2))["findings"]
+    assert finding["t_peak"] == finding["t_end"] == 9.7
+    schema_rows = inner.requests[1][0].response_schema["properties"]["episodes"]["prefixItems"][0]["properties"]["rows"]
+    assert schema_rows["minItems"] == schema_rows["maxItems"] == 2
+    assert [item["prefixItems"][0]["const"] for item in schema_rows["prefixItems"]] == [1, 2]
+    assert inner.requests[1][0].frames == (inference_request.frames[0], inference_request.frames[2])
