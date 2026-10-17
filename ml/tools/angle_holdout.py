@@ -9,6 +9,8 @@ import csv
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import tempfile
+from urllib.parse import urlsplit
 
 from ml import eval as evaluation
 from ml.evaluation_labels import file_sha256, load_labels, source_index, validate_content_sha256, video_key
@@ -16,6 +18,12 @@ from ml.evaluation_labels import file_sha256, load_labels, source_index, validat
 UNKNOWN = {"", "unknown", "unassigned", "неизвестно"}
 MEDIA_SUFFIXES = {".mov", ".mp4", ".m4v", ".mkv", ".avi", ".webm"}
 ROOT = Path(__file__).resolve().parents[2]
+EXTERNAL_LICENSES = {
+    "CC0-1.0": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "CC-BY-4.0": "https://creativecommons.org/licenses/by/4.0/",
+    "CC-BY-3.0": "https://creativecommons.org/licenses/by/3.0/",
+    "PDM-1.0": "https://creativecommons.org/publicdomain/mark/1.0/",
+}
 
 
 def _known(value):
@@ -32,6 +40,44 @@ def _local_media(value):
     if not path.is_file() or path.suffix.casefold() not in MEDIA_SUFFIXES:
         raise ValueError("local_media_file_required")
     return path
+
+
+def _review_date(value):
+    try:
+        datetime.fromisoformat(value)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def _approved_origin(row):
+    if row.get("rights_confirmed") is not True:
+        return False
+    if row.get("origin") == "locally_recorded":
+        return True
+    if row.get("origin") != "external_licensed":
+        return False
+    license_url = EXTERNAL_LICENSES.get(row.get("license_id"))
+    if not license_url or row.get("license_url") != license_url:
+        return False
+    source = urlsplit(row.get("source_url", ""))
+    context = row.get("source_context", {})
+    if not (source.scheme == "https" and source.hostname and not source.username and not source.password
+            and _known(row.get("attribution")) and _known(row.get("rights_reviewed_by"))
+            and _review_date(row.get("rights_reviewed_at")) and isinstance(context, dict)
+            and context.get("country") == "KZ"
+            and context.get("scene_type") in {"bank_cashdesk", "bank_vault", "bank_incassation"}
+            and row.get("bank_scene_confirmed") is True):
+        return False
+    proof_value = row.get("rights_proof_path")
+    if not isinstance(proof_value, str) or "://" in proof_value:
+        return False
+    supplied = Path(proof_value).expanduser()
+    proof = supplied.resolve()
+    if {part.casefold() for part in (*supplied.parts, *proof.parts)} & {"excluded", "quarantine"}:
+        return False
+    return (proof.is_file() and proof.stat().st_size > 0
+            and file_sha256(proof) == validate_content_sha256(row.get("rights_proof_sha256")))
 
 
 def freeze_development(videos_dir, labels_path, annotations_path=None):
@@ -93,17 +139,14 @@ def prepare(development, holdout=None):
     problems = set()
     if holdout.get("annotation_origin") != "human" or not _known(holdout.get("reviewed_by")):
         problems.add("human_review_required")
-    try:
-        datetime.fromisoformat(holdout.get("reviewed_at", ""))
-    except (ValueError, TypeError):
+    if not _review_date(holdout.get("reviewed_at")):
         problems.add("human_review_date_required")
     if holdout.get("events_exhaustive") is not True:
         problems.add("exhaustive_event_inventory_required")
-    if any(row.get("origin") != "locally_recorded" or row.get("rights_confirmed") is not True
-           for row in holdout_rows):
-        problems.add("local_recording_and_rights_required")
+    if any(not _approved_origin(row) for row in holdout_rows):
+        problems.add("approved_origin_and_rights_required")
     # Do not read excluded or unapproved external bytes as a side effect of readiness inspection.
-    if "local_recording_and_rights_required" in problems:
+    if "approved_origin_and_rights_required" in problems:
         return {"status": "blocked", "new_angle_available": False,
                 "blocking_codes": sorted(problems), "new_angle_holdout_validated": False}
     labels, annotations, hashes, media_paths, split = [], [], {}, {}, {"train": [], "test": []}
@@ -180,6 +223,12 @@ def prepare(development, holdout=None):
             "new_angle_holdout_validated": True, "labels": labels, "annotations": annotations,
             "split": split, "content_hashes": hashes, "media_paths": media_paths,
             "review": {field: holdout[field] for field in ("annotation_origin", "reviewed_by", "reviewed_at", "events_exhaustive")},
+            "test_source_provenance": {
+                row.get("video_id", row.get("video")): {field: row[field] for field in (
+                    "origin", "rights_confirmed", "source_url", "license_id", "license_url", "attribution",
+                    "rights_reviewed_by", "rights_reviewed_at", "rights_proof_path", "rights_proof_sha256",
+                    "source_context", "bank_scene_confirmed", "angle_id", "source_group") if field in row}
+                for row in holdout_rows},
             "verification_scope": "actual_exact_hashes_and_provided_human_camera_recording_labels",
             "limitations": ["No visual or rights verification is performed by this tool.",
                             "Hash isolation does not detect undeclared re-encodes or related recordings.",
@@ -192,6 +241,9 @@ def score(prepared, predictions, tolerance_sec=2.0):
     for literal, digest in prepared["content_hashes"].items():
         if file_sha256(_local_media(prepared["media_paths"][literal])) != digest:
             raise ValueError("media_changed_after_preparation")
+    for provenance in prepared["test_source_provenance"].values():
+        if not _approved_origin(provenance):
+            raise ValueError("rights_evidence_changed_after_preparation")
     report = evaluation.score(prepared["labels"], predictions, annotations=prepared["annotations"],
                               split=prepared["split"], subset="test", tolerance_sec=tolerance_sec,
                               content_hashes=prepared["content_hashes"])
@@ -231,7 +283,8 @@ def score(prepared, predictions, tolerance_sec=2.0):
     totals.update(joint_precision=joint / predicted if predicted else None,
                   joint_recall=joint / expected if expected else None)
     report["independent_overall_events"] = totals
-    report["holdout_provenance"] = {key: prepared[key] for key in ("verification_scope", "limitations")}
+    report["holdout_provenance"] = {key: prepared[key] for key in
+                                    ("verification_scope", "limitations", "review", "test_source_provenance")}
     return report
 
 
@@ -245,9 +298,18 @@ def _write(path, document, inputs=()):
     if any(path.resolve() == Path(value).resolve() for value in inputs if value):
         raise ValueError("output_overlaps_input")
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".part")
-    temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    temporary = None
+    try:
+        # Exclusive creation avoids following a pre-existing predictable .part
+        # symlink, including one aimed at an input manifest.
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix=f".{path.name}.",
+                                         suffix=".part", dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(json.dumps(document, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def main(argv=None):

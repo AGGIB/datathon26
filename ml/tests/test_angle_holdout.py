@@ -68,7 +68,7 @@ def test_external_or_synthetic_data_never_becomes_locally_shot_gold(manifests, m
     monkeypatch.setattr(holdout, "file_sha256", lambda _: pytest.fail("unapproved media read"))
     result = holdout.prepare(development, test)
     assert result["status"] == "blocked"
-    assert "local_recording_and_rights_required" in result["blocking_codes"]
+    assert "approved_origin_and_rights_required" in result["blocking_codes"]
 
 
 def test_declared_hash_is_checked_against_real_source_bytes(manifests):
@@ -175,3 +175,59 @@ def test_output_cannot_overwrite_a_manifest(manifests, tmp_path, monkeypatch):
     development.write_text(original)
     assert holdout.main(["prepare", "--development", str(development), "--output", str(development)]) == 2
     assert development.read_text() == original
+
+
+def test_predictable_part_symlink_cannot_overwrite_an_input_manifest(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setattr(holdout, "ROOT", tmp_path)
+    folder = tmp_path / "var"
+    folder.mkdir()
+    source = folder / "development.json"
+    original = '{"input": "preserve"}'
+    source.write_text(original)
+    output = folder / "readiness.json"
+    trap = folder / "readiness.json.part"
+    trap.symlink_to(source)
+    holdout._write(output, {"status": "blocked"}, inputs=(source,))
+    assert source.read_text() == original
+    assert trap.is_symlink() and trap.resolve() == source
+    assert not output.is_symlink() and json.loads(output.read_text()) == {"status": "blocked"}
+    assert not list(folder.glob(".readiness.json.*.part"))
+
+
+def test_temporary_output_is_removed_after_serialization_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(holdout, "ROOT", tmp_path)
+    output = tmp_path / "var" / "readiness.json"
+    with pytest.raises(ValueError):
+        holdout._write(output, {"invalid": float("nan")})
+    assert not output.exists()
+    assert not list(output.parent.iterdir())
+
+
+def test_licensed_kz_external_footage_can_be_held_out_with_saved_human_rights_proof(manifests, tmp_path):
+    development, test = manifests
+    record = test["records"][0]
+    proof = tmp_path / "license.html"
+    proof.write_text("Synthetic human-verified rights evidence, not a real media license.")
+    record.update(origin="external_licensed", source_url="https://example.test/original-video",
+                  attribution="Synthetic author", license_id="CC-BY-4.0",
+                  license_url=holdout.EXTERNAL_LICENSES["CC-BY-4.0"],
+                  rights_reviewed_by="Synthetic human", rights_reviewed_at="2026-10-17",
+                  rights_proof_path=str(proof), rights_proof_sha256=hashlib.sha256(proof.read_bytes()).hexdigest(),
+                  source_context={"country": "KZ", "scene_type": "bank_cashdesk"}, bank_scene_confirmed=True)
+    prepared = holdout.prepare(development, test)
+    assert prepared["status"] == "ready"
+    assert prepared["test_source_provenance"]["new"]["license_id"] == "CC-BY-4.0"
+    proof.write_text("Changed after human review")
+    with pytest.raises(ValueError, match="rights_evidence_changed"):
+        holdout.score(prepared, [])
+    record["license_url"] = "https://example.test/publicly-viewable"
+    assert "approved_origin_and_rights_required" in holdout.prepare(development, test)["blocking_codes"]
+
+
+def test_external_license_declaration_without_real_rights_evidence_is_not_permission(manifests):
+    development, test = manifests
+    test["records"][0].update(origin="external_licensed", license_id="CC-BY-4.0",
+                              license_url=holdout.EXTERNAL_LICENSES["CC-BY-4.0"])
+    assert holdout.prepare(development, test)["status"] == "blocked"
