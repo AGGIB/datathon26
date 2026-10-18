@@ -4,7 +4,7 @@ WORKDIR /build
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ ./
-ARG VITE_API_KEY=ui_forte26_4a6e8b0d2c
+ARG VITE_API_KEY=
 ENV VITE_API_KEY=${VITE_API_KEY}
 RUN npm run build
 

@@ -129,20 +129,24 @@ export function UploadScreen({
             <label>
               Ключ доступа (X-API-Key)
               <input
-                type="text"
+                type="password"
                 name="apiKey"
                 value={apiKey}
-                placeholder="ui_forte26_..."
+                placeholder="Введите ключ доступа"
                 onChange={(event) => {
                   const val = event.target.value;
                   setApiKeyVal(val);
                   setApiKey(val);
                 }}
               />
-              <small>По умолчанию используется ключ UI. Защита по разделу 10 ТЗ.</small>
+              <small>Введите ключ, полученный от команды.</small>
             </label>
           )}
-          <button className="start-button" disabled={!file} onClick={onStart}>
+          <button
+            className="start-button"
+            disabled={!file || (!IS_DEMO && !apiKey.trim())}
+            onClick={onStart}
+          >
             {IS_DEMO ? 'Открыть пример' : 'Начать проверку'}
           </button>
         </div>

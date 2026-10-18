@@ -8,12 +8,18 @@ export const IS_DEMO =
 export const MAX_FILE_SIZE = 200 * 1024 * 1024;
 export const POLL_INTERVAL_MS = 2_000;
 export const ANALYSIS_TIMEOUT_MS = 5 * 60 * 1_000;
-export const DEFAULT_API_KEY = 'ui_forte26_4a6e8b0d2c';
+export const DEFAULT_API_KEY = '';
+let sessionApiKey: string | undefined;
 
 export function getApiKey(): string {
-  if (typeof window !== 'undefined' && window.localStorage) {
-    const stored = window.localStorage.getItem('forte_api_key')?.trim();
-    if (stored) return stored;
+  if (sessionApiKey !== undefined) return sessionApiKey;
+  try {
+    if (typeof window !== 'undefined') {
+      const stored = window.localStorage.getItem('forte_api_key')?.trim();
+      if (stored) return stored;
+    }
+  } catch {
+    // Storage can be unavailable; the key can still be entered for this session.
   }
   const viteKey = (env.VITE_API_KEY as string | undefined)?.trim();
   if (viteKey) return viteKey;
@@ -21,11 +27,16 @@ export function getApiKey(): string {
 }
 
 export function setApiKey(key: string): void {
-  if (typeof window !== 'undefined' && window.localStorage) {
-    if (key.trim()) {
-      window.localStorage.setItem('forte_api_key', key.trim());
-    } else {
-      window.localStorage.removeItem('forte_api_key');
+  sessionApiKey = key.trim() || undefined;
+  try {
+    if (typeof window !== 'undefined') {
+      if (sessionApiKey) {
+        window.localStorage.setItem('forte_api_key', sessionApiKey);
+      } else {
+        window.localStorage.removeItem('forte_api_key');
+      }
     }
+  } catch {
+    // Keep the in-memory value even when browser persistence is blocked.
   }
 }

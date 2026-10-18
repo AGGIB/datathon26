@@ -96,9 +96,10 @@ test('rejects malformed statuses and progress without crashing the view', () => 
   assert.throws(() => parseJob({ job_id: 'id', status: 'failed', error: {} }), /ошибки/);
 });
 
-test('getApiKey defaults to UI key and respects localStorage override', async () => {
+test('getApiKey has no shared credential and respects localStorage override', async () => {
   const { DEFAULT_API_KEY, getApiKey, setApiKey } = await import('../src/config.ts');
   assert.equal(getApiKey(), DEFAULT_API_KEY);
+  assert.equal(DEFAULT_API_KEY, '');
 
   const storage = new Map();
   globalThis.window = {
@@ -115,6 +116,24 @@ test('getApiKey defaults to UI key and respects localStorage override', async ()
     assert.equal(getApiKey(), 'custom_test_key_123');
     setApiKey('');
     assert.equal(getApiKey(), DEFAULT_API_KEY);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test('API key remains usable when browser storage is blocked', async () => {
+  const { getApiKey, setApiKey } = await import('../src/config.ts');
+  globalThis.window = {
+    get localStorage() {
+      throw new DOMException('Storage blocked', 'SecurityError');
+    },
+  };
+  try {
+    assert.equal(getApiKey(), '');
+    setApiKey(' session-key ');
+    assert.equal(getApiKey(), 'session-key');
+    setApiKey('');
+    assert.equal(getApiKey(), '');
   } finally {
     delete globalThis.window;
   }
