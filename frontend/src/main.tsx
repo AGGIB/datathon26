@@ -1,7 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
-import { SplashScreen } from './components/SplashScreen';
 import './style.css';
 
 const rootElement = document.getElementById('root');
@@ -12,8 +11,6 @@ if (!rootElement) {
 
 createRoot(rootElement).render(
   <StrictMode>
-    <SplashScreen>
-      <App />
-    </SplashScreen>
+    <App />
   </StrictMode>,
 );
