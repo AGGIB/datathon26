@@ -3,7 +3,6 @@ from fractions import Fraction
 import hashlib
 import json
 import math
-import os
 import shutil
 import subprocess
 import sys
@@ -194,14 +193,20 @@ def test_probe_runner_resource_limit_and_failed_child_stderr_are_not_echoed(monk
     assert "PRIVATE_SENTINEL" not in capsys.readouterr().out
 
 
-def test_probe_timeout_reaps_child(tmp_path):
+def test_probe_timeout_reaps_child(tmp_path, monkeypatch):
+    children = []
+    popen = subprocess.Popen
+    def capture_child(*args, **kwargs):
+        child = popen(*args, **kwargs)
+        children.append(child)
+        return child
+    monkeypatch.setattr(tool.subprocess, 'Popen', capture_child)
     pid = tmp_path / "pid"
     code = f"import os,time;open({str(pid)!r},'w').write(str(os.getpid()));time.sleep(10)"
     with pytest.raises(TimeoutError):
         tool._run_probe([sys.executable, "-c", code], .2)
-    if pid.exists():
-        with pytest.raises(ProcessLookupError):
-            os.kill(int(pid.read_text()), 0)
+    assert len(children) == 1 and children[0].poll() is not None
+    assert children[0].stdout.closed
 
 
 def test_local_probe_rejects_remote_input_before_command():

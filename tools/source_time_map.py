@@ -15,11 +15,12 @@ import math
 import os
 from pathlib import Path
 import re
-import select
+import queue
 import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -219,15 +220,34 @@ def _run_probe(command, timeout_s):
         raise ValueError("invalid_probe_timeout")
     deadline, data = time.monotonic() + timeout_s, bytearray()
     process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    chunks = queue.Queue(maxsize=1)
+    stopped = threading.Event()
+
+    def read_stdout():
+        # select() only supports sockets on Windows. A bounded reader also
+        # handles pipes there without unbounded communicate() buffering.
+        while not stopped.is_set():
+            chunk = process.stdout.read1(65536)
+            while not stopped.is_set():
+                try:
+                    chunks.put(chunk, timeout=0.05)
+                    break
+                except queue.Full:
+                    continue
+            if not chunk:
+                return
+
+    reader = threading.Thread(target=read_stdout, daemon=True)
+    reader.start()
     try:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("probe_timeout")
-            ready, _, _ = select.select([process.stdout], [], [], remaining)
-            if not ready:
-                raise TimeoutError("probe_timeout")
-            chunk = os.read(process.stdout.fileno(), 65536)
+            try:
+                chunk = chunks.get(timeout=remaining)
+            except queue.Empty:
+                raise TimeoutError("probe_timeout") from None
             if not chunk:
                 break
             data.extend(chunk)
@@ -240,9 +260,11 @@ def _run_probe(command, timeout_s):
             raise ValueError("probe_failed")
         return bytes(data)
     finally:
+        stopped.set()
         if process.poll() is None:
             process.kill()
         process.wait()
+        reader.join()
         process.stdout.close()
 
 
