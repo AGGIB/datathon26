@@ -339,3 +339,24 @@ def test_first_personal_item_seen_in_empty_room_has_no_owner(kind):
 def test_absence_ownership_gate_keeps_actual_left_behind_rule():
     smp = samples(0, 5) + samples(5.5, 20, people=0, items=frozenset({"clothes", "cash_bundle"}))
     assert types(run([Event("cashier_left", 5.0)], smp)) == ["cash_left_on_desk_when_leaving"]
+
+
+@pytest.mark.parametrize("label", ["clothes", "bag"])
+@pytest.mark.parametrize("sparse", [False, True])
+def test_distinct_personal_item_run_after_return_is_not_lost(label, sparse):
+    if sparse:
+        smp = samples(0, 5) + [_kf(8, items=frozenset({label})), _kf(12),
+                               _kf(18, items=frozenset({label}))]
+    else:
+        smp = (samples(0, 5) + samples(6, 11, items=frozenset({label}))
+               + samples(11.5, 17.5) + samples(18, 25, items=frozenset({label})))
+    [candidate] = [c for c in run([Event("cashier_left", 5, t_end=15)], smp)
+                   if c.type_id == "personal_items_on_desk"]
+    assert candidate.t_start == 18
+
+
+@pytest.mark.parametrize("label", ["clothes", "bag"])
+def test_sparse_item_is_not_cleared_by_missing_dense_detections(label):
+    smp = sorted(samples(0, 25) + [_kf(8, items=frozenset({label})),
+                                   _kf(18, items=frozenset({label}))], key=lambda s: s.t)
+    assert "personal_items_on_desk" not in types(run([Event("cashier_left", 5, t_end=15)], smp))

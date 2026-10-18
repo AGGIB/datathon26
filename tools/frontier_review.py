@@ -105,7 +105,7 @@ def _episodes(path):
             for line in path.read_text(encoding='utf-8').splitlines() if line.strip()]
 
 
-def verify_sources(manifest):
+def verify_sources(manifest, ffprobe=None):
     require(manifest['scaffold_sha256'] == sha256(Path(__file__))
             and manifest['schema_sha256'] == sha256(Path(__file__).with_name('frontier_review_schema.py')),
             'SCAFFOLD_OR_SCHEMA_CHANGED')
@@ -127,9 +127,13 @@ def verify_sources(manifest):
                     == alias['content_sha256'], 'SOURCE_HASH_CHANGED')
             seen[alias['video_key']] = content['content_sha256']
     require(seen == expected, 'MANIFEST_HASH_COVERAGE')
+    # The adjacent checksum detects edits, but is not an independent authority.
+    # Re-derive duration and all generated metadata from the bound source bytes.
+    regenerated = build_manifest(root, manifest['hash_report']['path'], manifest['source_revision'], ffprobe)
+    require(manifest == regenerated, 'SOURCE_METADATA_CHANGED')
 
 
-def validate_files(bundle, require_complete=False):
+def validate_files(bundle, require_complete=False, *, ffprobe=None):
     bundle = _audit_directory(bundle)
     manifest, digest = guarded_json(local_file(bundle / 'manifest.json'))
     require(local_file(bundle / 'manifest.sha256').read_text().strip() == digest, 'MANIFEST_BINDING_CHANGED')
@@ -140,7 +144,7 @@ def validate_files(bundle, require_complete=False):
     ea, eb = [_episodes(bundle / name / 'episodes.jsonl') for name in ('reviewer-a', 'reviewer-b')]
     summary = validate_documents(manifest, a, ea, b, eb, _csv(bundle / 'adjudication.csv', ADJUDICATION_FIELDS),
                                  _episodes(bundle / 'adjudicated-episodes.jsonl'))
-    verify_sources(manifest)
+    verify_sources(manifest, ffprobe)
     require(all(file_identity(path) == before for path, before in identities.items()), 'REVIEW_INPUT_CHANGED')
     if require_complete:
         require(summary['human_handoff_ready'], 'HUMAN_REVIEW_INCOMPLETE')
@@ -203,7 +207,7 @@ python "{Path(__file__).resolve()}" validate --bundle "{output}" --require-compl
 
 Only numeric counts/errors are printed. All filled files stay private/ignored.
 ''')
-    return validate_files(output)
+    return validate_files(output, ffprobe=ffprobe)
 
 
 def main(argv=None):
@@ -218,13 +222,14 @@ def main(argv=None):
     check = sub.add_parser('validate')
     check.add_argument('--bundle', required=True)
     check.add_argument('--require-complete', action='store_true')
+    check.add_argument('--ffprobe')
     try:
         args = parser.parse_args(argv)
         if args.command == 'init':
             result = initialize(args.output, args.videos_dir, args.hash_report, args.source_revision,
                                 artifact_root=args.artifact_root, ffprobe=args.ffprobe, viewer=args.viewer)
         else:
-            result = validate_files(args.bundle, args.require_complete)
+            result = validate_files(args.bundle, args.require_complete, ffprobe=args.ffprobe)
     except (OSError, ValueError, TypeError, KeyError, OverflowError, csv.Error):
         print('{"status":"invalid_or_incomplete_private_review"}')
         return 1

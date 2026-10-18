@@ -209,6 +209,8 @@ def validate_documents(manifest, review_a, episodes_a, review_b, episodes_b, adj
     for event in final_events.values():
         require(adjudication_by_slot[event['slot_id']]['consensus'] != 'no_observed_positive'
                 or event['outcome'] != 'observed_positive', 'FINAL_ABSENCE_CONTRADICTS_EPISODE')
+        require(adjudication_by_slot[event['slot_id']]['consensus'] != 'unknown'
+                or event['outcome'] == 'unknown', 'FINAL_UNKNOWN_CONTRADICTS_EPISODE')
     episode_handoff = all(row['consensus'] != 'events_recorded' or final_counts[slot] > 0
                           for slot, row in adjudication_by_slot.items())
     return {'structurally_valid': True, 'contents': len(manifest['contents']),

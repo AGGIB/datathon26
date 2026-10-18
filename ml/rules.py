@@ -299,17 +299,37 @@ def _personal_item_onset(inp: RuleInput, label: str, baseline: frozenset[str]) -
     is the last observed at-work sample; the finite interval ends at the return.
     Items first seen before departure or at/after return keep their usual logic.
     """
-    t = _first_new(inp.samples, label, PERSONAL_MIN_SEC, baseline)
-    if t is None:
-        return None
-    for event in inp.events:
-        if event.kind not in {"cashier_left", "room_empty", "room_empty_at_start"}:
-            continue
-        starts_before = event.t < t if event.kind == "cashier_left" else event.t <= t
-        end = event.t_end if event.t_end is not None else math.inf
-        if starts_before and t < end:
+    remaining = sorted(inp.samples, key=lambda sample: sample.t)
+    while (t := _first_new(remaining, label, PERSONAL_MIN_SEC, baseline)) is not None:
+        absent = any(
+            event.kind in {"cashier_left", "room_empty", "room_empty_at_start"}
+            and (event.t < t if event.kind == "cashier_left" else event.t <= t)
+            and t < (event.t_end if event.t_end is not None else math.inf)
+            for event in inp.events
+        )
+        if not absent:
+            return t
+        # A later sighting is new only after an observed disappearance. Dense
+        # detector misses cannot clear an item seen by the sparse OWLv2 pass.
+        sparse, misses, cleared_at = False, 0, None
+        for sample in remaining:
+            if sample.t < t:
+                continue
+            if label in sample.items:
+                sparse = sparse or sample.keyframe
+                misses = 0
+            elif sample.keyframe:
+                cleared_at = sample.t
+                break
+            elif not sparse:
+                misses += 1
+                if misses > RUN_MAX_MISSES:
+                    cleared_at = sample.t
+                    break
+        if cleared_at is None:
             return None
-    return t
+        remaining = [sample for sample in remaining if sample.t > cleared_at]
+    return None
 
 
 def rule_desk_items(inp: RuleInput) -> list[Candidate]:

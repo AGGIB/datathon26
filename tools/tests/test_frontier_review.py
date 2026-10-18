@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from uuid import uuid4
@@ -74,7 +75,8 @@ def test_init_publishes_private_pending_bundle_and_never_overwrites(case):
     assert summary['coverage_slots'] == 6 and not summary['human_handoff_ready']
     assert (output / 'reviewer-a/episodes.jsonl').read_bytes() == b''
     assert (output / 'reviewer-b/episodes.jsonl').read_bytes() == b''
-    assert (output / 'manifest.json').stat().st_mode & 0o777 == 0o600
+    if os.name == 'posix':
+        assert (output / 'manifest.json').stat().st_mode & 0o777 == 0o600
     before = {path: path.read_bytes() for path in output.rglob('*') if path.is_file()}
     with pytest.raises(ValueError, match='FRESH_PRIVATE_OUTPUT'):
         cli.initialize(output, case['videos'], case['report'], REVISION, artifact_root=output.parent)
@@ -272,3 +274,30 @@ def test_invalid_cli_arguments_never_echo_private_values(capsys):
     captured = capsys.readouterr()
     assert 'PRIVATE_FREE_OBSERVATION' not in captured.out + captured.err
     assert captured.out.strip() == '{"status":"invalid_or_incomplete_private_review"}'
+
+
+def test_recomputed_manifest_checksum_cannot_extend_source_duration(case):
+    output = case['root'] / 'var' / 'review'
+    cli.initialize(output, case['videos'], case['report'], REVISION, artifact_root=output.parent)
+    path = output / 'manifest.json'
+    manifest = json.loads(path.read_text(encoding='utf-8'))
+    manifest['contents'][0]['duration_sec'] = 100.0
+    path.write_text(json.dumps(manifest), encoding='utf-8')
+    (output / 'manifest.sha256').write_text(cli.sha256(path) + '\n', encoding='utf-8')
+    with pytest.raises(ValueError, match='SOURCE_METADATA_CHANGED'):
+        cli.validate_files(output)
+
+
+def test_unknown_consensus_cannot_promote_an_episode_to_positive(case):
+    all_reviewed(case)
+    for row in (case['a'][0], case['b'][0]):
+        row.update(assessment='unknown', type_exhaustive='false', unknown_reason='object_unresolved')
+    case['adj'][0]['consensus'] = 'unknown'
+    case['ea'] = [episode(case['a'][0], outcome='unknown', unknown_reason='object_unresolved')]
+    final = {**episode(case['a'][0]), 'review_a_episode_ids': [case['ea'][0]['episode_id']],
+             'review_b_episode_ids': []}
+    with pytest.raises(ValueError, match='FINAL_UNKNOWN_CONTRADICTS_EPISODE'):
+        validate_documents(case['manifest'], case['a'], case['ea'], case['b'], case['eb'], case['adj'], [final])
+    final.update(outcome='unknown', unknown_reason='object_unresolved')
+    assert validate_documents(case['manifest'], case['a'], case['ea'], case['b'], case['eb'],
+                              case['adj'], [final])['human_handoff_ready']

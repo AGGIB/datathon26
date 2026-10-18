@@ -154,3 +154,11 @@ source candidates, not a labelled holdout. As recorded at commit
 zero and camera/source groups are unverified. Suitable continuous scenes,
 independent human labels and genuine source metadata are still needed before
 precision or recall can be measured on those candidates.
+# Merge review follow-up (2026-10-18)
+
+Review fixes retain separate personal-item onsets after a confirmed disappearance
+and cashier return. Synthetic regression tests cover both dense observations and
+sparse keyframes; dense misses do not clear an item observed by OWLv2. The measured
+development results below describe the original recorded snapshot, not a fresh
+quality evaluation of this follow-up. No new model run or precision claim is made.
+
