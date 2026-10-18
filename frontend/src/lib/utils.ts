@@ -11,17 +11,6 @@ export function formatTime(seconds: number): string {
   return `${minutes}:${remainder}`;
 }
 
-export function formatEvidenceTime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return '—';
-  const wholeSeconds = Math.floor(seconds);
-  const milliseconds = Math.round((seconds - wholeSeconds) * 1000);
-  if (milliseconds === 1000) return formatTime(wholeSeconds + 1);
-  const fraction = milliseconds
-    ? `.${milliseconds.toString().padStart(3, '0').replace(/0+$/, '')}`
-    : '';
-  return `${formatTime(wholeSeconds)}${fraction}`;
-}
-
 export function safeUrl(value: string): string | undefined {
   try {
     const url = new URL(value, API_BASE_URL || window.location.origin);
