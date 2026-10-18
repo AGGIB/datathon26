@@ -8,7 +8,7 @@ python tools/source_time_map.py --probe-json LOCAL_FFPROBE.json \
   --times 0 0.04 0.1 --out var/source-time-map.json
 # Explicitly authorized local media only; no network protocols:
 python tools/source_time_map.py --video LOCAL_FILE.mp4 --stream-index 0 \
-  --times 0 0.04 --out var/source-time-map.json
+  --times 0 0.04 --out var/source-time-map-from-video.json
 ```
 
 The second command asks local ffprobe for frame metadata and hashes the source
@@ -41,3 +41,5 @@ and an adopted production timestamp contract remain separate work.
 Outputs are fresh ignored `var/*.json`, contain rational numeric mapping and
 input/tool SHA256 only, and do not copy filenames, tags or private free text.
 Timeout, byte/frame/query limits and fixed CLI error codes bound diagnostics.
+The subprocess reader uses POSIX pipe polling; the CLI is intended for the
+current macOS/Linux environment. Windows subprocess support is not verified.
