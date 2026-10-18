@@ -26,12 +26,12 @@ complete live service measurement.
 
 ## Cached replay, independently checked
 
-| Variant | TP / FP / FN / TN | Video precision | Correct primary type | Type and time ±2 s |
-| --- | --- | --- | --- | --- |
-| Previous CV | 15 / 5 / 6 / 14 | 75.0% | 9/21 | 4/21 |
-| Corrected CV | 15 / 3 / 6 / 16 | 83.3% | 9/21 | 4/21 |
-| Previous compact V5 | 16 / 5 / 5 / 14 | 76.2% | 11/21 | 5/21 |
-| Corrected CV with frozen V5 findings | 16 / 3 / 5 / 16 | 84.2% | 11/21 | 5/21 |
+| Variant | TP / FP / FN / TN | Video precision | Video recall | Video F1 | Correct primary type | Type and time ±2 s |
+| --- | --- | --- | --- | --- | --- | --- |
+| Previous CV | 15 / 5 / 6 / 14 | 75.0% | 71.4% | 73.2% | 9/21 | 4/21 |
+| Corrected CV | 15 / 3 / 6 / 16 | 83.3% | 71.4% | 76.9% | 9/21 | 4/21 |
+| Previous compact V5 | 16 / 5 / 5 / 14 | 76.2% | 76.2% | 76.2% | 11/21 | 5/21 |
+| Corrected CV with frozen V5 findings | 16 / 3 / 5 / 16 | 84.2% | 76.2% | 80.0% | 11/21 | 5/21 |
 
 The independent replay uses the actual discovery, runtime augmentation and
 assembly paths. Every previously detected positive video and every correct
@@ -53,7 +53,9 @@ Qwen3.5-4B MLX uses the unchanged compact verifier, 512 output tokens, frame sid
 640, confidence threshold 0.95, 180 seconds per video and a four-call cap.
 
 The fresh result is **TP16 / FP3 / FN5 / TN16**, video precision **84.21%** and
-recall **76.19%**. Correct primary types remain **11/21**, and type-and-time
+recall **76.19%**, video F1 **80.00%**, specificity **84.21%** and balanced
+accuracy **80.20%**. Support is 21 positive and 19 clean unique contents, with
+five missed positive videos. Correct primary types remain **11/21**, and type-and-time
 matches remain **5/21**. Every previous correct video/type/time content is
 retained; there are zero new events on known clean videos relative to the
 corrected CV baseline. The improvement gate passes; **the 97% target fails**.
@@ -109,3 +111,46 @@ The 97% video-precision target is separate from the improvement gate. With
 sixteen true-positive predictions, one false positive still gives 94.1%; the
 current development cohort therefore needs zero false positives while retaining
 useful detections. Even that would not demonstrate 97% on unseen camera angles.
+
+## Recall and unseen-camera acceptance
+
+Every subsequent comparison must show precision, recall, F1, TP/FP/FN/TN,
+positive/negative support and failed/missing/abstained coverage together. The
+existing `ml.eval` already reports end-to-end recall and F1; use that output
+rather than reporting only successful model responses. A 97% precision target
+does not authorize hiding misses or accepting lower recall. Preserve the actual
+previous correct video, primary-type and type-and-time sets, not just their
+counts, while testing recall improvements. These are development regression
+criteria, not proof of generalization.
+
+A read-only audit of the five fresh false negatives found no selected CV events
+in any of them. Three primary types are outside the current seven-type discovery
+frontier: `bag_accepted_without_check`, `cash_from_bag_stored_without_recount`
+and `no_banknote_detector_used` (one each). The other two are
+`previous_cash_left_on_desk` and `recount_after_client_left`; neither produced an
+eligible proposal for verification. All five jobs completed, and none supplied a
+finding to the owner gate. Lowering its confidence threshold cannot recover those
+missing findings. This is a coded pipeline diagnosis, not a visual explanation of
+the scenes or proof that enabling another type will work.
+
+The next recall experiment should establish visible action sequences and matched
+negative examples for these types before changing proposals or rules. Report
+primary-type coverage (currently 11/21) and joint coverage (5/21) separately from
+binary video recall. Exhaustive event/type recall, precision and F1 require
+complete episode labels and are not established by the primary-only gold.
+
+Judge footage will use different angles. Follow [the existing holdout workflow](angle-holdout.md):
+freeze code/model/prompts/thresholds before test outcomes, keep entire source and
+camera groups separate, and report precision/recall/F1 and support for each
+verified angle as well as pooled totals. Report the worst defined angle result
+with its support; undefined metrics and unknown camera IDs remain visible.
+Reusing a test set for tuning converts it into development data. Crops, image
+warps and resolution stress tests may reveal fragility but do not constitute a
+new camera or establish unseen-angle quality.
+
+[Olzhas's PR #50](https://github.com/AGGIB/datathon26/pull/50) supplies 14 public
+source candidates, not a labelled holdout. As recorded at commit
+`da7eacd528631bfafe4d6adfa424c6584a4a8936`, accepted/downloaded/labelled counts are
+zero and camera/source groups are unverified. Suitable continuous scenes,
+independent human labels and genuine source metadata are still needed before
+precision or recall can be measured on those candidates.
