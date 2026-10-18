@@ -14,7 +14,6 @@ services:
       - "8000:8000"
     volumes:
       - jobs:/data
-      - ./frontend/dist:/app/frontend/dist:ro
     restart: unless-stopped
 
 volumes:
