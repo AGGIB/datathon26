@@ -161,4 +161,3 @@ and cashier return. Synthetic regression tests cover both dense observations and
 sparse keyframes; dense misses do not clear an item observed by OWLv2. The measured
 development results above describe the original recorded snapshot, not a fresh
 quality evaluation of this follow-up. No new model run or precision claim is made.
-
