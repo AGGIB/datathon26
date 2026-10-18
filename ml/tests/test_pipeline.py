@@ -206,6 +206,13 @@ def test_analyze_renders_candidates_into_valid_k1(clip, fake, monkeypatch):
 
 def test_slow_detector_is_planned_to_finish_within_budget(tmp_path, monkeypatch):
     video = make_video(tmp_path / "long.mp4", seconds=30.0)
+    # Measure the scripted detector cost exactly. A coarse host clock can turn
+    # a 20ms calibration sleep into 15ms and wrongly select the full frame rate.
+    clock = [0.0]
+    def advance(seconds):
+        clock[0] += seconds
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(time, "sleep", advance)
     slow = use_detector(monkeypatch, FakeDetector(sec_per_frame=0.02))
     monkeypatch.setattr(pipeline, "FINISH_RESERVE_SEC", 0.0)
     seen = capture_rules(monkeypatch, [one_candidate()])
