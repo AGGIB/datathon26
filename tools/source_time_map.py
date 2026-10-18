@@ -269,10 +269,14 @@ def probe_video(path, *, ffprobe="ffprobe", timeout_s=30):
 
 def _save(path, report, inputs):
     raw = Path(path).absolute()
-    if (not raw.is_relative_to(ROOT / "var") or raw.suffix != ".json" or raw.exists()
-            or any(part.is_symlink() for part in (raw, *raw.parents))
-            or raw.resolve() in {value.resolve() for value in inputs}):
+    if ".." in raw.parts or any(part.is_symlink() for part in (raw, *raw.parents)):
         raise ValueError("fresh_ignored_output_required")
+    base = ROOT.resolve() / "var"
+    canonical = raw.resolve()
+    if (not canonical.is_relative_to(base) or canonical == base or canonical.suffix != ".json"
+            or canonical.exists() or canonical in {value.resolve() for value in inputs}):
+        raise ValueError("fresh_ignored_output_required")
+    raw = canonical
     raw.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
