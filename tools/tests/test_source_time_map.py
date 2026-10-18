@@ -238,3 +238,25 @@ def test_source_replacement_during_probe_rejects_stale_pin(tmp_path, monkeypatch
     monkeypatch.setattr(tool, "_run_probe", replace_source)
     with pytest.raises(ValueError, match="input_changed"):
         tool.probe_video(source)
+
+
+@pytest.mark.parametrize("suffix", ["var/../escaped.json", "var/not-created/../../escaped.json"])
+def test_output_dotdot_escape_rejected_before_creating_directories(tmp_path, monkeypatch, suffix):
+    monkeypatch.setattr(tool, "ROOT", tmp_path)
+    with pytest.raises(ValueError, match="fresh_ignored_output_required"):
+        tool._save(tmp_path / suffix, {"numeric": 1}, ())
+    assert not (tmp_path / "escaped.json").exists()
+    assert not (tmp_path / "var").exists()
+
+
+def test_direct_and_canonical_source_target_collisions_preserve_input(tmp_path, monkeypatch):
+    monkeypatch.setattr(tool, "ROOT", tmp_path)
+    source = tmp_path / "var/source.json"
+    source.parent.mkdir()
+    source.write_text('{"source":1}')
+    before = source.read_bytes()
+    for output in (source, source.parent / "not-created/../source.json"):
+        with pytest.raises(ValueError, match="fresh_ignored_output_required"):
+            tool._save(output, {"replacement": 2}, (source,))
+    assert source.read_bytes() == before
+    assert not (source.parent / "not-created").exists()
