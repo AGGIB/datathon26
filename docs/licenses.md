@@ -17,6 +17,7 @@
 |---|---|
 | torch | BSD-3-Clause |
 | transformers | Apache-2.0 |
+| scipy | BSD-3-Clause ([license](https://github.com/scipy/scipy/blob/v1.15.3/LICENSE.txt)) |
 | opencv-python-headless | Apache-2.0 |
 | numpy | BSD-3-Clause |
 | pillow | MIT-CMU |

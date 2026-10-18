@@ -133,8 +133,8 @@ def render_candidates(
 ) -> dict[Candidate, list[dict]]:
     """Evidence for all candidates of a job from a single decode pass; times are clamped to `duration`.
 
-    If the pass itself fails, every candidate gets no frames (assemble then drops them with an ERROR log):
-    the job still finishes with whatever else it has instead of failing after the whole detection run.
+    If the pass itself fails, every candidate gets no frames. Assembly preserves candidates with usable
+    evidence, but raises if all selected candidates lose their frames instead of returning a clean verdict.
     """
     if not candidates:
         return {}

@@ -113,6 +113,11 @@ curl -s http://localhost:8000/api/v1/jobs/a1b2c3d4e5f6 \
 ```bash
 docker compose up --build
 ```
+После запуска:
+- **Веб-интерфейс (UI)** доступен в браузере по адресу `http://localhost:8000/`. В `Dockerfile` настроена multi-stage сборка — фронтенд компилируется автоматически и подключается к бэкенду с защитой по `X-API-Key`.
+- **REST API** доступен по адресу `http://localhost:8000/api/v1/`.
+- **Healthcheck:** `http://localhost:8000/health`.
+- **Документация Swagger:** `http://localhost:8000/docs`.
 
 ### Запуск в полностью изолированной сети (без интернета):
 Контейнер сконфигурирован с `HF_HUB_OFFLINE=1` и `TRANSFORMERS_OFFLINE=1` (согласно ТЗ п. 7, полная переносимость). Для проверки автономности создаётся внутренняя сеть Docker без шлюза в интернет:
