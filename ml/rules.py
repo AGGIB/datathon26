@@ -286,19 +286,39 @@ def _visitor_spans(events: Sequence[Any], duration: float) -> list[tuple[float, 
 def _first_new(samples: Sequence[Sample], label: str, min_sec: float, baseline: frozenset[str]) -> float | None:
     if label in baseline:
         return None
-    if keyframe := next((s for s in samples if s.keyframe and label in s.items), None):
-        return keyframe.t
+    onsets = [s.t for s in samples if s.keyframe and label in s.items]
     runs = _runs([s for s in samples if not s.keyframe], _has(label), min_sec)
-    return runs[0][0] if runs else None
+    onsets.extend(a for a, _ in runs)
+    return min(onsets) if onsets else None
+
+
+def _personal_item_onset(inp: RuleInput, label: str, baseline: frozenset[str]) -> float | None:
+    """A first sighting during known cashier absence cannot establish ownership.
+
+    This does not filter findings about items left behind. A departure timestamp
+    is the last observed at-work sample; the finite interval ends at the return.
+    Items first seen before departure or at/after return keep their usual logic.
+    """
+    t = _first_new(inp.samples, label, PERSONAL_MIN_SEC, baseline)
+    if t is None:
+        return None
+    for event in inp.events:
+        if event.kind not in {"cashier_left", "room_empty", "room_empty_at_start"}:
+            continue
+        starts_before = event.t < t if event.kind == "cashier_left" else event.t <= t
+        end = event.t_end if event.t_end is not None else math.inf
+        if starts_before and t < end:
+            return None
+    return t
 
 
 def rule_desk_items(inp: RuleInput) -> list[Candidate]:
     base = _baseline(inp.samples)
     out = []
     personal: dict[str, float] = {}
-    if (t := _first_new(inp.samples, "clothes", PERSONAL_MIN_SEC, base)) is not None:
+    if (t := _personal_item_onset(inp, "clothes", base)) is not None:
         personal["clothes"] = t
-    t_bag = _first_new(inp.samples, "bag", PERSONAL_MIN_SEC, base)
+    t_bag = _personal_item_onset(inp, "bag", base)
     if t_bag is not None and _roles_known(inp.events):
         if not any(a <= t_bag <= b for a, b in _visitor_spans(inp.events, inp.duration)):
             personal["bag"] = t_bag  # brought by the cashier, not a visitor's / collector's bag

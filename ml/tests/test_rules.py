@@ -292,3 +292,50 @@ def test_safe_opened_during_the_clip_is_reported_when_leaving():
 def test_unknown_state_before_does_not_count_as_closed():
     smp = samples(0, 4, safe_open=None) + samples(4.5, 20, safe_open=0.9)
     assert run([], smp) == []
+
+
+@pytest.mark.parametrize("label", ["clothes", "bag"])
+def test_new_personal_item_first_seen_while_cashier_away_is_unattributed(label):
+    smp = samples(0, 7.5) + samples(8, 20, items=frozenset({label}))
+    assert "personal_items_on_desk" not in types(run([Event("cashier_left", 5.0)], smp))
+
+
+@pytest.mark.parametrize("label", ["clothes", "bag"])
+def test_post_return_keyframe_does_not_reassign_an_item_first_seen_while_away(label):
+    smp = sorted(samples(0, 7.5) + samples(8, 20, items=frozenset({label})) +
+                 [_kf(18.0, items=frozenset({label}))], key=lambda sample: sample.t)
+    assert "personal_items_on_desk" not in types(run([Event("cashier_left", 5.0, t_end=15.0)], smp))
+
+
+@pytest.mark.parametrize("label", ["clothes", "bag"])
+def test_earlier_dense_item_onset_precedes_late_absence_keyframe(label):
+    smp = sorted(samples(0, 5) + samples(5.5, 20, items=frozenset({label})) +
+                 [_kf(12.0, items=frozenset({label}))], key=lambda sample: sample.t)
+    [candidate] = [c for c in run([Event("cashier_left", 10.0)], smp)
+                   if c.type_id == "personal_items_on_desk"]
+    assert candidate.t_start == 5.5 and candidate.t_peak == 7.5
+    assert candidate.confidence == 0.65
+
+
+@pytest.mark.parametrize("label", ["clothes", "bag"])
+def test_new_personal_item_after_observed_cashier_return_still_counts(label):
+    smp = samples(0, 9.5) + samples(10, 20, items=frozenset({label}))
+    events = [Event("cashier_left", 4.0, t_end=10.0), Event("cashier_returned", 10.0)]
+    assert "personal_items_on_desk" in types(run(events, smp))
+
+
+@pytest.mark.parametrize("label", ["clothes", "bag"])
+def test_item_at_last_observed_at_work_sample_is_not_post_departure(label):
+    smp = samples(0, 9.5) + samples(10, 20, items=frozenset({label}))
+    assert "personal_items_on_desk" in types(run([Event("cashier_left", 10.0)], smp))
+
+
+@pytest.mark.parametrize("kind", ["room_empty", "room_empty_at_start"])
+def test_first_personal_item_seen_in_empty_room_has_no_owner(kind):
+    smp = samples(0, 5) + samples(5.5, 20, people=0, items=frozenset({"clothes"}))
+    assert "personal_items_on_desk" not in types(run([Event(kind, 5.5, t_end=20.0)], smp))
+
+
+def test_absence_ownership_gate_keeps_actual_left_behind_rule():
+    smp = samples(0, 5) + samples(5.5, 20, people=0, items=frozenset({"clothes", "cash_bundle"}))
+    assert types(run([Event("cashier_left", 5.0)], smp)) == ["cash_left_on_desk_when_leaving"]
