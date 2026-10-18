@@ -24,8 +24,68 @@ test('К1 done maps verdict, JPEG frames and nullable normative fields for the U
   const job = parseJob(done());
   assert.equal(job.status, 'done');
   assert.equal(job.result.verdict, 'Обнаружены признаки возможных нарушений');
-  assert.equal(job.result.violations[0].evidence_frames[0], `data:image/jpeg;base64,${jpeg}`);
+  assert.deepEqual(job.result.violations[0].evidence_frames[0], {
+    timestamp_sec: 22.4,
+    image_url: `data:image/jpeg;base64,${jpeg}`,
+  });
   assert.deepEqual(job.result.violations[0].rule, { document: 'Документ' });
+});
+
+test('preserves each of three actual evidence timestamps independently of the episode peak', () => {
+  const timestamps = [18.125, 22.4, 27.875];
+  const evidence_frames = timestamps.map((timestamp_sec) => ({
+    timestamp_sec,
+    image_base64: jpeg,
+  }));
+  const result = validateResult(done({ violations: [{ ...violation, evidence_frames }] }));
+  assert.equal(result.violations[0].timecode_sec, 22.4);
+  assert.deepEqual(
+    result.violations[0].evidence_frames,
+    timestamps.map((timestamp_sec) => ({
+      timestamp_sec,
+      image_url: `data:image/jpeg;base64,${jpeg}`,
+    })),
+  );
+  assert.equal(evidence_frames[0].image_base64, jpeg);
+});
+
+test('keeps two episodes with the same peak as separate stable response identities', () => {
+  const payload = done({
+    violations: [
+      { ...violation, description: 'Первый вымышленный эпизод.' },
+      {
+        ...violation,
+        description: 'Второй вымышленный эпизод с тем же пиком.',
+        evidence_frames: [{ timestamp_sec: 25.75, image_base64: jpeg }],
+      },
+    ],
+  });
+  const result = validateResult(payload);
+  assert.equal(result.violations.length, 2);
+  assert.equal(result.violations[0].timecode_sec, result.violations[1].timecode_sec);
+  assert.notEqual(result.violations[0].id, result.violations[1].id);
+  assert.deepEqual(
+    validateResult(payload).violations.map((episode) => episode.id),
+    result.violations.map((episode) => episode.id),
+  );
+  assert.equal(result.violations[0].evidence_frames[0].timestamp_sec, 22.4);
+  assert.equal(result.violations[1].evidence_frames[0].timestamp_sec, 25.75);
+});
+
+test('rejects invalid per-frame timestamps before they can become seek targets', () => {
+  for (const timestamp_sec of [-1, NaN, Infinity, '22.4', null]) {
+    assert.throws(
+      () =>
+        validateResult(
+          done({
+            violations: [
+              { ...violation, evidence_frames: [{ timestamp_sec, image_base64: jpeg }] },
+            ],
+          }),
+        ),
+      /JPEG/,
+    );
+  }
 });
 
 test('no_violation renders the required Russian verdict with no cards', () => {
@@ -47,6 +107,14 @@ test('processing translates stage and preserves fractional progress', () => {
     parseJob({ job_id: 'id', status: 'processing', stage: 'future-stage' }).stage,
     'Анализ видео выполняется',
   );
+});
+
+test('prototype property names remain unknown processing stages', () => {
+  for (const stage of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+    const job = parseJob({ job_id: 'id', status: 'processing', stage });
+    assert.equal(job.stage, 'Анализ видео выполняется');
+    assert.equal(typeof job.stage, 'string');
+  }
 });
 
 test('failed preserves the backend error', () => {
@@ -118,4 +186,15 @@ test('getApiKey defaults to UI key and respects localStorage override', async ()
   } finally {
     delete globalThis.window;
   }
+});
+
+test('a response from another job cannot replace the current check', () => {
+  assert.throws(
+    () => parseJob({ job_id: 'other-job', status: 'processing' }, 'current-job'),
+    /другой проверки/,
+  );
+  assert.equal(
+    parseJob({ job_id: 'current-job', status: 'processing' }, 'current-job').status,
+    'processing',
+  );
 });

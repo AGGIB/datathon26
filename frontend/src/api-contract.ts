@@ -47,7 +47,7 @@ function parseRule(value: unknown): Rule | undefined {
   return rule;
 }
 
-function parseViolation(value: unknown): Violation {
+function parseViolation(value: unknown, index: number): Violation {
   if (
     !isRecord(value) ||
     typeof value.type !== 'string' ||
@@ -70,10 +70,15 @@ function parseViolation(value: unknown): Violation {
     ) {
       throw new Error('API вернул некорректный JPEG-кадр.');
     }
-    return `data:image/jpeg;base64,${frame.image_base64}`;
+    return {
+      timestamp_sec: frame.timestamp_sec,
+      image_url: `data:image/jpeg;base64,${frame.image_base64}`,
+    };
   });
 
   const violation: Violation = {
+    // The wire contract has no episode ID; response order keeps equal peaks distinct.
+    id: `episode-${index + 1}`,
     type: value.type,
     timecode_sec: value.timecode_sec,
     description: value.description,
@@ -110,9 +115,12 @@ export function validateResult(value: unknown): AnalysisResult {
   };
 }
 
-export function parseJob(value: unknown): AnalysisJob {
+export function parseJob(value: unknown, expectedJobId?: string): AnalysisJob {
   if (!isRecord(value) || typeof value.job_id !== 'string' || !value.job_id) {
     throw new Error('API не вернул идентификатор задания.');
+  }
+  if (expectedJobId !== undefined && value.job_id !== expectedJobId) {
+    throw new Error('Сервис вернул ответ для другой проверки. Запустите проверку заново.');
   }
   if (value.status === 'done') {
     return { status: 'done', result: validateResult(value) };
@@ -134,7 +142,9 @@ export function parseJob(value: unknown): AnalysisJob {
     status: 'processing',
     stage:
       typeof value.stage === 'string'
-        ? STAGES[value.stage] || 'Анализ видео выполняется'
+        ? Object.hasOwn(STAGES, value.stage)
+          ? STAGES[value.stage]
+          : 'Анализ видео выполняется'
         : undefined,
     progress: typeof value.progress === 'number' ? value.progress : undefined,
   };

@@ -5,11 +5,17 @@ export interface Rule {
   url?: string;
 }
 
+export interface EvidenceFrame {
+  timestamp_sec: number;
+  image_url: string;
+}
+
 export interface Violation {
+  id: string;
   type: string;
   timecode_sec: number;
   description: string;
-  evidence_frames: string[];
+  evidence_frames: EvidenceFrame[];
   rule?: Rule;
   confidence?: number;
   t_start?: number;
