@@ -11,7 +11,7 @@ function getHttpErrorMessage(status: number): string {
     case 411:
       return 'Сервер не смог определить размер загрузки. Повторите отправку.';
     case 401:
-      return 'Сервис отклонил ключ доступа. Проверьте настройки подключения.';
+      return 'Сервис отклонил запрос: неверный или отсутствующий API-ключ (X-API-Key).';
     case 413:
       return 'Сервер отклонил файл: превышен размер.';
     case 415:
@@ -67,7 +67,7 @@ export function uploadVideo(
 
     request.onerror = () => {
       cleanup();
-      reject(new Error('Нет связи с сервисом. Проверьте подключение и повторите попытку.'));
+      reject(new Error('Нет связи с API. Проверьте сеть и настройки CORS.'));
     };
     request.ontimeout = () => {
       cleanup();
@@ -101,8 +101,8 @@ export async function getJob(jobId: string, signal: AbortSignal): Promise<Analys
     if (signal.aborted) throw error;
     const message =
       error instanceof DOMException && error.name === 'TimeoutError'
-        ? 'Сервис не ответил за 15 секунд. Повторите попытку.'
-        : 'Нет связи с сервисом. Проверьте подключение и повторите попытку.';
+        ? 'API не ответил за 15 секунд. Повторите попытку.'
+        : 'Нет связи с API. Проверьте сеть и настройки CORS.';
     throw new Error(message);
   }
 
@@ -110,11 +110,5 @@ export async function getJob(jobId: string, signal: AbortSignal): Promise<Analys
     throw new Error(getHttpErrorMessage(response.status));
   }
 
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    throw new Error('Сервис вернул нечитаемый ответ. Повторите проверку.');
-  }
-  return parseJob(body, jobId);
+  return parseJob(await response.json());
 }

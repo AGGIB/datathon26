@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import { getJob, uploadVideo } from '../api';
 import { ANALYSIS_TIMEOUT_MS, IS_DEMO, MAX_FILE_SIZE, POLL_INTERVAL_MS } from '../config';
 import { DEMO_CLEAR_RESULT, DEMO_RESULT } from '../fixtures';
-import { createAnalysisRunGuard, validateVideoFile } from '../lib/analysis-state';
 import { delay } from '../lib/utils';
 import type { AnalysisPhase, AnalysisResult } from '../types';
 
@@ -16,68 +15,43 @@ export function useAnalysis() {
   const [result, setResult] = useState<AnalysisResult>();
   const [showClearDemo, setShowClearDemo] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
-  const runGuardRef = useRef(createAnalysisRunGuard());
 
-  useEffect(
-    () => () => {
-      runGuardRef.current.invalidate();
-      controllerRef.current?.abort();
-      controllerRef.current = null;
-    },
-    [],
-  );
+  useEffect(() => () => controllerRef.current?.abort(), []);
 
-  function invalidateRun() {
-    // Invalidate first: abort may synchronously trigger transport callbacks.
-    runGuardRef.current.invalidate();
-    const controller = controllerRef.current;
-    controllerRef.current = null;
-    controller?.abort();
+  function selectFile(selectedFile?: File) {
+    if (!selectedFile) return;
+    setError('');
+
+    if (!/\.(mov|mp4)$/i.test(selectedFile.name)) {
+      setError('Выберите видео в формате MOV или MP4.');
+      return;
+    }
+    if (selectedFile.size === 0 || selectedFile.size > MAX_FILE_SIZE) {
+      setError('Файл должен быть непустым и не больше 200 МБ.');
+      return;
+    }
+
+    setFile(selectedFile);
+    setResult(undefined);
   }
 
-  function clearRunState() {
+  function reset() {
+    controllerRef.current?.abort();
     setPhase('upload');
     setResult(undefined);
-    setStage('');
     setError('');
     setUploadProgress(0);
     setProcessingProgress(undefined);
   }
 
-  function selectFile(selectedFile?: File) {
-    invalidateRun();
-    clearRunState();
-    const selectionError = validateVideoFile(selectedFile, MAX_FILE_SIZE);
-    // A rejected replacement must not leave an older file ready to submit.
-    setFile(selectionError ? undefined : selectedFile);
-    setError(selectionError);
-  }
-
-  function cancel() {
-    invalidateRun();
-    clearRunState();
-  }
-
-  function reset() {
-    cancel();
-    setFile(undefined);
-  }
-
   async function startAnalysis() {
     if (!file) return;
 
-    invalidateRun();
-    const run = runGuardRef.current.begin();
+    controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
     const { signal } = controller;
-    const isCurrent = () => run.isCurrent() && !signal.aborted;
-    const commit = (update: () => void) => {
-      if (isCurrent()) run.commit(update);
-    };
     setError('');
-    setResult(undefined);
-    setStage('');
     setPhase('sending');
     setUploadProgress(0);
     setProcessingProgress(undefined);
@@ -88,24 +62,18 @@ export function useAnalysis() {
         setPhase('processing');
         setStage('Демонстрация интерфейса');
         await delay(1_600, signal);
-        commit(() => {
-          setResult(showClearDemo ? DEMO_CLEAR_RESULT : DEMO_RESULT);
-          setPhase('done');
-        });
+        setResult(showClearDemo ? DEMO_CLEAR_RESULT : DEMO_RESULT);
+        setPhase('done');
         return;
       }
 
-      const jobId = await uploadVideo(
-        file,
-        (progress) => commit(() => setUploadProgress(progress)),
-        signal,
-      );
-      if (!isCurrent()) return;
+      const jobId = await uploadVideo(file, setUploadProgress, signal);
+      signal.throwIfAborted();
       setPhase('processing');
       setStage('Видео в очереди обработки');
       const deadline = Date.now() + ANALYSIS_TIMEOUT_MS;
 
-      while (isCurrent()) {
+      while (!signal.aborted) {
         if (Date.now() > deadline) {
           throw new Error(
             'Ожидание превысило 5 минут. Повторите попытку или уточните состояние API у команды.',
@@ -113,7 +81,7 @@ export function useAnalysis() {
         }
 
         const job = await getJob(jobId, signal);
-        if (!isCurrent()) return;
+        signal.throwIfAborted();
         if (job.status === 'failed') {
           throw new Error(job.error || 'Не удалось обработать видео. Попробуйте другой файл.');
         }
@@ -128,15 +96,9 @@ export function useAnalysis() {
         await delay(POLL_INTERVAL_MS, signal);
       }
     } catch (error) {
-      commit(() => {
-        setError(error instanceof Error ? error.message : 'Не удалось связаться с сервисом.');
-        setPhase('upload');
-      });
-    } finally {
-      if (run.isCurrent()) {
-        runGuardRef.current.invalidate();
-        controllerRef.current = null;
-      }
+      if (signal.aborted) return;
+      setError(error instanceof Error ? error.message : 'Не удалось связаться с сервисом.');
+      setPhase('upload');
     }
   }
 
@@ -151,7 +113,6 @@ export function useAnalysis() {
     showClearDemo,
     setShowClearDemo,
     selectFile,
-    cancel,
     reset,
     startAnalysis,
     isBusy: phase === 'sending' || phase === 'processing',

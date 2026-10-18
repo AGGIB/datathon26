@@ -1,44 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
 import { ParticleBackground } from './components/ParticleBackground';
 import { ResultScreen } from './components/ResultScreen';
 import { UploadScreen } from './components/UploadScreen';
 import { IS_DEMO } from './config';
 import { useAnalysis } from './hooks/useAnalysis';
-import { formatTime } from './lib/utils';
 import './motion.css';
 
-const STEPS = ['Загрузка', 'Обработка', 'Результат'];
+const STEPS = ['Загрузка записи', 'Обработка', 'Результат'];
 
 export default function App() {
   const analysis = useAnalysis();
-  const [notice, setNotice] = useState('');
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const errorRef = useRef<HTMLDivElement>(null);
-  const currentStep = analysis.phase === 'done' ? 2 : analysis.phase === 'processing' ? 1 : 0;
-
-  useEffect(() => {
-    if (!analysis.isBusy) return;
-    const startedAt = performance.now();
-    setElapsedSeconds(0);
-    const timer = window.setInterval(
-      () => setElapsedSeconds(Math.floor((performance.now() - startedAt) / 1000)),
-      1000,
-    );
-    return () => window.clearInterval(timer);
-  }, [analysis.isBusy]);
-
-  useEffect(() => {
-    if (analysis.error) errorRef.current?.focus();
-  }, [analysis.error]);
-
-  function cancelWaiting() {
-    analysis.cancel();
-    setNotice(
-      IS_DEMO
-        ? 'Демонстрация отменена.'
-        : 'Ожидание остановлено. Файл сохранён. Уже созданная задача продолжает работу на сервере.',
-    );
-  }
+  const currentStep = analysis.phase === 'done' ? 2 : analysis.isBusy ? 1 : 0;
 
   return (
     <>
@@ -52,14 +23,19 @@ export default function App() {
           <span className="brand-service">Кассовый контроль</span>
         </a>
         <div className="header-meta">
-          <span className="team-name">BoltWW</span>
-          {!IS_DEMO && <span className="environment">Рабочий режим</span>}
+          <span className="project-label">Datathon 26 · Прототип</span>
+          <span className="environment">
+            {IS_DEMO ? 'Локальное демо' : 'API готов · X-API-Key'}
+          </span>
         </div>
       </header>
 
-      <main id="workspace" tabIndex={-1}>
+      <main id="workspace">
         <div className="workspace-heading">
-          <h1>Проверка кассовой записи</h1>
+          <div>
+            <h1>Проверка кассовой записи</h1>
+            <p className="lead">Загрузите видео, чтобы проверить события и их основания.</p>
+          </div>
         </div>
 
         <nav className="steps" aria-label="Этапы проверки">
@@ -81,16 +57,16 @@ export default function App() {
           </ol>
         </nav>
 
-        {IS_DEMO && <aside className="demo-banner">Демо · Результаты и кадры вымышлены.</aside>}
-
-        {notice && (
-          <p className="notice" role="status">
-            {notice}
-          </p>
+        {IS_DEMO && (
+          <aside className="demo-banner">
+            <strong>Демонстрация интерфейса.</strong> Видео остаётся на устройстве. Результаты
+            вымышлены и показывают возможности просмотра.
+          </aside>
         )}
+
         {analysis.error && (
-          <div ref={errorRef} tabIndex={-1} role="alert" className="error">
-            <span>{analysis.error}</span>
+          <div role="alert" className="error">
+            {analysis.error}
           </div>
         )}
 
@@ -98,66 +74,51 @@ export default function App() {
           <UploadScreen
             file={analysis.file}
             showClearDemo={analysis.showClearDemo}
-            onSelectFile={(file) => {
-              setNotice('');
-              analysis.selectFile(file);
-            }}
+            onSelectFile={analysis.selectFile}
             onDemoScenarioChange={analysis.setShowClearDemo}
-            onStart={() => {
-              setNotice('');
-              analysis.startAnalysis();
-            }}
+            onStart={analysis.startAnalysis}
           />
         )}
 
         {analysis.isBusy && (
-          <section className="processing panel" aria-label="Статус проверки" aria-busy="true">
+          <section className="processing panel" aria-live="polite">
             <div className="spinner" aria-hidden="true" />
-            <div role="status" aria-live="polite">
-              <h2>
-                {analysis.phase === 'sending'
-                  ? `Загружаем видео · ${analysis.uploadProgress}%`
-                  : analysis.stage}
-              </h2>
-            </div>
-            <p className="processing-file">{analysis.file?.name}</p>
-            <div className="elapsed-time" aria-live="off">
-              Прошло <strong>{formatTime(elapsedSeconds)}</strong>
-            </div>
-            {analysis.phase === 'sending' ? (
+            <p className="eyebrow">
+              {analysis.phase === 'sending' ? 'Передача файла' : 'Проверка записи'}
+            </p>
+            <h2>
+              {analysis.phase === 'sending'
+                ? `Загружаем видео · ${analysis.uploadProgress}%`
+                : analysis.stage}
+            </h2>
+            <p>Оставьте вкладку открытой. Результат появится здесь автоматически.</p>
+            {analysis.phase === 'sending' && (
               <progress aria-label="Прогресс загрузки" max={100} value={analysis.uploadProgress} />
-            ) : (
-              <progress
-                aria-label="Прогресс обработки"
-                max={1}
-                value={analysis.processingProgress}
-              />
             )}
             {analysis.phase === 'processing' && analysis.processingProgress !== undefined && (
-              <p className="processing-percent">{Math.round(analysis.processingProgress * 100)}%</p>
+              <>
+                <progress
+                  aria-label="Прогресс обработки"
+                  max={1}
+                  value={analysis.processingProgress}
+                />
+                <p>{Math.round(analysis.processingProgress * 100)}%</p>
+              </>
             )}
-            {!IS_DEMO && <p className="caption">Лимит ожидания — 5 минут.</p>}
-            <button className="secondary" onClick={cancelWaiting}>
+            <button className="secondary" onClick={analysis.reset}>
               Отменить ожидание
             </button>
-            {!IS_DEMO && (
-              <p className="cancel-note">
-                Отмена ожидания не останавливает уже созданную задачу на сервере.
-              </p>
-            )}
           </section>
         )}
 
         {analysis.phase === 'done' && analysis.result && analysis.file && (
-          <ResultScreen
-            file={analysis.file}
-            result={analysis.result}
-            onReset={() => {
-              setNotice('');
-              analysis.reset();
-            }}
-          />
+          <ResultScreen file={analysis.file} result={analysis.result} onReset={analysis.reset} />
         )}
+
+        <footer>
+          <span>Подсказка для проверяющего, не заключение</span>
+          <span>Командный прототип · 2026</span>
+        </footer>
       </main>
     </>
   );
