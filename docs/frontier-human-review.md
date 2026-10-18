@@ -41,6 +41,10 @@ including an empty directory, is never overwritten.
   aliases, source paths, numerical duration and tool/schema fingerprints. All
   camera, angle, session and filming-source groups are initially unknown. A hash
   is a duplicate group, not a filming session or independent camera.
+  Keep this manifest unchanged. Record any later human-supplied grouping in a
+  separately versioned metadata overlay with its provenance; this scaffold does
+  not validate or consume that overlay and requires the manifest groups to remain
+  unknown.
 - `reviewer-a/coverage.csv` and `reviewer-b/coverage.csv`: one row per content and
   type. For 40 contents this is 120 unique slots and 240 independent review
   assignments. Both files start entirely `unreviewed`; they are not predictions.
