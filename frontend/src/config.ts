@@ -12,7 +12,8 @@ export const DEFAULT_API_KEY = '';
 let sessionApiKey: string | undefined;
 
 export function getApiKey(): string {
-  if (sessionApiKey !== undefined) return sessionApiKey;
+  if (sessionApiKey !== undefined)
+    return sessionApiKey || env.VITE_API_KEY?.trim() || DEFAULT_API_KEY;
   try {
     if (typeof window !== 'undefined') {
       const stored = window.localStorage.getItem('forte_api_key')?.trim();
@@ -27,7 +28,7 @@ export function getApiKey(): string {
 }
 
 export function setApiKey(key: string): void {
-  sessionApiKey = key.trim() || undefined;
+  sessionApiKey = key.trim();
   try {
     if (typeof window !== 'undefined') {
       if (sessionApiKey) {

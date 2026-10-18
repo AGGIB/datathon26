@@ -24,7 +24,10 @@ test('К1 done maps verdict, JPEG frames and nullable normative fields for the U
   const job = parseJob(done());
   assert.equal(job.status, 'done');
   assert.equal(job.result.verdict, 'Обнаружены признаки возможных нарушений');
-  assert.equal(job.result.violations[0].evidence_frames[0], `data:image/jpeg;base64,${jpeg}`);
+  assert.deepEqual(job.result.violations[0].evidence_frames[0], {
+    timestamp_sec: 22.4,
+    image_url: `data:image/jpeg;base64,${jpeg}`,
+  });
   assert.deepEqual(job.result.violations[0].rule, { document: 'Документ' });
 });
 
@@ -32,6 +35,27 @@ test('no_violation renders the required Russian verdict with no cards', () => {
   const job = parseJob(done({ verdict: 'no_violation', violations: [] }));
   assert.equal(job.result.verdict, 'Нарушение не обнаружено');
   assert.deepEqual(job.result.violations, []);
+});
+
+test('evidence frames retain their own times instead of inheriting the episode peak', () => {
+  const result = validateResult(
+    done({
+      violations: [
+        {
+          ...violation,
+          timecode_sec: 22.4,
+          evidence_frames: [18.2, 22.4, 26.1].map((timestamp_sec) => ({
+            timestamp_sec,
+            image_base64: jpeg,
+          })),
+        },
+      ],
+    }),
+  );
+  assert.deepEqual(
+    result.violations[0].evidence_frames.map((frame) => frame.timestamp_sec),
+    [18.2, 22.4, 26.1],
+  );
 });
 
 test('processing translates stage and preserves fractional progress', () => {
@@ -132,6 +156,25 @@ test('API key remains usable when browser storage is blocked', async () => {
     assert.equal(getApiKey(), '');
     setApiKey(' session-key ');
     assert.equal(getApiKey(), 'session-key');
+    setApiKey('');
+    assert.equal(getApiKey(), '');
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test('clearing a key ignores stale storage when removal is blocked', async () => {
+  const { getApiKey, setApiKey } = await import('../src/config.ts?failed-clear');
+  globalThis.window = {
+    localStorage: {
+      getItem: () => 'stale-key',
+      removeItem: () => {
+        throw new DOMException('Storage blocked', 'SecurityError');
+      },
+    },
+  };
+  try {
+    assert.equal(getApiKey(), 'stale-key');
     setApiKey('');
     assert.equal(getApiKey(), '');
   } finally {

@@ -25,7 +25,7 @@ export function ViolationCard({ violation, index, onSeek, onOpenImage }: Violati
 
       <div className="frames">
         {violation.evidence_frames.slice(0, 3).map((frame, frameIndex) => {
-          const imageUrl = safeImageUrl(frame);
+          const imageUrl = safeImageUrl(frame.image_url);
           if (!imageUrl) return null;
 
           return (
@@ -33,11 +33,11 @@ export function ViolationCard({ violation, index, onSeek, onOpenImage }: Violati
               className="frame"
               key={frameIndex}
               onClick={() => onOpenImage(imageUrl)}
-              aria-label={`Увеличить кадр ${frameIndex + 1}`}
+              aria-label={`Увеличить кадр ${frameIndex + 1}, ${formatTime(frame.timestamp_sec)}`}
             >
               <img
                 src={imageUrl}
-                alt={`Доказательство ${frameIndex + 1}, ${formatTime(violation.timecode_sec)}`}
+                alt={`Доказательство ${frameIndex + 1}, ${formatTime(frame.timestamp_sec)}`}
                 loading="lazy"
               />
             </button>

@@ -70,7 +70,10 @@ function parseViolation(value: unknown): Violation {
     ) {
       throw new Error('API вернул некорректный JPEG-кадр.');
     }
-    return `data:image/jpeg;base64,${frame.image_base64}`;
+    return {
+      timestamp_sec: frame.timestamp_sec,
+      image_url: `data:image/jpeg;base64,${frame.image_base64}`,
+    };
   });
 
   const violation: Violation = {
