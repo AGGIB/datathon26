@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { IS_DEMO } from '../config';
 import { useObjectUrl } from '../hooks/useObjectUrl';
 import { formatEvidenceTime, formatTime } from '../lib/utils';
 import type { AnalysisResult, EvidenceFrame } from '../types';
@@ -85,28 +84,17 @@ export function ResultScreen({ file, result, onReset }: ResultScreenProps) {
           {hasViolations ? '!' : '✓'}
         </span>
         <div className="verdict-copy">
-          <p className="eyebrow">
-            {IS_DEMO ? 'Вымышленный пример результата' : 'Проверка завершена'}
-          </p>
           <h2 ref={headingRef} tabIndex={-1}>
             {result.verdict}
           </h2>
-          <p>
-            {hasViolations
-              ? 'Сопоставьте отмеченные эпизоды с исходной записью.'
-              : 'В результате нет отмеченных эпизодов. При необходимости проверьте запись самостоятельно.'}
-          </p>
+          <p>Итоговую оценку даёт проверяющий.</p>
         </div>
         <div
           className="verdict-total"
           aria-label={`Количество эпизодов для проверки: ${result.violations.length}`}
         >
           <strong>{String(result.violations.length).padStart(2, '0')}</strong>
-          <span>
-            эпизодов
-            <br />
-            для проверки
-          </span>
+          <span>эпизодов</span>
         </div>
         <button className="secondary" onClick={onReset}>
           Новая проверка
@@ -138,10 +126,7 @@ export function ResultScreen({ file, result, onReset }: ResultScreenProps) {
             onError={() => setHasCodecError(true)}
           />
           {hasCodecError && (
-            <p className="error">
-              Предпросмотр этого кодека недоступен в браузере. Можно изучить описания и кадры
-              эпизодов.
-            </p>
+            <p className="error">Видео не воспроизводится. Описания и кадры эпизодов доступны.</p>
           )}
           <div className="time-label">
             <span>{formatTime(currentTime)}</span>
@@ -224,11 +209,7 @@ export function ResultScreen({ file, result, onReset }: ResultScreenProps) {
               {seekNotice}
             </p>
           )}
-          {!hasCodecError && !duration && (
-            <p className="caption">
-              Загружаем сведения о записи. Переходы будут доступны после загрузки.
-            </p>
-          )}
+          {!hasCodecError && !duration && <p className="caption">Загрузка записи…</p>}
         </section>
 
         <section className="findings" aria-labelledby="findings-title">
@@ -240,9 +221,6 @@ export function ResultScreen({ file, result, onReset }: ResultScreenProps) {
             <div className="panel empty-findings">
               <span aria-hidden="true">✓</span>
               <h3>Нет эпизодов для проверки</h3>
-              <p>
-                Исходная запись доступна слева или выше. Отсутствие отметок не заменяет вашу оценку.
-              </p>
             </div>
           )}
           {result.violations.map((violation, index) => (

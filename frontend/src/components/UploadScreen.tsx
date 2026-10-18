@@ -87,12 +87,8 @@ export function UploadScreen({
                 <rect x="2" y="2" width="44" height="44" rx="5" />
                 <path d="m46 17 15-9v32l-15-9M17 24h14m-7-7v14" />
               </svg>
-              <h3>{file ? 'Запись выбрана' : 'Добавьте видео для проверки'}</h3>
-              <p>
-                {previewFailed
-                  ? 'Предпросмотр недоступен для этого кодека. Файл можно отправить на проверку.'
-                  : 'Перетащите файл сюда или выберите на устройстве.'}
-              </p>
+              <h3>{file ? 'Запись выбрана' : 'Перетащите видео'}</h3>
+              {previewFailed && <p>Предпросмотр недоступен. Файл можно отправить на проверку.</p>}
               <button ref={chooseRef} onClick={() => inputRef.current?.click()}>
                 {file ? 'Выбрать другой файл' : 'Выбрать видео'}
               </button>
@@ -112,17 +108,16 @@ export function UploadScreen({
           />
         </div>
 
-        <div className={`file-details ${file ? 'selected' : ''}`} aria-live="polite">
-          <div className="file-summary">
-            <span className="file-status-icon" aria-hidden="true">
-              {file ? '✓' : '＋'}
-            </span>
-            <div>
-              <span className="field-caption">{file ? 'Файл выбран' : 'Видео не выбрано'}</span>
-              <p>{file ? file.name : 'Начните с выбора записи'}</p>
+        {file && (
+          <div className="file-details selected" aria-live="polite">
+            <div className="file-summary">
+              <span className="file-status-icon" aria-hidden="true">
+                ✓
+              </span>
+              <div>
+                <p>{file.name}</p>
+              </div>
             </div>
-          </div>
-          {file && (
             <div className="file-actions">
               <span>{(file.size / 1024 / 1024).toFixed(1)} МиБ</span>
               <button className="text-button" onClick={() => inputRef.current?.click()}>
@@ -132,8 +127,8 @@ export function UploadScreen({
                 Удалить
               </button>
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
         <div className="analysis-settings">
           {IS_DEMO && (
@@ -144,7 +139,7 @@ export function UploadScreen({
                 value={showClearDemo ? 'clear' : 'events'}
                 onChange={(event) => onDemoScenarioChange(event.target.value === 'clear')}
               >
-                <option value="events">Два эпизода для проверки</option>
+                <option value="events">Два эпизода</option>
                 <option value="clear">Нарушение не обнаружено</option>
               </select>
             </label>
@@ -153,7 +148,6 @@ export function UploadScreen({
             <button className="start-button" disabled={!file} onClick={onStart}>
               {IS_DEMO ? 'Открыть пример' : 'Начать проверку'}
             </button>
-            {!file && <span className="caption">Сначала выберите видео</span>}
           </div>
         </div>
         {!IS_DEMO && (
@@ -201,31 +195,14 @@ export function UploadScreen({
       </div>
 
       <aside className="review-guide" aria-labelledby="review-guide-title">
-        <p className="guide-eyebrow">После проверки</p>
-        <h2 id="review-guide-title">От записи к эпизоду</h2>
-        <dl className="result-details">
-          <div>
-            <dt>
-              <span aria-hidden="true">01</span> События и таймкоды
-            </dt>
-            <dd>Переходите к отмеченным моментам в исходной записи.</dd>
-          </div>
-          <div>
-            <dt>
-              <span aria-hidden="true">02</span> Кадры эпизода
-            </dt>
-            <dd>Сравнивайте кадры и открывайте их в увеличении.</dd>
-          </div>
-          <div>
-            <dt>
-              <span aria-hidden="true">03</span> Основания
-            </dt>
-            <dd>Читайте документ и источник, если они переданы сервисом.</dd>
-          </div>
-        </dl>
-        <p className="review-note">
-          Сервис помогает найти эпизоды. Итоговую оценку даёт проверяющий.
-        </p>
+        <h2 id="review-guide-title" className="sr-only">
+          В результате
+        </h2>
+        <ol className="result-outline">
+          <li>Эпизоды и таймкоды</li>
+          <li>Кадры</li>
+          <li>Основания</li>
+        </ol>
       </aside>
     </section>
   );

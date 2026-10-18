@@ -35,8 +35,8 @@ export default function App() {
     analysis.cancel();
     setNotice(
       IS_DEMO
-        ? 'Демонстрация отменена. Можно изменить сценарий или выбрать другую запись.'
-        : 'Ожидание остановлено. Файл сохранён для повторной проверки. Уже созданная задача на сервере продолжает выполняться.',
+        ? 'Демонстрация отменена.'
+        : 'Ожидание остановлено. Файл сохранён. Уже созданная задача продолжает работу на сервере.',
     );
   }
 
@@ -52,17 +52,14 @@ export default function App() {
           <span className="brand-service">Кассовый контроль</span>
         </a>
         <div className="header-meta">
-          <span className="project-label">Datathon 26 · Прототип</span>
-          <span className="environment">{IS_DEMO ? 'Локальное демо' : 'Рабочий режим'}</span>
+          <span className="team-name">BoltWW</span>
+          {!IS_DEMO && <span className="environment">Рабочий режим</span>}
         </div>
       </header>
 
       <main id="workspace" tabIndex={-1}>
         <div className="workspace-heading">
-          <div>
-            <h1>Проверка кассовой записи</h1>
-            <p className="lead">Видео, отмеченные эпизоды и основания — в одном окне.</p>
-          </div>
+          <h1>Проверка кассовой записи</h1>
         </div>
 
         <nav className="steps" aria-label="Этапы проверки">
@@ -84,11 +81,7 @@ export default function App() {
           </ol>
         </nav>
 
-        {IS_DEMO && (
-          <aside className="demo-banner">
-            <strong>Демо.</strong> Видео остаётся на устройстве. Результаты и иллюстрации вымышлены.
-          </aside>
-        )}
+        {IS_DEMO && <aside className="demo-banner">Демо · Результаты и кадры вымышлены.</aside>}
 
         {notice && (
           <p className="notice" role="status">
@@ -97,7 +90,6 @@ export default function App() {
         )}
         {analysis.error && (
           <div ref={errorRef} tabIndex={-1} role="alert" className="error">
-            <strong>Проверьте данные и попробуйте ещё раз.</strong>
             <span>{analysis.error}</span>
           </div>
         )}
@@ -121,13 +113,6 @@ export default function App() {
         {analysis.isBusy && (
           <section className="processing panel" aria-label="Статус проверки" aria-busy="true">
             <div className="spinner" aria-hidden="true" />
-            <p className="eyebrow">
-              {IS_DEMO
-                ? 'Демонстрация интерфейса'
-                : analysis.phase === 'sending'
-                  ? 'Передача файла'
-                  : 'Проверка записи'}
-            </p>
             <div role="status" aria-live="polite">
               <h2>
                 {analysis.phase === 'sending'
@@ -151,20 +136,15 @@ export default function App() {
             {analysis.phase === 'processing' && analysis.processingProgress !== undefined && (
               <p className="processing-percent">{Math.round(analysis.processingProgress * 100)}%</p>
             )}
-            <p>Результат появится здесь. Оставьте вкладку открытой.</p>
-            {!IS_DEMO && (
-              <p className="caption">
-                Время зависит от записи и загрузки сервиса. Лимит ожидания в интерфейсе — 5 минут.
-              </p>
-            )}
+            {!IS_DEMO && <p className="caption">Лимит ожидания — 5 минут.</p>}
             <button className="secondary" onClick={cancelWaiting}>
               Отменить ожидание
             </button>
-            <p className="cancel-note">
-              {IS_DEMO
-                ? 'Выбранный файл останется на устройстве.'
-                : 'Отменяется только ожидание в браузере. Задача на сервере продолжит работу.'}
-            </p>
+            {!IS_DEMO && (
+              <p className="cancel-note">
+                Отмена ожидания не останавливает уже созданную задачу на сервере.
+              </p>
+            )}
           </section>
         )}
 
@@ -178,11 +158,6 @@ export default function App() {
             }}
           />
         )}
-
-        <footer>
-          <span>Подсказка для проверяющего, не заключение</span>
-          <span>Командный прототип · 2026</span>
-        </footer>
       </main>
     </>
   );
