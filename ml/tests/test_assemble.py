@@ -211,11 +211,18 @@ def test_clamp_time_bounds():
 # --- evidence ------------------------------------------------------------------------------------
 
 
-def test_candidate_without_evidence_frames_is_dropped_with_error(caplog):
-    with caplog.at_level(logging.ERROR, logger="ml.assemble"):
-        result = run([cand()], render=lambda cs: {})
-    assert result == {"verdict": "no_violation", "violations": []}
+def test_all_candidates_without_evidence_raise(caplog):
+    with caplog.at_level(logging.ERROR, logger="ml.assemble"), pytest.raises(RuntimeError, match="evidence"):
+        run([cand()], render=lambda cs: {})
     assert "evidence" in caplog.text
+
+
+def test_surviving_candidate_keeps_partial_violation_result():
+    first = cand(t0=0.0, t1=1.0, peak=0.5)
+    second = cand(t0=5.0, t1=6.0, peak=5.5)
+    result = run([first, second], render=lambda cs: frames_for([second]))
+    assert result['verdict'] == 'violation'
+    assert [v['timecode_sec'] for v in result['violations']] == [5.5]
 
 
 def test_more_than_three_frames_are_trimmed():

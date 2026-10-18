@@ -239,12 +239,14 @@ def test_budget_overrun_returns_partial_result_instead_of_raising(tmp_path, monk
     assert slow.frames_seen < 60 * pipeline.HARD_MIN_FPS + 2 * CALIBRATION_FRAMES
 
 
-def test_budget_exhausted_before_any_detection_gives_no_violation(clip, fake, monkeypatch):
+def test_budget_exhausted_before_any_detection_raises(clip, fake, monkeypatch):
     seen = capture_rules(monkeypatch, [one_candidate()])
     monkeypatch.setattr(pipeline, "FINISH_RESERVE_SEC", 10.0)
-    result = pipeline.analyze(str(clip), time_budget_sec=1.0)
-    assert result == {"verdict": "no_violation", "violations": []}
+    with pytest.raises(RuntimeError, match="no frames were analysed"):
+        pipeline.analyze(str(clip), time_budget_sec=1.0)
     assert "perception" not in seen
+    assert fake.frames_seen == 0
+    assert pipeline._SHARED.active_jobs() == 0
 
 
 def test_parallel_jobs_share_one_model_and_never_infer_concurrently(tmp_path, monkeypatch):
@@ -370,17 +372,58 @@ def test_evidence_for_all_violations_comes_from_one_decode_pass(clip, fake, monk
     assert len(calls) == 1 and {0.5, 2.0} <= set(calls[0])
 
 
-def test_failed_evidence_pass_drops_violations_but_finishes_the_job(clip, fake, monkeypatch, caplog):
+@pytest.mark.parametrize('fault_site', ['frames_at', 'encode_jpeg_b64'])
+def test_failed_evidence_raises_instead_of_clean_verdict(clip, fake, monkeypatch, caplog, fault_site):
     capture_rules(monkeypatch, [one_candidate(t=0.5)])
 
-    def broken(path, times):
-        raise ValueError("cannot open video")
+    def broken(*args):
+        raise ValueError("synthetic evidence failure")
 
-    monkeypatch.setattr(evidence, "frames_at", broken)
-    with caplog.at_level("ERROR"):
-        result = pipeline.analyze(str(clip))
-    assert result == {"verdict": "no_violation", "violations": []}
+    monkeypatch.setattr(evidence, fault_site, broken)
+    with caplog.at_level("ERROR"), pytest.raises(RuntimeError, match="lost their evidence"):
+        pipeline.analyze(str(clip))
     assert {r.name for r in caplog.records if r.levelname == "ERROR"} >= {"ml.evidence", "ml.assemble"}
+    assert pipeline._SHARED.active_jobs() == 0
+
+
+@pytest.mark.parametrize('fault', ['zero_frames', 'decode', 'encode'])
+def test_real_pipeline_fault_reaches_existing_failed_api(clip, fake, monkeypatch, tmp_path, fault):
+    from backend.app.config import Settings
+    from backend.app.main import create_app
+    from fastapi.testclient import TestClient
+
+    capture_rules(monkeypatch, [one_candidate(t=0.5)])
+    settings = Settings(api_keys=frozenset({'test-key'}), data_dir=tmp_path / 'api',
+                        workers=1, pipeline='mock', job_timeout_sec=30)
+
+    def broken(*args):
+        raise ValueError('synthetic evidence failure')
+
+    with TestClient(create_app(settings, pipeline_fn=pipeline.analyze)) as client:
+        def submit():
+            response = client.post('/api/v1/analyze', headers={'X-API-Key': 'test-key'},
+                                   files={'file': ('synthetic.mp4', clip.read_bytes(), 'video/mp4')})
+            assert response.status_code == 200
+            job_id = response.json()['job_id']
+            client.app.state.runner.wait(job_id, timeout=10)
+            result = client.get(f'/api/v1/jobs/{job_id}', headers={'X-API-Key': 'test-key'})
+            assert result.status_code == 200
+            return job_id, result.json()
+
+        with monkeypatch.context() as fault_patch:
+            if fault == 'zero_frames':
+                fault_patch.setattr(pipeline, 'FINISH_RESERVE_SEC', 1e6)
+            else:
+                fault_patch.setattr(evidence, 'frames_at' if fault == 'decode' else 'encode_jpeg_b64', broken)
+            job_id, failed = submit()
+            assert failed['status'] == 'failed' and failed['error']
+            assert {'verdict', 'violations', 'result'}.isdisjoint(failed)
+            stored = client.app.state.store.get(job_id)
+            assert stored['stage'] == 'failed' and stored.get('result') is None
+        _, recovered = submit()
+        assert recovered['status'] == 'done' and recovered['verdict'] == 'violation'
+        assert client.app.state.runner.lost_slots == 0
+        assert pipeline._SHARED.active_jobs() == 0
 
 
 # --- real model -------------------------------------------------------------------------------------
