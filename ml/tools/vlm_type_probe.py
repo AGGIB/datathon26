@@ -171,7 +171,7 @@ def _sha(path: Path) -> str:
 
 
 def _source_hashes():
-    return {str(path.relative_to(ROOT)): _sha(path) for path in sorted((ROOT / "ml").rglob("*.py"))}
+    return {path.relative_to(ROOT).as_posix(): _sha(path) for path in sorted((ROOT / "ml").rglob("*.py"))}
 
 
 def _runtime_versions(executable):

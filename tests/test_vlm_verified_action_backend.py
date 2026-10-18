@@ -308,7 +308,9 @@ def test_shared_call_budget_is_claimed_for_each_raw_attempt_and_never_returns_pr
     assert backend.last_inner_calls == 0 and len(inner.requests) == 1
 
 
-def test_inner_failure_counts_attempt_and_deadline_never_renews(inference_request):
+def test_inner_failure_counts_attempt_and_deadline_never_renews(inference_request, monkeypatch):
+    ticks = iter(index / 1000 for index in range(10000))
+    monkeypatch.setattr(time, 'monotonic', lambda: next(ticks))
     inner = Scripted([action()], RuntimeError("private details"))
     backend = VerifiedActionBackend(inner, catalog=catalog())
     budget = DiscoveryBudget(time.monotonic() + 2, max_calls=2)
