@@ -147,4 +147,6 @@ def assemble(
             log.error("assemble: no evidence frames for %s at %.1fs, violation dropped", c.type_id, c.t_peak)
             continue
         violations.append(build_violation(c, types[c.type_id], frames, duration))
+    if selected and not violations:
+        raise RuntimeError("all selected violations lost their evidence frames")
     return {"verdict": "violation" if violations else "no_violation", "violations": violations}

@@ -5,7 +5,8 @@ Contract (do not change without the team lead):
 returns a dict valid against backend.app.schemas.AnalysisResult:
     {"verdict": "violation" | "no_violation", "violations": [...]}
 on_progress(progress: float 0..1, stage: str) may be called any number of times.
-time_budget_sec: soft deadline; on overrun return the best result so far instead of failing.
+time_budget_sec: soft deadline; on overrun return available results from analysed frames.
+If no frames were analysed or all selected violations lost their evidence, raise for the backend's failed path.
 
 Stages: perception (detect, 0..0.7) -> rules (0.7..0.85) -> evidence + assembly (0.85..1).
 Speed differs ~30x between MPS and a CPU container, so the detector's cost per frame is measured
@@ -126,12 +127,14 @@ def _truncate(perception: Perception, n_frames: int) -> Perception:
 
 
 def _finalize(perception: Perception, guard: _BudgetedDetector, plan: SamplingPlan) -> Perception:
+    if not perception.frames:
+        raise ValueError("no frames could be decoded from the video")
+    if guard.processed == 0:
+        raise RuntimeError("no frames were analysed within the time budget")
     if guard.skipped:
         log.warning("pipeline: time budget reached, %d of %d frames skipped — analysing the first %d",
                     guard.skipped, guard.skipped + guard.processed, guard.processed)
         return _truncate(perception, guard.processed)
-    if not perception.frames:
-        raise ValueError("no frames could be decoded from the video")
     missing = perception.info.duration - perception.frames[-1].t
     if missing > 1.0 / plan.sample_fps + TAIL_TOLERANCE_SEC:
         log.warning("pipeline: last %.1fs of the video could not be decoded — analysing the decoded part", missing)
